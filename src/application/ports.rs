@@ -16,6 +16,14 @@ pub trait Clock: Send + Sync {
     fn now(&self) -> DateTime<Utc>;
 }
 
+#[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
+#[error("operating system entropy is unavailable")]
+pub struct EntropyError;
+
+pub trait EntropySource: Send + Sync {
+    fn fill(&self, destination: &mut [u8]) -> Result<(), EntropyError>;
+}
+
 /// The safe representation persisted alongside canonical Markdown.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RenderedMarkdown {
@@ -134,6 +142,8 @@ pub trait MediaRepository: Send + Sync {
 pub enum AuthError {
     #[error("authentication storage failure: {0}")]
     Storage(String),
+    #[error("authentication entropy is unavailable")]
+    EntropyUnavailable,
 }
 
 #[async_trait]

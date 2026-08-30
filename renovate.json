@@ -1,0 +1,12 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "packageRules": [
+    {
+      "description": "Keep dependencies within the declared Rust 1.88 MSRV",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["sqlx"],
+      "allowedVersions": "<0.9.0"
+    }
+  ]
+}

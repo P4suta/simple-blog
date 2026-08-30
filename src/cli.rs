@@ -11,7 +11,7 @@ use crate::{
     application::{auth::AuthService, ports::PasskeyRepository},
     config::{Config, ConfigFile, Overrides},
     domain::auth::SetupPurpose,
-    infrastructure::sqlite::SqliteRepository,
+    infrastructure::{entropy::SystemEntropy, sqlite::SqliteRepository},
     operations::{BackupService, Doctor, Exporter, MigrationCoordinator, RestoreService},
     web::{AppState, router},
 };
@@ -139,7 +139,7 @@ async fn init(overrides: Overrides) -> Result<()> {
         println!("initialized {}", config.data_dir.display());
         return Ok(());
     }
-    let token = AuthService::new(repository)
+    let token = AuthService::new(repository, Arc::new(SystemEntropy))
         .issue_setup_token(SetupPurpose::Initial, Utc::now())
         .await
         .context("could not issue setup token")?;
@@ -254,7 +254,7 @@ async fn owner_recover(overrides: Overrides) -> Result<()> {
     {
         bail!("owner has not completed initial setup")
     }
-    let token = AuthService::new(repository)
+    let token = AuthService::new(repository, Arc::new(SystemEntropy))
         .issue_setup_token(SetupPurpose::Recovery, Utc::now())
         .await
         .context("could not issue recovery token")?;

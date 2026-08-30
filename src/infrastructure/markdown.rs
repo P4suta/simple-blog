@@ -19,7 +19,7 @@ impl Default for ComrakMarkdownRenderer {
         options.extension.tagfilter = true;
         options.extension.tasklist = true;
         options.render.github_pre_lang = true;
-        options.render.unsafe_ = false;
+        options.render.r#unsafe = false;
 
         Self { options }
     }

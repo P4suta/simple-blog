@@ -5,13 +5,14 @@ use std::{
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Duration, Utc};
-use rand::{RngCore, rngs::OsRng};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
 use crate::{
-    application::ports::{AuthError, AuthRepository, PasskeyRepository, SetupRegistration},
+    application::ports::{
+        AuthError, AuthRepository, EntropySource, PasskeyRepository, SetupRegistration,
+    },
     domain::auth::{
         SecretHash, SecretToken, SessionIdentity, SessionRecord, SessionSecrets, SetupPurpose,
         StoredPasskey,
@@ -90,6 +91,7 @@ impl AuthRateLimiter {
 #[derive(Clone)]
 pub struct AuthService {
     repository: Arc<dyn AuthRepository>,
+    entropy: Arc<dyn EntropySource>,
 }
 
 pub struct CompletedSetup {
@@ -100,6 +102,7 @@ pub struct CompletedSetup {
 #[derive(Clone)]
 pub struct PasskeyAccountService {
     repository: Arc<dyn PasskeyRepository>,
+    entropy: Arc<dyn EntropySource>,
 }
 
 pub struct RegistrationContext {
@@ -114,8 +117,11 @@ pub struct PasskeyRegistrationContext {
 }
 
 impl PasskeyAccountService {
-    pub fn new(repository: Arc<dyn PasskeyRepository>) -> Self {
-        Self { repository }
+    pub fn new(repository: Arc<dyn PasskeyRepository>, entropy: Arc<dyn EntropySource>) -> Self {
+        Self {
+            repository,
+            entropy,
+        }
     }
 
     pub async fn complete_setup_registration(
@@ -126,8 +132,10 @@ impl PasskeyAccountService {
         passkey: StoredPasskey,
         now: DateTime<Utc>,
     ) -> Result<Option<CompletedSetup>, AuthError> {
-        let (session, session_record) = new_session(now);
-        let recovery_codes: Vec<_> = (0..RECOVERY_CODE_COUNT).map(|_| random_token(20)).collect();
+        let (session, session_record) = new_session(self.entropy.as_ref(), now)?;
+        let recovery_codes = (0..RECOVERY_CODE_COUNT)
+            .map(|_| random_token(self.entropy.as_ref(), 20))
+            .collect::<Result<Vec<_>, _>>()?;
         let recovery_hashes: Vec<_> = recovery_codes
             .iter()
             .map(|code| hash_secret(code.expose()))
@@ -208,7 +216,7 @@ impl PasskeyAccountService {
         passkey_json: &str,
         now: DateTime<Utc>,
     ) -> Result<Option<SessionSecrets>, AuthError> {
-        let (session, record) = new_session(now);
+        let (session, record) = new_session(self.entropy.as_ref(), now)?;
         let committed = self
             .repository
             .complete_authentication(credential_id, passkey_json, &record, now)
@@ -230,8 +238,11 @@ impl PasskeyAccountService {
 }
 
 impl AuthService {
-    pub fn new(repository: Arc<dyn AuthRepository>) -> Self {
-        Self { repository }
+    pub fn new(repository: Arc<dyn AuthRepository>, entropy: Arc<dyn EntropySource>) -> Self {
+        Self {
+            repository,
+            entropy,
+        }
     }
 
     pub async fn issue_setup_token(
@@ -239,7 +250,7 @@ impl AuthService {
         purpose: SetupPurpose,
         now: DateTime<Utc>,
     ) -> Result<SecretToken, AuthError> {
-        let token = random_token(32);
+        let token = random_token(self.entropy.as_ref(), 32)?;
         self.repository
             .store_setup_token(
                 hash_secret(token.expose()),
@@ -262,7 +273,7 @@ impl AuthService {
     }
 
     pub async fn create_session(&self, now: DateTime<Utc>) -> Result<SessionSecrets, AuthError> {
-        let (secrets, record) = new_session(now);
+        let (secrets, record) = new_session(self.entropy.as_ref(), now)?;
         self.repository.store_session(&record).await?;
         Ok(secrets)
     }
@@ -291,7 +302,7 @@ impl AuthService {
         current_token: &str,
         now: DateTime<Utc>,
     ) -> Result<Option<SessionSecrets>, AuthError> {
-        let (secrets, replacement) = new_session(now);
+        let (secrets, replacement) = new_session(self.entropy.as_ref(), now)?;
         let rotated = self
             .repository
             .rotate_session(hash_secret(current_token), &replacement, now)
@@ -303,7 +314,9 @@ impl AuthService {
         &self,
         now: DateTime<Utc>,
     ) -> Result<Vec<SecretToken>, AuthError> {
-        let codes: Vec<_> = (0..RECOVERY_CODE_COUNT).map(|_| random_token(20)).collect();
+        let codes = (0..RECOVERY_CODE_COUNT)
+            .map(|_| random_token(self.entropy.as_ref(), 20))
+            .collect::<Result<Vec<_>, _>>()?;
         let hashes: Vec<_> = codes
             .iter()
             .map(|code| hash_secret(code.expose()))
@@ -328,7 +341,7 @@ impl AuthService {
         code: &str,
         now: DateTime<Utc>,
     ) -> Result<Option<SessionSecrets>, AuthError> {
-        let (secrets, session) = new_session(now);
+        let (secrets, session) = new_session(self.entropy.as_ref(), now)?;
         let exchanged = self
             .repository
             .exchange_recovery_code(hash_secret(code), &session, now)
@@ -337,9 +350,12 @@ impl AuthService {
     }
 }
 
-fn new_session(now: DateTime<Utc>) -> (SessionSecrets, SessionRecord) {
-    let session = random_token(32);
-    let csrf = random_token(32);
+fn new_session(
+    entropy: &dyn EntropySource,
+    now: DateTime<Utc>,
+) -> Result<(SessionSecrets, SessionRecord), AuthError> {
+    let session = random_token(entropy, 32)?;
+    let csrf = random_token(entropy, 32)?;
     let record = SessionRecord {
         token_hash: hash_secret(session.expose()),
         csrf_hash: hash_secret(csrf.expose()),
@@ -348,13 +364,15 @@ fn new_session(now: DateTime<Utc>) -> (SessionSecrets, SessionRecord) {
         last_seen_at: now,
         reauthenticated_at: now,
     };
-    (SessionSecrets { session, csrf }, record)
+    Ok((SessionSecrets { session, csrf }, record))
 }
 
-fn random_token(byte_count: usize) -> SecretToken {
+fn random_token(entropy: &dyn EntropySource, byte_count: usize) -> Result<SecretToken, AuthError> {
     let mut bytes = vec![0_u8; byte_count];
-    OsRng.fill_bytes(&mut bytes);
-    SecretToken::new(URL_SAFE_NO_PAD.encode(bytes))
+    entropy
+        .fill(&mut bytes)
+        .map_err(|_| AuthError::EntropyUnavailable)?;
+    Ok(SecretToken::new(URL_SAFE_NO_PAD.encode(bytes)))
 }
 
 #[must_use]

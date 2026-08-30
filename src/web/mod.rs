@@ -37,6 +37,7 @@ use crate::{
     },
     infrastructure::{
         clock::SystemClock,
+        entropy::SystemEntropy,
         markdown::ComrakMarkdownRenderer,
         media::{LocalMediaService, MediaError},
         sqlite::SqliteRepository,
@@ -79,8 +80,9 @@ impl AppState {
             repository.clone(),
             Arc::new(ComrakMarkdownRenderer::default()),
         );
-        let auth = AuthService::new(repository.clone());
-        let accounts = PasskeyAccountService::new(repository.clone());
+        let entropy = Arc::new(SystemEntropy);
+        let auth = AuthService::new(repository.clone(), entropy.clone());
+        let accounts = PasskeyAccountService::new(repository.clone(), entropy);
         let site_service = SiteService::new(repository.clone());
         let webauthn = Arc::new(PasskeyCeremony::new(&config.public_url, "Simple Blog")?);
         let content: Arc<dyn ContentRepository> = repository.clone();

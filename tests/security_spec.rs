@@ -10,7 +10,7 @@ use simple_blog::{
     application::auth::AuthService,
     config::{Config, ConfigSources, Overrides},
     domain::auth::SetupPurpose,
-    infrastructure::sqlite::SqliteRepository,
+    infrastructure::{entropy::SystemEntropy, sqlite::SqliteRepository},
     web::{AppState, router},
 };
 use tower::ServiceExt;
@@ -46,7 +46,7 @@ async fn auth_endpoints_are_limited_by_peer_and_untrusted_forwarding_is_ignored(
             .await
             .unwrap(),
     );
-    let token = AuthService::new(repository.clone())
+    let token = AuthService::new(repository.clone(), Arc::new(SystemEntropy))
         .issue_setup_token(SetupPurpose::Initial, Utc::now())
         .await
         .unwrap();
@@ -101,7 +101,7 @@ async fn forwarded_client_ip_is_used_only_for_an_explicitly_trusted_proxy() {
             .await
             .unwrap(),
     );
-    let token = AuthService::new(repository.clone())
+    let token = AuthService::new(repository.clone(), Arc::new(SystemEntropy))
         .issue_setup_token(SetupPurpose::Initial, Utc::now())
         .await
         .unwrap();
@@ -141,7 +141,7 @@ async fn https_origin_sets_hsts_and_secure_strict_auth_cookies() {
             .await
             .unwrap(),
     );
-    let auth = AuthService::new(repository.clone());
+    let auth = AuthService::new(repository.clone(), Arc::new(SystemEntropy));
     let code = auth
         .replace_recovery_codes(Utc::now())
         .await

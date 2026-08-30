@@ -19,7 +19,9 @@ use simple_blog::{
         auth::{SetupPurpose, StoredPasskey},
         content::{ContentDraft, ContentKind, Publication, Slug},
     },
-    infrastructure::{markdown::ComrakMarkdownRenderer, sqlite::SqliteRepository},
+    infrastructure::{
+        entropy::SystemEntropy, markdown::ComrakMarkdownRenderer, sqlite::SqliteRepository,
+    },
     web::{AppState, router},
 };
 use tower::ServiceExt;
@@ -54,8 +56,9 @@ impl Harness {
             repository.clone(),
             Arc::new(ComrakMarkdownRenderer::default()),
         );
-        let auth = AuthService::new(repository.clone());
-        let accounts = PasskeyAccountService::new(repository.clone());
+        let entropy = Arc::new(SystemEntropy);
+        let auth = AuthService::new(repository.clone(), entropy.clone());
+        let accounts = PasskeyAccountService::new(repository.clone(), entropy);
         let state = AppState::new(config, repository.clone()).unwrap();
         Self {
             _temp: temp,

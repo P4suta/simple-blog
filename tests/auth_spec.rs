@@ -4,12 +4,25 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{Duration, Utc};
 use simple_blog::{
     application::auth::{AuthRateLimiter, AuthService, PasskeyAccountService, RateLimitDecision},
-    application::ports::PasskeyRepository,
+    application::ports::{AuthError, EntropyError, EntropySource, PasskeyRepository},
     domain::auth::{SetupPurpose, StoredPasskey},
-    infrastructure::{sqlite::SqliteRepository, webauthn::PasskeyCeremony},
+    infrastructure::{entropy::SystemEntropy, sqlite::SqliteRepository, webauthn::PasskeyCeremony},
 };
 use url::Url;
 use uuid::Uuid;
+
+fn system_entropy() -> Arc<SystemEntropy> {
+    Arc::new(SystemEntropy)
+}
+
+#[derive(Debug)]
+struct UnavailableEntropy;
+
+impl EntropySource for UnavailableEntropy {
+    fn fill(&self, _destination: &mut [u8]) -> Result<(), EntropyError> {
+        Err(EntropyError)
+    }
+}
 
 async fn auth_harness() -> (tempfile::TempDir, AuthService) {
     let temp = tempfile::tempdir().unwrap();
@@ -18,7 +31,30 @@ async fn auth_harness() -> (tempfile::TempDir, AuthService) {
             .await
             .unwrap(),
     );
-    (temp, AuthService::new(repository))
+    (temp, AuthService::new(repository, system_entropy()))
+}
+
+#[tokio::test]
+async fn entropy_failure_is_explicit_and_never_persists_a_partial_capability() {
+    let temp = tempfile::tempdir().unwrap();
+    let repository = Arc::new(
+        SqliteRepository::connect(&temp.path().join("blog.sqlite3"))
+            .await
+            .unwrap(),
+    );
+    let auth = AuthService::new(repository.clone(), Arc::new(UnavailableEntropy));
+
+    let error = auth
+        .issue_setup_token(SetupPurpose::Initial, Utc::now())
+        .await
+        .err();
+
+    assert_eq!(error, Some(AuthError::EntropyUnavailable));
+    let setup_token_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM setup_tokens")
+        .fetch_one(repository.pool())
+        .await
+        .unwrap();
+    assert_eq!(setup_token_count, 0);
 }
 
 #[tokio::test]
@@ -29,8 +65,8 @@ async fn initial_registration_commits_owner_passkey_session_and_recovery_codes_a
             .await
             .unwrap(),
     );
-    let auth = AuthService::new(repository.clone());
-    let accounts = PasskeyAccountService::new(repository.clone());
+    let auth = AuthService::new(repository.clone(), system_entropy());
+    let accounts = PasskeyAccountService::new(repository.clone(), system_entropy());
     let now = Utc::now();
     let setup = auth
         .issue_setup_token(SetupPurpose::Initial, now)
@@ -90,8 +126,8 @@ async fn passkeys_are_removable_except_for_the_last_owner_credential() {
             .await
             .unwrap(),
     );
-    let auth = AuthService::new(repository.clone());
-    let accounts = PasskeyAccountService::new(repository.clone());
+    let auth = AuthService::new(repository.clone(), system_entropy());
+    let accounts = PasskeyAccountService::new(repository.clone(), system_entropy());
     let now = Utc::now();
     let setup = auth
         .issue_setup_token(SetupPurpose::Initial, now)
@@ -138,8 +174,8 @@ async fn owner_recovery_replaces_credentials_and_invalidates_old_sessions() {
             .await
             .unwrap(),
     );
-    let auth = AuthService::new(repository.clone());
-    let accounts = PasskeyAccountService::new(repository.clone());
+    let auth = AuthService::new(repository.clone(), system_entropy());
+    let accounts = PasskeyAccountService::new(repository.clone(), system_entropy());
     let now = Utc::now();
     let user_handle = Uuid::new_v4();
     let setup = auth

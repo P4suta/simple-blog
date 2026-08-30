@@ -20,7 +20,8 @@ use simple_blog::{
         media::MediaAsset,
     },
     infrastructure::{
-        markdown::ComrakMarkdownRenderer, media::LocalMediaService, sqlite::SqliteRepository,
+        entropy::SystemEntropy, markdown::ComrakMarkdownRenderer, media::LocalMediaService,
+        sqlite::SqliteRepository,
     },
     web::{AppState, router},
 };
@@ -194,7 +195,7 @@ async fn multipart_upload_requires_session_and_csrf_then_returns_media_json() {
             .await
             .unwrap(),
     );
-    let auth = AuthService::new(repository.clone());
+    let auth = AuthService::new(repository.clone(), Arc::new(SystemEntropy));
     let session = auth.create_session(Utc::now()).await.unwrap();
     let cookie = format!(
         "sb_session={}; sb_csrf={}",
