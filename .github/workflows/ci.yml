@@ -1,0 +1,166 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  repository-policy:
+    name: Repository policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+      - name: Install pinned repository tools
+        run: |
+          mkdir -p "$RUNNER_TEMP/repository-tools"
+          GOBIN="$RUNNER_TEMP/repository-tools" go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          GOBIN="$RUNNER_TEMP/repository-tools" go install github.com/gitleaks/gitleaks/v8@v8.30.1
+      - name: Validate workflows
+        run: |
+          "$RUNNER_TEMP/repository-tools/actionlint"
+      - name: Require immutable action references
+        run: |
+          if rg --pcre2 '^\s*-\s+uses:\s+[^@\s]+@(?![0-9a-f]{40}(?:\s|#|$))' .github/workflows; then
+            echo 'GitHub Actions must be pinned to a full commit SHA.' >&2
+            exit 1
+          fi
+      - name: Enforce lint expectation policy
+        run: |
+          if rg --pcre2 --multiline '#\s*\[\s*allow\b' --glob '*.rs' src tests build.rs; then
+            echo 'allow attributes are forbidden.' >&2
+            exit 1
+          fi
+          if rg --pcre2 --multiline '#\s*\[\s*expect\s*\((?:(?!reason\s*=)[\s\S])*?\)\s*\]' --glob '*.rs' src tests build.rs; then
+            echo 'expect attributes require an explicit reason.' >&2
+            exit 1
+          fi
+      - name: Scan the repository for secrets
+        run: |
+          "$RUNNER_TEMP/repository-tools/gitleaks" dir --no-banner --redact .
+
+  msrv:
+    name: MSRV contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install MSRV
+        run: rustup toolchain install 1.88.0 --profile minimal --component clippy,rustfmt
+      - name: Record toolchain
+        run: rustc +1.88.0 --version --verbose
+      - name: Format
+        run: cargo +1.88.0 fmt --all -- --check
+      - name: Lint
+        run: cargo +1.88.0 clippy --locked --all-targets --all-features -- -D warnings
+      - name: Test
+        env:
+          PROPTEST_CASES: 1024
+        run: cargo +1.88.0 test --locked --all-targets --all-features
+
+  stable:
+    name: Stable compatibility (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install current stable Rust
+        run: rustup toolchain install stable --profile minimal --component clippy
+      - name: Lint with current stable Rust
+        if: runner.os == 'Linux'
+        run: cargo +stable clippy --locked --all-targets --all-features -- -D warnings
+      - name: Test
+        env:
+          PROPTEST_CASES: 1024
+        run: cargo +stable test --locked --all-targets --all-features
+
+  frontend:
+    name: Embedded frontend is reproducible
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Type-check and syntax-check
+        run: npm run check:admin
+      - name: Rebuild embedded asset
+        run: npm run build:admin
+      - name: Reject stale generated asset
+        run: git diff --exit-code -- static/admin.js
+      - name: Audit development dependency graph
+        run: npm audit --audit-level=high
+
+  supply-chain:
+    name: Dependency policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install current stable Rust
+        run: rustup toolchain install stable --profile minimal
+      - name: Install cargo-deny
+        run: cargo +stable install cargo-deny --version 0.19.7 --locked
+      - name: Check advisories, licenses, bans, and sources
+        run: cargo +stable deny check
+
+  coverage:
+    name: Coverage floor
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install current stable Rust
+        run: rustup toolchain install stable --profile minimal --component llvm-tools-preview
+      - name: Install cargo-llvm-cov
+        run: cargo +stable install cargo-llvm-cov --version 0.9.0 --locked
+      - name: Measure
+        env:
+          PROPTEST_CASES: 512
+        run: >-
+          cargo +stable llvm-cov --locked --all-features --all-targets
+          --fail-under-lines 79.5
+          --fail-under-functions 75
+          --fail-under-regions 76
+          --fail-under-file-lines 35
+
+  release-smoke:
+    name: Release binary contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install MSRV
+        run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Build without development-time Node.js
+        run: cargo +1.88.0 build --release --locked
+      - name: Enforce binary size budget
+        run: test "$(stat --format=%s target/release/simple-blog)" -le 41943040
+      - name: Initialize and diagnose using only the binary
+        run: |
+          data_dir="$RUNNER_TEMP/simple-blog-release-smoke"
+          mkdir "$data_dir"
+          env -i PATH=/usr/bin:/bin SIMPLE_BLOG_DATA_DIR="$data_dir" target/release/simple-blog init >"$RUNNER_TEMP/setup-url"
+          env -i PATH=/usr/bin:/bin SIMPLE_BLOG_DATA_DIR="$data_dir" target/release/simple-blog doctor --json

@@ -1,0 +1,6 @@
+{% extends "admin/base.html" %}
+{% block content %}
+<section class="conflict"><p class="kicker">Revision {{ revision.version }}</p><h1>Revision history</h1><p>保存済みの版と現在の内容を比較できます。復元も新しい明示revisionとして保存されます。</p>
+<div class="conflict-grid"><article><h2>選択した版</h2><h3>{{ revision.title }}</h3><pre>{{ revision.body_markdown }}</pre></article><article><h2>現在の版</h2><h3>{{ current.title }}</h3><pre>{{ current.body_markdown }}</pre></article></div>
+<form method="post" action="/admin/content/{{ content_id }}/revisions/{{ revision_id }}/restore/"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="version" value="{{ expected_version }}"><button class="primary-button" type="submit">この版を復元</button> <a href="/admin/content/{{ content_id }}/edit/">戻る</a></form></section>
+{% endblock %}

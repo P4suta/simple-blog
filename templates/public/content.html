@@ -1,0 +1,13 @@
+{% extends "public/base.html" %}
+{% block content %}
+<article class="prose-shell" itemscope itemtype="https://schema.org/{% if page.kind == 'post' %}BlogPosting{% else %}Article{% endif %}">
+  <header class="article-header">
+    {% if page.publish_at %}<time itemprop="datePublished" datetime="{{ page.publish_at }}">{{ page.date }}</time>{% endif %}
+    <h1 itemprop="headline">{{ page.title }}</h1>
+    {% if page.summary %}<p class="dek" itemprop="description">{{ page.summary }}</p>{% endif %}
+  </header>
+  {% if page.cover %}<figure class="cover"><picture><source type="image/webp" srcset="{{ page.cover.srcset|safe }}" sizes="(max-width: 760px) 100vw, {{ site.content_width }}px"><img src="{{ page.cover.original_url|safe }}" alt="{{ page.cover.alt_text }}" width="{{ page.cover.width }}" height="{{ page.cover.height }}" loading="eager" fetchpriority="high"></picture></figure>{% endif %}
+  <div class="prose" itemprop="articleBody">{{ page.body_html|safe }}</div>
+  {% if page.tags %}<footer><ul class="tags" aria-label="Tags">{% for tag in page.tags %}<li><a href="/tag/{{ tag.slug }}/">{{ tag.name }}</a></li>{% endfor %}</ul></footer>{% endif %}
+</article>
+{% endblock %}

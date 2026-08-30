@@ -1,0 +1,9 @@
+/data/
+/node_modules/
+/target/
+/.env
+/.env.*
+/.DS_Store
+*.log
+*.profraw
+lcov.info

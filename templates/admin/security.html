@@ -1,0 +1,8 @@
+{% extends "admin/base.html" %}
+{% block content %}
+<header class="admin-page-head"><div><p class="kicker">Owner access</p><h1>セキュリティ</h1></div></header>
+<div class="security-grid">
+  <section><h2>Passkeys</h2><ul>{% for passkey in passkeys %}<li><span>{{ passkey.name }}</span><form method="post" action="/admin/security/passkeys/remove/"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="credential_id" value="{{ passkey.credential_id }}"><button type="submit">削除</button></form></li>{% endfor %}</ul><div data-passkey-add><label>Passkey名<input data-passkey-name value="New device" maxlength="80"></label><button class="primary-button" type="button" data-passkey-action>Passkeyを追加</button><p data-auth-error role="alert"></p></div></section>
+  <section><h2>Recovery codes</h2><p>現在のcodesを無効化し、新しいcodesを一度だけ表示します。</p><form method="post" action="/admin/security/recovery-codes/"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="primary-button" type="submit">再生成</button></form></section>
+</div>
+{% endblock %}

@@ -1,0 +1,7 @@
+{% extends "public/base.html" %}
+{% block content %}
+<header class="page-header"><p class="eyebrow">All writing</p><h1>{{ page.heading }}</h1></header>
+<ol class="archive-list">
+{% for post in page.posts %}<li><time datetime="{{ post.publish_at }}">{{ post.date }}</time><a href="/{{ post.slug }}/">{{ post.title }}</a></li>{% else %}<li>No published posts yet.</li>{% endfor %}
+</ol>
+{% endblock %}

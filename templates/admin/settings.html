@@ -1,0 +1,29 @@
+{% extends "admin/base.html" %}
+{% block content %}
+<header class="admin-page-head"><div><p class="kicker">Appearance & navigation</p><h1>設定</h1></div></header>
+<form class="settings-form" method="post" action="/admin/settings/">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <section>
+    <h2>サイト</h2>
+    <label><span>タイトル</span><input name="site_title" value="{{ settings.site_title }}" maxlength="120" required></label>
+    <label><span>説明</span><textarea name="site_description" maxlength="300" rows="3">{{ settings.site_description }}</textarea></label>
+    <label><span>言語</span><select name="locale"><option value="ja"{% if settings.locale == 'ja' %} selected{% endif %}>日本語</option><option value="en"{% if settings.locale == 'en' %} selected{% endif %}>English</option></select></label>
+    <label><span>Logo media ID</span><input name="logo_media_id" value="{{ settings.logo_media_id or '' }}"></label>
+    <label><span>Favicon media ID</span><input name="favicon_media_id" value="{{ settings.favicon_media_id or '' }}"></label>
+  </section>
+  <section>
+    <h2>デザイン</h2>
+    <label><span>Accent color</span><input name="accent_color" value="{{ settings.accent_color }}" pattern="#[0-9A-Fa-f]{6}" required></label>
+    <label><span>書体</span><select name="font_preset"><option value="sans"{% if settings.font_preset == 'sans' %} selected{% endif %}>Sans</option><option value="serif"{% if settings.font_preset == 'serif' %} selected{% endif %}>Serif</option></select></label>
+    <label><span>本文幅</span><input type="number" name="content_width" value="{{ settings.content_width }}" min="560" max="960" required></label>
+    <label><span>配色</span><select name="color_scheme"><option value="system"{% if settings.color_scheme == 'system' %} selected{% endif %}>System</option><option value="light"{% if settings.color_scheme == 'light' %} selected{% endif %}>Light</option><option value="dark"{% if settings.color_scheme == 'dark' %} selected{% endif %}>Dark</option></select></label>
+    <label><span>Custom CSS</span><textarea name="custom_css" rows="10">{{ settings.custom_css }}</textarea></label>
+  </section>
+  <section>
+    <h2>ナビゲーション</h2>
+    <p>1行に「ラベル | URL」。行の順に表示されます。</p>
+    <label><span>リンク</span><textarea name="navigation" rows="8">{{ navigation }}</textarea></label>
+  </section>
+  <button class="primary-button" type="submit">設定を保存</button>
+</form>
+{% endblock %}

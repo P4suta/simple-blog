@@ -1,0 +1,27 @@
+{% extends "admin/base.html" %}
+{% block content %}
+<form class="editor" method="post" action="{{ action }}" data-editor>
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  {% if version %}<input type="hidden" name="version" value="{{ version }}">{% endif %}
+  <input type="hidden" name="intent" value="explicit" data-save-intent>
+  <header class="editor-toolbar"><a href="/admin/">← 一覧</a><span data-save-state aria-live="polite">保存済み</span><button type="submit">保存</button></header>
+  <div class="editor-grid">
+    <section class="editor-fields">
+      <label><span>種類</span><select name="kind"><option value="post"{% if content.kind == 'post' %} selected{% endif %}>Post</option><option value="page"{% if content.kind == 'page' %} selected{% endif %}>Page</option></select></label>
+      <label class="title-field"><span>タイトル</span><input name="title" value="{{ content.title }}" maxlength="200" required autofocus></label>
+      <label><span>Slug</span><input name="slug" value="{{ content.slug }}" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" maxlength="120" required></label>
+      <label><span>概要</span><textarea name="summary" maxlength="500" rows="3">{{ content.summary }}</textarea></label>
+      <label class="body-field" data-media-drop="body"><span>Markdown</span><textarea name="body_markdown" rows="24" data-markdown required>{{ content.body_markdown }}</textarea><small>画像をdropするとMarkdownを挿入します。</small></label>
+      <section class="live-preview" data-live-preview aria-live="polite"><h2>Preview</h2><div class="prose" data-preview-output></div></section>
+    </section>
+    <aside class="editor-settings">
+      <label><span>状態</span><select name="status"><option value="draft"{% if content.status == 'draft' %} selected{% endif %}>下書き</option><option value="public"{% if content.status == 'public' %} selected{% endif %}>公開</option></select></label>
+      <label><span>公開日時 (RFC 3339)</span><input name="publish_at" value="{{ content.publish_at }}" placeholder="2026-08-30T12:00:00+09:00"></label>
+      <label><span>タグ（カンマ区切り）</span><input name="tags" value="{{ content.tags }}"></label>
+      <label data-media-drop="cover"><span>カバー画像 Media ID</span><input name="cover_media_id" value="{{ content.cover_media_id }}" pattern="[a-f0-9]{64}"><small>画像をここへdropしてuploadできます。</small></label>
+      <details><summary>SEO</summary><label><span>SEO title</span><input name="seo_title" value="{{ content.seo_title }}" maxlength="70"></label><label><span>SEO description</span><textarea name="seo_description" maxlength="200">{{ content.seo_description }}</textarea></label></details>
+      {% if revisions %}<details><summary>Revision history</summary><ol class="revision-list">{% for revision in revisions %}<li><a href="/admin/content/{{ content_id }}/revisions/{{ revision.id }}/"><span>{{ revision.intent }}</span> <time datetime="{{ revision.created_at }}">{{ revision.created_at }}</time></a></li>{% endfor %}</ol></details>{% endif %}
+    </aside>
+  </div>
+</form>
+{% endblock %}

@@ -1,0 +1,5 @@
+{% extends "admin/base.html" %}
+{% block content %}
+<section class="conflict" role="alert"><p class="kicker">Save conflict</p><h1>別のタブで更新されています</h1><p>どちらも失われていません。内容を比較して必要な部分をコピーしてください。</p>
+<div class="conflict-grid"><article><h2>現在の保存内容</h2><h3>{{ current.title }}</h3><pre>{{ current.body_markdown }}</pre></article><article><h2>このタブの未保存内容</h2><h3>{{ submitted.title }}</h3><pre>{{ submitted.body_markdown }}</pre></article></div><a class="primary-button" href="/admin/content/{{ current.id }}/edit/">現在の版を開く</a></section>
+{% endblock %}
