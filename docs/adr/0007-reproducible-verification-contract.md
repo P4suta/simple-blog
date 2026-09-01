@@ -13,6 +13,8 @@ Verification is part of the product boundary. Time is injected, durable multi-st
 
 Atomic file replacement flushes file contents before installation and synchronizes the containing directory on platforms with a documented directory-flush contract. Windows documents `FlushFileBuffers` for writable file handles but not directory handles, so the Windows boundary validates the directory and emits a debug trace instead of promising or invoking an unsupported flush operation. Cross-platform CI exercises this deliberately weaker, explicit guarantee.
 
+The Windows build vendors the OpenSSL implementation required by the WebAuthn dependency. This deliberately trades build time for a reproducible binary that does not depend on a developer machine or CI runner having a matching global OpenSSL/vcpkg installation.
+
 ## Consequences
 
 - A flaky or non-diagnostic check is a defect, not tolerated noise.

@@ -65,6 +65,11 @@ webauthn-rs = "0.5.2"
 webpkit = { version = "0.1.0", features = ["image"] }
 zstd = "0.13"
 
+[target.'cfg(windows)'.dependencies]
+# webauthn-rs uses OpenSSL. A vendored Windows build keeps the binary contract
+# independent of machine-global OpenSSL or vcpkg installations.
+openssl = { version = "0.10", features = ["vendored"] }
+
 [dev-dependencies]
 proptest = "1.7"
 scraper = "0.27"

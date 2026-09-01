@@ -46,6 +46,23 @@ for ecosystem in cargo bun github-actions; do
     || fail "Dependabot does not cover $ecosystem"
 done
 
+windows_openssl="$({
+  awk '
+    BEGIN {
+      quote = sprintf("%c", 39)
+      windows_section = "[target." quote "cfg(windows)" quote ".dependencies]"
+    }
+    $0 == windows_section {
+      in_windows_dependencies = 1
+      next
+    }
+    in_windows_dependencies && /^\[/ { exit }
+    in_windows_dependencies && /^openssl[[:space:]]*=/ { print; exit }
+  ' Cargo.toml
+})"
+[[ "$windows_openssl" == *'features = ["vendored"]'* ]] \
+  || fail 'Windows builds must vendor OpenSSL instead of depending on runner-global libraries'
+
 if grep -Eq \
   "package-ecosystem:[[:space:]]*(npm|\"npm\"|'npm')" \
   .github/dependabot.yml; then
