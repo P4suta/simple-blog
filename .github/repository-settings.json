@@ -1,0 +1,59 @@
+{
+  "description": "A diagnostic-first, writing-focused CMS with a portable Rust Core and host adapters",
+  "visibility": "public",
+  "features": {
+    "issues": true,
+    "projects": false,
+    "wiki": false,
+    "pages": false,
+    "discussions": false
+  },
+  "merge": {
+    "allow_squash_merge": true,
+    "allow_merge_commit": false,
+    "allow_rebase_merge": false,
+    "allow_auto_merge": true,
+    "delete_branch_on_merge": true,
+    "allow_update_branch": true
+  },
+  "actions": {
+    "enabled": true,
+    "allowed_actions": "selected",
+    "sha_pinning_required": true,
+    "github_owned_allowed": true,
+    "verified_allowed": false,
+    "patterns_allowed": [
+      "oven-sh/setup-bun@*"
+    ],
+    "default_workflow_permissions": "read",
+    "can_approve_pull_request_reviews": false
+  },
+  "security": {
+    "vulnerability_alerts": true,
+    "automated_security_fixes": true,
+    "secret_scanning": true,
+    "secret_scanning_push_protection": true,
+    "secret_scanning_validity_checks": false,
+    "secret_scanning_non_provider_patterns": false,
+    "private_vulnerability_reporting": true,
+    "codeql_default_setup": true,
+    "codeql_query_suite": "extended",
+    "codeql_languages": [
+      "actions",
+      "javascript-typescript"
+    ]
+  },
+  "topics": [
+    "axum",
+    "blog",
+    "cloudflare",
+    "cms",
+    "markdown",
+    "passkeys",
+    "rust",
+    "sqlite",
+    "static-site-generator",
+    "tdd",
+    "webauthn"
+  ]
+}

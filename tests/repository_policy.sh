@@ -20,6 +20,7 @@ required_public_files=(
   .github/CODEOWNERS
   .github/dependabot.yml
   .github/pull_request_template.md
+  .github/repository-settings.json
   .github/ISSUE_TEMPLATE/bug.yml
   .github/ISSUE_TEMPLATE/design.yml
   .github/ISSUE_TEMPLATE/config.yml
@@ -45,6 +46,49 @@ jq --exit-status 'type == "object"' .github/rulesets/main.json >/dev/null \
   || fail 'main ruleset is not valid JSON'
 jq --exit-status 'type == "object"' .github/rulesets/release-tags.json >/dev/null \
   || fail 'release tag ruleset is not valid JSON'
+jq --exit-status 'type == "object"' .github/repository-settings.json >/dev/null \
+  || fail 'repository settings policy is not valid JSON'
+
+jq --exit-status '
+  .visibility == "public"
+  and .merge.allow_squash_merge
+  and (.merge.allow_merge_commit | not)
+  and (.merge.allow_rebase_merge | not)
+  and .merge.allow_auto_merge
+  and .merge.delete_branch_on_merge
+  and .merge.allow_update_branch
+  and .actions.enabled
+  and .actions.allowed_actions == "selected"
+  and .actions.sha_pinning_required
+  and .actions.github_owned_allowed
+  and .actions.default_workflow_permissions == "read"
+  and (.actions.can_approve_pull_request_reviews | not)
+  and .security.vulnerability_alerts
+  and .security.automated_security_fixes
+  and .security.secret_scanning
+  and .security.secret_scanning_push_protection
+  and (.security.secret_scanning_validity_checks | not)
+  and (.security.secret_scanning_non_provider_patterns | not)
+  and .security.private_vulnerability_reporting
+  and .security.codeql_default_setup
+  and .security.codeql_query_suite == "extended"
+  and .security.codeql_languages == ["actions", "javascript-typescript"]
+' .github/repository-settings.json >/dev/null \
+  || fail 'repository settings policy is missing a public safety invariant'
+
+mapfile -t third_party_actions < <(
+  awk '$1 == "-" && $2 == "uses:" { split($3, reference, "@"); print reference[1] }' \
+    .github/workflows/*.yml \
+    | rg --invert-match '^actions/' \
+    | sort --unique
+)
+
+for action in "${third_party_actions[@]}"; do
+  jq --exit-status --arg pattern "${action}@*" \
+    '.actions.patterns_allowed | index($pattern) != null' \
+    .github/repository-settings.json >/dev/null \
+    || fail "third-party action $action is absent from the selected-actions policy"
+done
 
 mapfile -t actual_checks < <(
   jq --raw-output '

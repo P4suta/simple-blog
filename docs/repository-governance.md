@@ -3,7 +3,9 @@
 The repository's review and recovery controls are part of the product's
 diagnostic-first engineering contract. Desired GitHub rulesets are versioned in
 `.github/rulesets`; changing a live ruleset without changing and testing its
-versioned counterpart creates configuration drift.
+versioned counterpart creates configuration drift. Repository-wide settings
+and the selected Actions allowlist are similarly versioned in
+`.github/repository-settings.json`.
 
 ## Default branch
 
@@ -36,8 +38,17 @@ Release. Releases are a separate, explicit maintainer action.
 - Vulnerability alerts, automated security updates, secret scanning, push
   protection, and private vulnerability reporting are enabled when available.
 - Actions receive read-only repository contents by default. Workflow actions
-  are pinned to full commit SHAs.
+  are pinned to full commit SHAs, and third-party Actions must also appear in
+  the selected-actions allowlist.
 - Dependabot covers Cargo, Bun, and GitHub Actions manifests.
+- CodeQL default setup uses the extended query suite for TypeScript and workflow
+  analysis. GitHub currently rejects Rust as a default-setup CodeQL language for
+  this repository, so Rust is covered by both MSRV/current Clippy, tests,
+  coverage floors, and dependency policy instead.
+- Secret scanning and push protection are active. Validity checks and
+  non-provider patterns remain recorded as unavailable because GitHub kept both
+  disabled after an explicit enable request; this should be revisited when the
+  account capability changes.
 
 Run `bash tests/repository_policy.sh` before proposing a governance change. The
 same check runs in CI. Live settings should then be applied through the GitHub
