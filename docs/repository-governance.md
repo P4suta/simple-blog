@@ -16,7 +16,7 @@ and the selected Actions allowlist are similarly versioned in
 - force pushes and deletion are blocked;
 - review conversations must be resolved;
 - branches must be current with `main`; and
-- every named CI job in `.github/rulesets/main.json` must succeed.
+- every named CI and CodeQL job in `.github/rulesets/main.json` must succeed.
 
 There is currently one maintainer. The required approval count is therefore
 zero: requiring a second approval would make maintenance impossible without

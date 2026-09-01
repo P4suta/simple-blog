@@ -60,6 +60,7 @@ bun run test:frontend
 bun run check:cloudflare
 bun run test:cloudflare
 bun audit --audit-level=high
+bash tests/repository_policy.sh
 ```
 
 Architectural decisions live only in [`docs/adr`](docs/adr/README.md). Changes follow Red–Green–Refactor and may not use unscoped lint suppression.

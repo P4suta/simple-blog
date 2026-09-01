@@ -98,7 +98,7 @@ mapfile -t actual_checks < <(
   ' .github/rulesets/main.json | sort
 )
 
-expected_checks=(
+ci_checks=(
   'Coverage floor'
   'Dependency policy'
   'Embedded frontend is reproducible'
@@ -109,10 +109,16 @@ expected_checks=(
   'Stable compatibility (ubuntu-latest)'
 )
 
-[[ "${actual_checks[*]}" == "${expected_checks[*]}" ]] \
-  || fail 'main ruleset required checks do not exactly match the CI contract'
+expected_checks=(
+  'Analyze (actions)'
+  'Analyze (javascript-typescript)'
+  "${ci_checks[@]}"
+)
 
-for check in "${expected_checks[@]}"; do
+[[ "${actual_checks[*]}" == "${expected_checks[*]}" ]] \
+  || fail 'main ruleset required checks do not exactly match the protected check contract'
+
+for check in "${ci_checks[@]}"; do
   if [[ "$check" == 'Stable compatibility (macos-latest)' \
     || "$check" == 'Stable compatibility (ubuntu-latest)' ]]; then
     rg --fixed-strings --quiet 'name: Stable compatibility (${{ matrix.os }})' \
