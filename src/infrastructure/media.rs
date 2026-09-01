@@ -9,11 +9,16 @@ use std::{
 use chrono::{DateTime, Utc};
 use exif::{In, Reader as ExifReader, Tag};
 use image::{
-    AnimationDecoder, DynamicImage, GenericImageView, ImageFormat, codecs::gif::GifDecoder,
-    imageops::FilterType,
+    AnimationDecoder, DynamicImage, GenericImageView, ImageFormat, RgbaImage,
+    codecs::gif::GifDecoder,
+    imageops::{self, FilterType},
 };
 use thiserror::Error;
 use uuid::Uuid;
+use webpkit::{
+    AnimationEncoder, BlendMode, Dimensions, DisposalMode, Encoder, FrameMeta, ImageRef,
+    PixelLayout, lossless::HasFrames,
+};
 
 use crate::{
     application::ports::{MediaRepository, MediaRepositoryError},
@@ -22,6 +27,9 @@ use crate::{
 
 const MAX_PIXELS: u64 = 100_000_000;
 const RESPONSIVE_WIDTHS: [u32; 3] = [480, 960, 1_440];
+const LOSSY_QUALITY: u8 = 85;
+// WebP's coded dimension limit; larger images cannot be represented at all.
+const MAX_WEBP_SIDE: u32 = 16_383;
 
 #[derive(Clone)]
 pub struct LocalMediaService {
@@ -42,6 +50,8 @@ pub enum MediaError {
     InvalidImage(String),
     #[error("image dimensions exceed the safety limit")]
     PixelLimit,
+    #[error("image could not be encoded: {0}")]
+    Encode(String),
     #[error("invalid media metadata: {0}")]
     InvalidMetadata(String),
     #[error("media file operation failed: {0}")]
@@ -69,6 +79,33 @@ impl LocalMediaService {
     #[must_use]
     pub fn directory(&self) -> &Path {
         &self.directory
+    }
+
+    /// Deletes every media asset whose ID is not in `referenced`: rows first,
+    /// then files. A crash in between leaves only stray files, which the
+    /// doctor's orphan check surfaces.
+    pub async fn collect_garbage(
+        &self,
+        referenced: &std::collections::HashSet<String>,
+    ) -> Result<usize, MediaError> {
+        let mut removed = 0;
+        for asset in self.repository.list_media().await? {
+            if referenced.contains(asset.id.as_str()) {
+                continue;
+            }
+            self.repository.delete_media(&asset.id).await?;
+            let filenames = std::iter::once(&asset.original_filename)
+                .chain(asset.variants.iter().map(|variant| &variant.filename));
+            for filename in filenames {
+                match std::fs::remove_file(self.directory.join(filename)) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(MediaError::File(error.to_string())),
+                }
+            }
+            removed += 1;
+        }
+        Ok(removed)
     }
 
     pub async fn store(
@@ -115,6 +152,29 @@ impl LocalMediaService {
     }
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum SourceFormat {
+    Jpeg,
+    Png,
+    Gif,
+    WebP,
+}
+
+impl SourceFormat {
+    const fn image_format(self) -> ImageFormat {
+        match self {
+            Self::Jpeg => ImageFormat::Jpeg,
+            Self::Png => ImageFormat::Png,
+            Self::Gif => ImageFormat::Gif,
+            Self::WebP => ImageFormat::WebP,
+        }
+    }
+}
+
+/// Every upload is stored as WebP: JPEG re-encodes lossy, PNG and still GIF
+/// lossless, animated GIF becomes an animated WebP, and a WebP upload passes
+/// through untouched. The media ID is the BLAKE3 digest of the stored bytes,
+/// which keeps the doctor's "filename hash matches file content" check intact.
 fn process(
     original_name: String,
     bytes: Vec<u8>,
@@ -123,28 +183,41 @@ fn process(
     now: DateTime<Utc>,
 ) -> Result<ProcessedUpload, MediaError> {
     let kind = infer::get(&bytes).ok_or(MediaError::UnsupportedType)?;
-    let (mime_type, extension, format) = match kind.mime_type() {
-        "image/jpeg" => ("image/jpeg", "jpg", ImageFormat::Jpeg),
-        "image/png" => ("image/png", "png", ImageFormat::Png),
-        "image/webp" => ("image/webp", "webp", ImageFormat::WebP),
-        "image/gif" => ("image/gif", "gif", ImageFormat::Gif),
+    let source = match kind.mime_type() {
+        "image/jpeg" => SourceFormat::Jpeg,
+        "image/png" => SourceFormat::Png,
+        "image/webp" => SourceFormat::WebP,
+        "image/gif" => SourceFormat::Gif,
         _ => return Err(MediaError::UnsupportedType),
     };
-    let decoded = image::load_from_memory_with_format(&bytes, format)
+    let decoded = image::load_from_memory_with_format(&bytes, source.image_format())
         .map_err(|error| MediaError::InvalidImage(error.to_string()))?;
-    let oriented = apply_exif_orientation(decoded, &bytes, format);
+    let oriented = apply_exif_orientation(decoded, &bytes, source.image_format());
     let (width, height) = oriented.dimensions();
-    if u64::from(width) * u64::from(height) > MAX_PIXELS {
+    if u64::from(width) * u64::from(height) > MAX_PIXELS || width.max(height) > MAX_WEBP_SIDE {
         return Err(MediaError::PixelLimit);
     }
-    let animated = format == ImageFormat::Gif && gif_is_animated(&bytes);
-    let digest = blake3::hash(&bytes).to_hex().to_string();
-    let byte_size =
-        u64::try_from(bytes.len()).map_err(|error| MediaError::InvalidImage(error.to_string()))?;
+
+    let (canonical, animated, lossy) = match source {
+        SourceFormat::WebP => {
+            let animated = webpkit::is_animated(&bytes).unwrap_or(false);
+            let lossy = webp_is_lossy(&bytes);
+            (bytes, animated, lossy)
+        }
+        SourceFormat::Gif if gif_is_animated(&bytes) => {
+            (encode_animation(&bytes, width, height)?, true, false)
+        }
+        SourceFormat::Jpeg => (encode_still(&oriented, true)?, false, true),
+        SourceFormat::Png | SourceFormat::Gif => (encode_still(&oriented, false)?, false, false),
+    };
+
+    let digest = blake3::hash(&canonical).to_hex().to_string();
+    let byte_size = u64::try_from(canonical.len())
+        .map_err(|error| MediaError::InvalidImage(error.to_string()))?;
     let id =
         MediaId::parse(&digest).map_err(|error| MediaError::InvalidImage(error.to_string()))?;
-    let original_filename = format!("{id}.{extension}");
-    let mut files = vec![(original_filename.clone(), bytes)];
+    let original_filename = format!("{id}.webp");
+    let mut files = vec![(original_filename.clone(), canonical)];
     let mut widths: BTreeSet<u32> = RESPONSIVE_WIDTHS
         .into_iter()
         .filter(|candidate| *candidate < width)
@@ -158,11 +231,7 @@ fn process(
         } else {
             oriented.resize_exact(variant_width, variant_height, FilterType::Lanczos3)
         };
-        let mut encoded = Cursor::new(Vec::new());
-        resized
-            .write_to(&mut encoded, ImageFormat::WebP)
-            .map_err(|error| MediaError::InvalidImage(error.to_string()))?;
-        let encoded = encoded.into_inner();
+        let encoded = encode_still(&resized, lossy)?;
         let filename = format!("{id}-{variant_width}w.webp");
         variants.push(MediaVariant {
             width: variant_width,
@@ -179,8 +248,8 @@ fn process(
             id,
             original_name,
             original_filename,
-            mime_type: mime_type.into(),
-            extension: extension.into(),
+            mime_type: "image/webp".into(),
+            extension: "webp".into(),
             width,
             height,
             byte_size,
@@ -192,6 +261,78 @@ fn process(
         },
         files,
     })
+}
+
+fn encode_still(image: &DynamicImage, lossy: bool) -> Result<Vec<u8>, MediaError> {
+    let source = webpkit::Image::try_from(image).map_err(|error| encode_error(&error))?;
+    let encoded = if lossy {
+        Encoder::lossy().quality(LOSSY_QUALITY).encode(&source)
+    } else {
+        Encoder::lossless().encode(&source)
+    };
+    encoded.map_err(|error| encode_error(&error))
+}
+
+/// Re-encodes an animated GIF as an animated WebP. Frames arrive from the
+/// image crate already composited onto the full canvas, so each becomes an
+/// overwrite frame; GIF loop counts are not exposed, so loops are infinite.
+fn encode_animation(gif_bytes: &[u8], width: u32, height: u32) -> Result<Vec<u8>, MediaError> {
+    let canvas = Dimensions::new(width, height).map_err(|error| encode_error(&error))?;
+    let decoder = GifDecoder::new(Cursor::new(gif_bytes))
+        .map_err(|error| MediaError::InvalidImage(error.to_string()))?;
+    let mut encoder: Option<AnimationEncoder<HasFrames>> = None;
+    let mut total_pixels: u64 = 0;
+    for frame in decoder.into_frames() {
+        let frame = frame.map_err(|error| MediaError::InvalidImage(error.to_string()))?;
+        total_pixels = total_pixels.saturating_add(canvas.pixel_count());
+        if total_pixels > MAX_PIXELS {
+            return Err(MediaError::PixelLimit);
+        }
+        let (numerator, denominator) = frame.delay().numer_denom_ms();
+        let duration_ms = numerator.checked_div(denominator).unwrap_or(numerator);
+        let left = frame.left();
+        let top = frame.top();
+        let buffer = if frame.buffer().dimensions() == (width, height) && left == 0 && top == 0 {
+            frame.into_buffer()
+        } else {
+            let mut full = RgbaImage::new(width, height);
+            imageops::overlay(&mut full, frame.buffer(), i64::from(left), i64::from(top));
+            full
+        };
+        let image_ref = ImageRef::new(canvas, PixelLayout::Rgba8, buffer.as_raw())
+            .map_err(|error| encode_error(&error))?;
+        let meta = FrameMeta {
+            x: 0,
+            y: 0,
+            dimensions: canvas,
+            duration_ms,
+            blend: BlendMode::Overwrite,
+            dispose: DisposalMode::Keep,
+        };
+        encoder = Some(match encoder.take() {
+            None => AnimationEncoder::new(canvas)
+                .with_loop_count(0)
+                .add_frame(image_ref, meta)
+                .map_err(|error| encode_error(&error))?,
+            Some(started) => started
+                .add_frame(image_ref, meta)
+                .map_err(|error| encode_error(&error))?,
+        });
+    }
+    encoder
+        .map(AnimationEncoder::finish)
+        .ok_or_else(|| MediaError::InvalidImage("animated GIF yielded no decodable frames".into()))
+}
+
+/// Whether a WebP file's primary bitstream is lossy (`VP8 `). `VP8X` extended
+/// files (including animations) count as lossless here, which only means their
+/// still variants are re-encoded losslessly.
+fn webp_is_lossy(bytes: &[u8]) -> bool {
+    bytes.get(12..16).is_some_and(|fourcc| fourcc == b"VP8 ")
+}
+
+fn encode_error(error: &webpkit::Error) -> MediaError {
+    MediaError::Encode(error.to_string())
 }
 
 fn apply_exif_orientation(image: DynamicImage, bytes: &[u8], format: ImageFormat) -> DynamicImage {

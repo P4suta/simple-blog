@@ -1,0 +1,80 @@
+{
+  "name": "Protect main",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": {
+      "exclude": [],
+      "include": [
+        "refs/heads/main"
+      ]
+    }
+  },
+  "rules": [
+    {
+      "type": "deletion"
+    },
+    {
+      "type": "non_fast_forward"
+    },
+    {
+      "type": "required_linear_history"
+    },
+    {
+      "type": "pull_request",
+      "parameters": {
+        "required_approving_review_count": 0,
+        "dismiss_stale_reviews_on_push": true,
+        "required_reviewers": [],
+        "require_code_owner_review": false,
+        "require_last_push_approval": false,
+        "required_review_thread_resolution": true,
+        "require_extra_approval_for_unattributed_changes": true,
+        "allowed_merge_methods": [
+          "squash"
+        ]
+      }
+    },
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": true,
+        "do_not_enforce_on_create": false,
+        "required_status_checks": [
+          {
+            "context": "Repository policy",
+            "integration_id": 15368
+          },
+          {
+            "context": "MSRV 1.96 contract",
+            "integration_id": 15368
+          },
+          {
+            "context": "Stable compatibility (ubuntu-latest)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Stable compatibility (macos-latest)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Embedded frontend is reproducible",
+            "integration_id": 15368
+          },
+          {
+            "context": "Dependency policy",
+            "integration_id": 15368
+          },
+          {
+            "context": "Coverage floor",
+            "integration_id": 15368
+          },
+          {
+            "context": "Release binary contract",
+            "integration_id": 15368
+          }
+        ]
+      }
+    }
+  ]
+}

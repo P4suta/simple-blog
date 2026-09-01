@@ -17,7 +17,7 @@ use simple_blog::{
     config::{Config, ConfigSources, Overrides},
     domain::{
         auth::{SetupPurpose, StoredPasskey},
-        content::{ContentDraft, ContentKind, Publication, Slug},
+        content::{ContentDraft, ContentId, ContentKind, Publication, Slug},
     },
     infrastructure::{
         entropy::SystemEntropy, markdown::ComrakMarkdownRenderer, sqlite::SqliteRepository,
@@ -358,10 +358,6 @@ async fn settings_and_ordered_navigation_work_without_javascript_and_require_csr
             ("locale", "en"),
             ("logo_media_id", ""),
             ("favicon_media_id", ""),
-            ("accent_color", "#1A2B3C"),
-            ("font_preset", "serif"),
-            ("content_width", "700"),
-            ("color_scheme", "dark"),
             ("custom_css", ".prose { text-wrap: balance; }"),
             (
                 "navigation",
@@ -400,8 +396,14 @@ async fn settings_and_ordered_navigation_work_without_javascript_and_require_csr
     assert!(public.contains("Field Notes"));
     assert!(public.contains("href=\"/archive/\""));
     assert!(public.contains("https://www.rust-lang.org/"));
-    assert!(public.contains("--accent:#1a2b3c"));
-    assert!(public.contains("lang=\"en\" data-scheme=\"dark\" data-font=\"serif\""));
+    assert!(public.contains("lang=\"en\""));
+    assert!(public.contains("/assets/site.css?v="));
+
+    let stylesheet = harness
+        .send(Method::GET, "/assets/site.css", None, Body::empty(), None)
+        .await;
+    assert_eq!(stylesheet.status(), StatusCode::OK);
+    assert_eq!(text(stylesheet).await, ".prose { text-wrap: balance; }");
 
     harness
         .contents
@@ -417,6 +419,7 @@ async fn settings_and_ordered_navigation_work_without_javascript_and_require_csr
         )
         .await
         .unwrap();
+    harness.state.publish_now().await.unwrap();
     let article = harness
         .send(Method::GET, "/uses-site-title/", None, Body::empty(), None)
         .await;
@@ -444,7 +447,7 @@ async fn security_page_can_start_passkey_add_and_rotate_recovery_codes_after_rec
     let page = harness
         .send(
             Method::GET,
-            "/admin/security/",
+            "/admin/settings/",
             None,
             Body::empty(),
             Some(&cookie),
@@ -473,7 +476,7 @@ async fn security_page_can_start_passkey_add_and_rotate_recovery_codes_after_rec
     let recovery = harness
         .send(
             Method::POST,
-            "/admin/security/recovery-codes/",
+            "/admin/settings/recovery-codes/",
             Some("application/x-www-form-urlencoded"),
             serde_urlencoded::to_string([("csrf", csrf.as_str())]).unwrap(),
             Some(&cookie),
@@ -483,7 +486,7 @@ async fn security_page_can_start_passkey_add_and_rotate_recovery_codes_after_rec
     assert_eq!(recovery.headers()[header::CACHE_CONTROL], "no-store");
     let recovery = text(recovery).await;
     assert!(recovery.contains("Recovery codes"));
-    assert!(recovery.contains("一度だけ表示"));
+    assert!(recovery.contains("Shown only once"));
 
     let stale = harness
         .auth
@@ -498,7 +501,7 @@ async fn security_page_can_start_passkey_add_and_rotate_recovery_codes_after_rec
     let denied = harness
         .send(
             Method::POST,
-            "/admin/security/recovery-codes/",
+            "/admin/settings/recovery-codes/",
             Some("application/x-www-form-urlencoded"),
             serde_urlencoded::to_string([("csrf", stale.csrf.expose())]).unwrap(),
             Some(&stale_cookie),
@@ -536,7 +539,7 @@ async fn owner_can_remove_a_passkey_but_not_the_last_credential() {
     let removed = harness
         .send(
             Method::POST,
-            "/admin/security/passkeys/remove/",
+            "/admin/settings/passkeys/remove/",
             Some("application/x-www-form-urlencoded"),
             remove(&[6, 5, 4]),
             Some(&cookie),
@@ -546,7 +549,7 @@ async fn owner_can_remove_a_passkey_but_not_the_last_credential() {
     let last = harness
         .send(
             Method::POST,
-            "/admin/security/passkeys/remove/",
+            "/admin/settings/passkeys/remove/",
             Some("application/x-www-form-urlencoded"),
             remove(&[9, 8, 7]),
             Some(&cookie),
@@ -575,7 +578,7 @@ async fn a_recovery_code_is_one_time_and_returns_a_fresh_authenticated_session()
         )
         .await;
     assert_eq!(recovered.status(), StatusCode::SEE_OTHER);
-    assert_eq!(recovered.headers()[header::LOCATION], "/admin/security/");
+    assert_eq!(recovered.headers()[header::LOCATION], "/admin/settings/");
     assert_eq!(
         recovered
             .headers()
@@ -638,7 +641,7 @@ async fn revision_history_can_be_inspected_and_restored_without_overwriting_newe
         )
         .await;
     let edit = text(edit).await;
-    assert!(edit.contains("Revision history"));
+    assert!(edit.contains("History"));
     assert!(edit.contains(&format!(
         "/admin/content/{}/revisions/{first_revision}/",
         original.id
@@ -769,7 +772,7 @@ async fn live_preview_uses_the_same_safe_markdown_boundary_and_requires_csrf() {
     assert_eq!(preview.status(), StatusCode::OK);
     let preview: serde_json::Value = serde_json::from_str(&text(preview).await).unwrap();
     let html = preview["html"].as_str().unwrap();
-    assert!(html.contains("<h1>Preview</h1>"));
+    assert!(html.contains("<h1 id=\"user-content-preview\">"));
     assert!(html.contains("type=\"checkbox\""));
     assert!(!html.contains("<script"));
 
@@ -793,7 +796,7 @@ async fn live_preview_uses_the_same_safe_markdown_boundary_and_requires_csrf() {
             Some(&cookie),
         )
         .await;
-    assert!(text(editor).await.contains("data-live-preview"));
+    assert!(text(editor).await.contains("data-preview"));
 }
 
 #[tokio::test]
@@ -827,4 +830,267 @@ async fn first_autosave_creates_once_then_returns_identity_for_future_updates() 
     let contents = harness.repository.list_all_content().await.unwrap();
     assert_eq!(contents.len(), 1);
     assert_eq!(contents[0].title, "Still typing");
+}
+
+fn form_with_status(
+    csrf: &str,
+    title: &str,
+    slug: &str,
+    version: Option<i64>,
+    intent: &str,
+    status: Option<&str>,
+) -> String {
+    let mut fields = vec![
+        ("csrf", csrf.to_owned()),
+        ("kind", "post".into()),
+        ("title", title.into()),
+        ("slug", slug.into()),
+        ("summary", "summary".into()),
+        ("body_markdown", "# body".into()),
+        ("tags", String::new()),
+        ("seo_title", String::new()),
+        ("seo_description", String::new()),
+        ("intent", intent.into()),
+    ];
+    if let Some(status) = status {
+        fields.push(("status", status.into()));
+    }
+    if let Some(version) = version {
+        fields.push(("version", version.to_string()));
+    }
+    serde_urlencoded::to_string(fields).unwrap()
+}
+
+fn is_timestamped_slug(slug: &str) -> bool {
+    let bytes = slug.as_bytes();
+    (bytes.len() == 13 || bytes.len() == 15)
+        && bytes[8] == b'-'
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| index == 8 || byte.is_ascii_digit())
+}
+
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one publish lifecycle, kept as a single scenario"
+)]
+async fn autosave_without_status_never_demotes_or_moves_published_content() {
+    let harness = Harness::new().await;
+    let (cookie, csrf) = harness.session_cookie().await;
+
+    // Create with no status field: a fresh piece is a draft.
+    let created = harness
+        .send(
+            Method::POST,
+            "/admin/content/",
+            Some("application/x-www-form-urlencoded"),
+            form_with_status(&csrf, "Piece", "piece", None, "autosave", None),
+            Some(&cookie),
+        )
+        .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let created: serde_json::Value = serde_json::from_str(&text(created).await).unwrap();
+    let id = created["id"].as_i64().unwrap();
+    let content_id = ContentId::from_i64(id);
+    let fetch = |harness: &Harness| {
+        let repository = harness.repository.clone();
+        async move { repository.find_by_id(content_id).await.unwrap().unwrap() }
+    };
+    assert_eq!(fetch(&harness).await.publication, Publication::Draft);
+
+    // Publish (the editor bar button posts status=public, intent=explicit).
+    let version = created["version"].as_i64().unwrap();
+    let published = harness
+        .send(
+            Method::POST,
+            &format!("/admin/content/{id}/"),
+            Some("application/x-www-form-urlencoded"),
+            form_with_status(
+                &csrf,
+                "Piece",
+                "piece",
+                Some(version),
+                "explicit",
+                Some("public"),
+            ),
+            Some(&cookie),
+        )
+        .await;
+    assert_eq!(published.status(), StatusCode::SEE_OTHER);
+    let after_publish = fetch(&harness).await;
+    let Publication::Public { publish_at } = after_publish.publication else {
+        panic!("publish must make the content public");
+    };
+
+    // A later autosave carries no status: publication and publish_at survive.
+    let autosaved = harness
+        .send(
+            Method::POST,
+            &format!("/admin/content/{id}/"),
+            Some("application/x-www-form-urlencoded"),
+            form_with_status(
+                &csrf,
+                "Piece edited",
+                "piece",
+                Some(after_publish.version),
+                "autosave",
+                None,
+            ),
+            Some(&cookie),
+        )
+        .await;
+    assert_eq!(autosaved.status(), StatusCode::OK);
+    let after_autosave = fetch(&harness).await;
+    assert_eq!(after_autosave.title, "Piece edited");
+    assert_eq!(
+        after_autosave.publication,
+        Publication::Public { publish_at },
+        "an autosave must not demote or re-date published content"
+    );
+
+    // Re-sending status=public (e.g. a retried publish) also keeps the date.
+    let republished = harness
+        .send(
+            Method::POST,
+            &format!("/admin/content/{id}/"),
+            Some("application/x-www-form-urlencoded"),
+            form_with_status(
+                &csrf,
+                "Piece edited",
+                "piece",
+                Some(after_autosave.version),
+                "explicit",
+                Some("public"),
+            ),
+            Some(&cookie),
+        )
+        .await;
+    assert_eq!(republished.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        fetch(&harness).await.publication,
+        Publication::Public { publish_at }
+    );
+
+    // Unpublish returns to draft.
+    let unpublished = harness
+        .send(
+            Method::POST,
+            &format!("/admin/content/{id}/"),
+            Some("application/x-www-form-urlencoded"),
+            form_with_status(
+                &csrf,
+                "Piece edited",
+                "piece",
+                Some(fetch(&harness).await.version),
+                "explicit",
+                Some("draft"),
+            ),
+            Some(&cookie),
+        )
+        .await;
+    assert_eq!(unpublished.status(), StatusCode::SEE_OTHER);
+    assert_eq!(fetch(&harness).await.publication, Publication::Draft);
+}
+
+#[tokio::test]
+async fn explicit_saves_answer_json_when_the_client_asks_for_it() {
+    let harness = Harness::new().await;
+    let (cookie, csrf) = harness.session_cookie().await;
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/admin/content/")
+        .header(header::HOST, "localhost:8080")
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .header(header::ACCEPT, "application/json")
+        .header(header::COOKIE, &cookie)
+        .body(Body::from(form_with_status(
+            &csrf,
+            "Fetch publish",
+            "fetch-publish",
+            None,
+            "explicit",
+            Some("public"),
+        )))
+        .unwrap();
+    let response = router(harness.state.clone())
+        .oneshot(request)
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body: serde_json::Value = serde_json::from_str(&text(response).await).unwrap();
+    assert_eq!(body["slug"].as_str().unwrap(), "fetch-publish");
+    assert!(body["id"].as_i64().is_some());
+}
+
+#[tokio::test]
+async fn empty_slugs_are_generated_server_side_and_collisions_get_seconds() {
+    let harness = Harness::new().await;
+    let (cookie, csrf) = harness.session_cookie().await;
+
+    let first = harness
+        .send(
+            Method::POST,
+            "/admin/content/",
+            Some("application/x-www-form-urlencoded"),
+            form_with_status(&csrf, "日本語タイトル", "", None, "autosave", None),
+            Some(&cookie),
+        )
+        .await;
+    assert_eq!(first.status(), StatusCode::CREATED);
+    let first: serde_json::Value = serde_json::from_str(&text(first).await).unwrap();
+    let first_slug = first["slug"].as_str().unwrap().to_owned();
+    assert!(
+        is_timestamped_slug(&first_slug),
+        "generated slug must be timestamp-shaped, got {first_slug:?}"
+    );
+
+    // A second empty-slug create in the same minute collides and retries at
+    // second resolution (or lands in the next minute; either way it differs).
+    let second = harness
+        .send(
+            Method::POST,
+            "/admin/content/",
+            Some("application/x-www-form-urlencoded"),
+            form_with_status(&csrf, "另一篇", "", None, "autosave", None),
+            Some(&cookie),
+        )
+        .await;
+    assert_eq!(second.status(), StatusCode::CREATED);
+    let second: serde_json::Value = serde_json::from_str(&text(second).await).unwrap();
+    let second_slug = second["slug"].as_str().unwrap();
+    assert!(is_timestamped_slug(second_slug));
+    assert_ne!(second_slug, first_slug);
+}
+
+#[tokio::test]
+async fn editor_offers_publish_buttons_instead_of_a_status_select() {
+    let harness = Harness::new().await;
+    let (cookie, _csrf) = harness.session_cookie().await;
+    let page = harness
+        .send(
+            Method::GET,
+            "/admin/content/new/",
+            None,
+            Body::empty(),
+            Some(&cookie),
+        )
+        .await;
+    assert_eq!(page.status(), StatusCode::OK);
+    let html = text(page).await;
+    assert!(html.contains("data-publish"));
+    assert!(html.contains("data-unpublish"));
+    assert!(!html.contains("<select name=\"status\""));
+    assert!(!html.contains("name=\"publish_at\""));
+    // The slug field is pre-filled with a server-generated timestamp slug.
+    let slug_value = html
+        .split("name=\"slug\" value=\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .expect("slug input present");
+    assert!(
+        is_timestamped_slug(slug_value),
+        "prefilled slug must be timestamp-shaped, got {slug_value:?}"
+    );
 }

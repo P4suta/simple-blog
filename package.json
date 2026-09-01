@@ -1,16 +1,17 @@
 {
   "private": true,
-  "allowScripts": {
-    "esbuild@0.28.2": true
-  },
+  "packageManager": "bun@1.4.0",
   "scripts": {
-    "build:admin": "esbuild frontend/admin.ts --bundle --minify --target=es2022 --outfile=static/admin.js",
-    "check:admin": "tsc --noEmit && node --check static/admin.js"
+    "build:admin": "bun build frontend/admin.ts --format=iife --minify --target=browser --outfile=static/admin.js",
+    "check:admin": "tsc --noEmit && node --check static/admin.js",
+    "check:cloudflare": "tsc -p adapters/cloudflare/tsconfig.json",
+    "test:frontend": "node --test frontend/*.test.cjs",
+    "test:cloudflare": "node --test adapters/cloudflare/test/*.test.ts"
   },
   "devDependencies": {
+    "@codemirror/lang-css": "^6.3.1",
     "@codemirror/lang-markdown": "^6.3.4",
     "codemirror": "^6.0.2",
-    "esbuild": "^0.28.0",
     "typescript": "^5.9.0"
   }
 }

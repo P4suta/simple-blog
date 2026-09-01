@@ -1,29 +1,67 @@
 {% extends "admin/base.html" %}
+{% block header %}{% endblock %}
 {% block content %}
-<header class="admin-page-head"><div><p class="kicker">Appearance & navigation</p><h1>設定</h1></div></header>
-<form class="settings-form" method="post" action="/admin/settings/">
+<header class="editor-bar settings-bar">
+  <a class="editor-back" href="/admin/">{{ t["editor.back"] }}</a>
+  <span class="editor-save-state" data-save-state aria-live="polite">{{ t["editor.saved"] }}</span>
+</header>
+<h1 class="settings-title">{{ t["settings.heading"] }}</h1>
+<form class="settings-form" method="post" action="/admin/settings/" data-settings
+      data-msg-saved="{{ t["editor.saved"] }}"
+      data-msg-saving="{{ t["editor.saving"] }}"
+      data-msg-unsaved="{{ t["editor.unsaved"] }}">
   <input type="hidden" name="csrf" value="{{ csrf }}">
   <section>
-    <h2>サイト</h2>
-    <label><span>タイトル</span><input name="site_title" value="{{ settings.site_title }}" maxlength="120" required></label>
-    <label><span>説明</span><textarea name="site_description" maxlength="300" rows="3">{{ settings.site_description }}</textarea></label>
-    <label><span>言語</span><select name="locale"><option value="ja"{% if settings.locale == 'ja' %} selected{% endif %}>日本語</option><option value="en"{% if settings.locale == 'en' %} selected{% endif %}>English</option></select></label>
-    <label><span>Logo media ID</span><input name="logo_media_id" value="{{ settings.logo_media_id or '' }}"></label>
-    <label><span>Favicon media ID</span><input name="favicon_media_id" value="{{ settings.favicon_media_id or '' }}"></label>
+    <h2>{{ t["settings.site"] }}</h2>
+    <label class="row"><span>{{ t["settings.site_title"] }}</span><input name="site_title" value="{{ settings.site_title }}" maxlength="120" required></label>
+    <label class="row"><span>{{ t["settings.site_description"] }}</span><textarea name="site_description" maxlength="300" rows="2">{{ settings.site_description }}</textarea></label>
+    <label class="row"><span>{{ t["settings.language"] }}</span><select name="locale"><option value="en"{% if settings.locale == 'en' %} selected{% endif %}>English</option><option value="ja"{% if settings.locale == 'ja' %} selected{% endif %}>日本語</option><option value="zh"{% if settings.locale == 'zh' %} selected{% endif %}>中文</option></select></label>
+    <section class="cover-field row" data-media-target>
+      <span>{{ t["settings.logo"] }}</span>
+      <div class="media-slot">
+        <input type="hidden" name="logo_media_id" value="{{ settings.logo_media_id or '' }}">
+        <img class="cover-thumb" data-media-thumb {% if logo_url %}src="{{ logo_url }}"{% else %}hidden{% endif %} alt="">
+        <p class="drop-zone-hint" data-media-pick><small>{{ t["editor.drop_here"] }}</small></p>
+        <button type="button" data-media-clear {% if not logo_url %}hidden{% endif %}>{{ t["settings.clear"] }}</button>
+      </div>
+    </section>
+    <section class="cover-field row" data-media-target>
+      <span>{{ t["settings.favicon"] }}</span>
+      <div class="media-slot">
+        <input type="hidden" name="favicon_media_id" value="{{ settings.favicon_media_id or '' }}">
+        <img class="cover-thumb" data-media-thumb {% if favicon_url %}src="{{ favicon_url }}"{% else %}hidden{% endif %} alt="">
+        <p class="drop-zone-hint" data-media-pick><small>{{ t["editor.drop_here"] }}</small></p>
+        <button type="button" data-media-clear {% if not favicon_url %}hidden{% endif %}>{{ t["settings.clear"] }}</button>
+      </div>
+    </section>
   </section>
   <section>
-    <h2>デザイン</h2>
-    <label><span>Accent color</span><input name="accent_color" value="{{ settings.accent_color }}" pattern="#[0-9A-Fa-f]{6}" required></label>
-    <label><span>書体</span><select name="font_preset"><option value="sans"{% if settings.font_preset == 'sans' %} selected{% endif %}>Sans</option><option value="serif"{% if settings.font_preset == 'serif' %} selected{% endif %}>Serif</option></select></label>
-    <label><span>本文幅</span><input type="number" name="content_width" value="{{ settings.content_width }}" min="560" max="960" required></label>
-    <label><span>配色</span><select name="color_scheme"><option value="system"{% if settings.color_scheme == 'system' %} selected{% endif %}>System</option><option value="light"{% if settings.color_scheme == 'light' %} selected{% endif %}>Light</option><option value="dark"{% if settings.color_scheme == 'dark' %} selected{% endif %}>Dark</option></select></label>
-    <label><span>Custom CSS</span><textarea name="custom_css" rows="10">{{ settings.custom_css }}</textarea></label>
+    <h2>{{ t["settings.design"] }}</h2>
+    <p>{{ t["settings.design_note"] }}</p>
+    <label data-css-field><span>{{ t["settings.css"] }}</span><textarea name="custom_css" rows="20" spellcheck="false">{{ settings.custom_css }}</textarea></label>
   </section>
   <section>
-    <h2>ナビゲーション</h2>
-    <p>1行に「ラベル | URL」。行の順に表示されます。</p>
-    <label><span>リンク</span><textarea name="navigation" rows="8">{{ navigation }}</textarea></label>
+    <h2>{{ t["settings.navigation"] }}</h2>
+    <p>{{ t["settings.navigation_note"] }}</p>
+    <label><span>{{ t["settings.links"] }}</span><textarea name="navigation" rows="5" spellcheck="false">{{ navigation }}</textarea></label>
   </section>
-  <button class="primary-button" type="submit">設定を保存</button>
 </form>
+<div class="settings-form security-section">
+  <section>
+    <h2>{{ t["settings.security"] }}</h2>
+    {% if not reauth_ok %}<p>{{ t["settings.reauth"] }} <a href="/admin/login/">{{ t["settings.reauth_link"] }}</a></p>{% endif %}
+    <h3>{{ t["settings.passkeys"] }}</h3>
+    <ul>{% for passkey in passkeys %}<li><span>{{ passkey.name }}</span><form method="post" action="/admin/settings/passkeys/remove/"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="credential_id" value="{{ passkey.credential_id }}"><button type="submit">{{ t["settings.passkey_remove"] }}</button></form></li>{% endfor %}</ul>
+    <div data-passkey-add class="passkey-add">
+      <label><span>{{ t["settings.passkey_name"] }}</span><input data-passkey-name value="New device" maxlength="80"></label>
+      <button class="primary-button" type="button" data-passkey-action>{{ t["settings.passkey_add"] }}</button>
+      <p data-auth-error role="alert"></p>
+    </div>
+    <h3>{{ t["settings.recovery"] }}</h3>
+    <div class="recovery-row">
+      <p>{{ t["settings.recovery_note"] }}</p>
+      <form method="post" action="/admin/settings/recovery-codes/"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="primary-button" type="submit">{{ t["settings.recovery_regenerate"] }}</button></form>
+    </div>
+  </section>
+</div>
 {% endblock %}

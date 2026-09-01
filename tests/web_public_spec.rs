@@ -9,7 +9,7 @@ use http_body_util::BodyExt;
 use simple_blog::{
     application::{
         content::{ContentService, SaveIntent},
-        ports::Clock,
+        ports::{Clock, ContentRepository, EngagementRepository},
     },
     config::{Config, ConfigSources, Overrides},
     domain::content::{ContentDraft, ContentKind, Publication, Slug},
@@ -56,6 +56,7 @@ impl Harness {
     }
 
     async fn request(&self, path: &str) -> axum::response::Response {
+        self.state.publish_now().await.unwrap();
         router(self.state.clone())
             .oneshot(
                 Request::builder()
@@ -177,7 +178,10 @@ async fn home_is_server_rendered_and_never_leaks_drafts_or_javascript() {
     let body = body_text(response).await;
     assert!(body.contains("Public essay"));
     assert!(!body.contains("Private draft"));
-    assert!(!body.contains("<script"));
+    // The only scripts are self-hosted, fingerprinted files (the reader
+    // preferences loader); inline JavaScript never appears.
+    assert!(!body.contains("<script>"));
+    assert!(body.contains("/assets/prefs.js?v="));
     assert!(body.contains("rel=\"canonical\" href=\"http://localhost:8080/\""));
     assert!(body.contains("class=\"skip-link\""));
 }
@@ -382,4 +386,162 @@ async fn every_response_has_a_server_generated_correlation_id_and_safe_failures(
     assert_ne!(request_id, "client-controlled");
     assert!(uuid::Uuid::parse_str(request_id).is_ok());
     assert_eq!(body_text(response).await, "Internal Server Error");
+}
+
+#[tokio::test]
+async fn adjacent_posts_link_and_invalidate_cached_pages() {
+    let harness = Harness::new().await;
+    let now = Utc::now() - Duration::minutes(10);
+    for (index, slug) in ["first-post", "second-post", "third-post"]
+        .iter()
+        .enumerate()
+    {
+        harness
+            .service
+            .create(
+                draft(
+                    &format!("Post {index}"),
+                    slug,
+                    Publication::Public {
+                        publish_at: now + Duration::minutes(i64::try_from(index).unwrap()),
+                    },
+                ),
+                SaveIntent::Explicit,
+                now,
+            )
+            .await
+            .unwrap();
+    }
+
+    let middle = harness.request("/second-post/").await;
+    let etag_before = middle.headers()[header::ETAG].clone();
+    let body = body_text(middle).await;
+    // The middle post links both neighbors, older to the right.
+    assert!(body.contains("href=\"/first-post/\""));
+    assert!(body.contains("href=\"/third-post/\""));
+    let first = body_text(harness.request("/first-post/").await).await;
+    assert!(!first.contains("post-nav-newer") || first.contains("/second-post/"));
+
+    // Publishing a newer post changes /third-post/'s neighbors — and its
+    // validator, so caches cannot keep serving the stale chain.
+    let third_before = harness.request("/third-post/").await;
+    let third_etag_before = third_before.headers()[header::ETAG].clone();
+    harness
+        .service
+        .create(
+            draft(
+                "Post 3",
+                "fourth-post",
+                Publication::Public {
+                    publish_at: now + Duration::minutes(3),
+                },
+            ),
+            SaveIntent::Explicit,
+            now,
+        )
+        .await
+        .unwrap();
+    let third_after = harness.request("/third-post/").await;
+    assert_ne!(third_after.headers()[header::ETAG], third_etag_before);
+    assert_eq!(
+        harness.request("/second-post/").await.headers()[header::ETAG],
+        etag_before
+    );
+}
+
+#[tokio::test]
+async fn page_views_are_counted_server_side_but_never_shown() {
+    let harness = Harness::new().await;
+    let now = Utc::now() - Duration::seconds(1);
+    harness
+        .service
+        .create(
+            draft(
+                "Counted",
+                "counted",
+                Publication::Public { publish_at: now },
+            ),
+            SaveIntent::Explicit,
+            now,
+        )
+        .await
+        .unwrap();
+    let repository: &SqliteRepository = &harness.repository;
+    let content = ContentRepository::find_public_by_slug(
+        repository,
+        &Slug::parse("counted").unwrap(),
+        Utc::now(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+
+    let body = body_text(harness.request("/counted/").await).await;
+    harness.request("/counted/").await;
+    let totals = harness.repository.engagement_totals().await.unwrap();
+    assert_eq!(totals.get(&content.id.as_i64()).unwrap().views, 2);
+    // The public page carries no counter of any kind ("view" alone would
+    // trip on the viewport meta tag).
+    assert!(!body.contains("views"));
+    assert!(!body.contains("view-count"));
+
+    // Self-identified crawlers do not count.
+    let request = Request::builder()
+        .uri("/counted/")
+        .header(header::HOST, "localhost:8080")
+        .header(header::USER_AGENT, "ExampleBot/1.0 (+https://example.com)")
+        .body(Body::empty())
+        .unwrap();
+    router(harness.state.clone())
+        .oneshot(request)
+        .await
+        .unwrap();
+    let totals = harness.repository.engagement_totals().await.unwrap();
+    assert_eq!(totals.get(&content.id.as_i64()).unwrap().views, 2);
+}
+
+#[tokio::test]
+async fn feed_carries_full_content_for_readers() {
+    let harness = Harness::new().await;
+    let now = Utc::now() - Duration::seconds(1);
+    harness
+        .service
+        .create(
+            draft(
+                "Feed post",
+                "feed-post",
+                Publication::Public { publish_at: now },
+            ),
+            SaveIntent::Explicit,
+            now,
+        )
+        .await
+        .unwrap();
+
+    let feed = body_text(harness.request("/feed.xml").await).await;
+    // Atom content is the escaped article HTML, ready for feed readers.
+    assert!(feed.contains("&lt;h1"));
+    assert!(feed.contains("Readable body."));
+}
+
+#[tokio::test]
+async fn reader_preferences_are_offered_on_every_public_page() {
+    let harness = Harness::new().await;
+    let body = body_text(harness.request("/").await).await;
+
+    // The control ships hidden and is revealed by prefs.js; without
+    // JavaScript the defaults simply hold.
+    assert!(body.contains("<details class=\"prefs\" hidden>"));
+    assert!(body.contains("name=\"measure\""));
+    assert!(body.contains("name=\"text\""));
+    assert!(body.contains("name=\"scheme\""));
+
+    let script = harness.request("/assets/prefs.js").await;
+    assert_eq!(script.status(), StatusCode::OK);
+    assert!(
+        script.headers()[header::CACHE_CONTROL]
+            .to_str()
+            .unwrap()
+            .contains("immutable")
+    );
 }

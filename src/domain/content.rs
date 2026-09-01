@@ -11,6 +11,7 @@ const RESERVED_SLUGS: &[&str] = &[
     "healthz",
     "media",
     "robots.txt",
+    "search",
     "sitemap.xml",
     "tag",
 ];
@@ -50,6 +51,33 @@ impl Slug {
         } else {
             Err(InvalidSlug)
         }
+    }
+
+    /// Default slug for new content: minute-resolution timestamp, e.g. `20260831-2145`.
+    ///
+    /// Always digit-leading, so it can never collide with `RESERVED_SLUGS`.
+    #[must_use]
+    pub fn timestamped(now: DateTime<Utc>) -> Self {
+        Self(now.format("%Y%m%d-%H%M").to_string())
+    }
+
+    /// Second-resolution variant used to resolve same-minute collisions.
+    #[must_use]
+    pub fn timestamped_precise(now: DateTime<Utc>) -> Self {
+        Self(now.format("%Y%m%d-%H%M%S").to_string())
+    }
+
+    /// Whether this slug has the shape produced by [`Slug::timestamped`] or
+    /// [`Slug::timestamped_precise`].
+    #[must_use]
+    pub fn is_timestamped(&self) -> bool {
+        let bytes = self.0.as_bytes();
+        (bytes.len() == 13 || bytes.len() == 15)
+            && bytes[8] == b'-'
+            && bytes
+                .iter()
+                .enumerate()
+                .all(|(index, byte)| index == 8 || byte.is_ascii_digit())
     }
 
     #[must_use]
@@ -194,6 +222,7 @@ impl FromStr for SaveIntent {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Tag {
     pub name: String,
     pub slug: Slug,
@@ -201,6 +230,7 @@ pub struct Tag {
 
 /// Editable fields shared by posts and pages.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ContentDraft {
     pub kind: ContentKind,
     pub title: String,
@@ -216,6 +246,7 @@ pub struct ContentDraft {
 
 /// Stored content. Markdown remains canonical; HTML is a safe derived value.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Content {
     pub id: ContentId,
     pub kind: ContentKind,
@@ -253,6 +284,7 @@ impl Content {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ContentRevision {
     pub id: i64,
     pub content_id: ContentId,

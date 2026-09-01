@@ -1,0 +1,65 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "simple-blog-cloudflare",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-02",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    {
+      "pattern": "*/*",
+      "zone_name": "replace-with-saas-zone"
+    }
+  ],
+  "vars": {
+    "CONTROL_HOSTNAME": "control.replace-with-saas-zone",
+    "ANONYMOUS_DEMO_HOSTNAME": "demo.replace-with-saas-zone",
+    "SAAS_CNAME_TARGET": "customers.replace-with-saas-zone",
+    "CF_ZONE_ID": "replace-with-zone-id"
+  },
+  "kv_namespaces": [
+    {
+      "binding": "HOSTS",
+      "id": "replace-with-kv-namespace-id"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "RELEASES",
+      "bucket_name": "simple-blog-releases"
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "REGISTRY",
+      "database_name": "simple-blog-registry",
+      "database_id": "replace-with-d1-database-id",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SITES",
+        "class_name": "SiteCoordinator"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "SiteCoordinator"
+      ]
+    }
+  ],
+  "services": [
+    {
+      "binding": "CORE",
+      "service": "replace-with-simple-blog-core-service"
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}

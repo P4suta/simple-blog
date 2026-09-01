@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ja">
+<html lang="{{ lang }}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -9,8 +9,8 @@
   <script src="/admin/assets/admin.js" defer></script>
 </head>
 <body class="admin-body">
-  <a class="skip-link" href="#admin-main">本文へ移動</a>
-  <header class="admin-header"><a class="admin-brand" href="/admin/">Simple Blog</a><nav aria-label="管理"><a href="/admin/content/new/">新規作成</a><a href="/admin/settings/">設定</a><a href="/admin/security/">セキュリティ</a><a href="/" target="_blank" rel="noopener">サイトを見る</a></nav></header>
+  <a class="skip-link" href="#admin-main">{{ t["admin.skip"] }}</a>
+  {% block header %}<header class="admin-header"><a class="admin-brand" href="/admin/">Simple Blog</a></header>{% endblock %}
   <main id="admin-main" class="admin-main">{% block content %}{% endblock %}</main>
 </body>
 </html>

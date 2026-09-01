@@ -1,1 +1,974 @@
-*,*::before,*::after{box-sizing:border-box}:root{--bg:#f4f4f1;--panel:#fff;--ink:#1c1d1f;--muted:#696b70;--line:#d9d9d4;--accent:#2f5fea;--danger:#b42318;--sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 var(--sans)}a{color:inherit}.skip-link{position:fixed;transform:translateY(-150%);z-index:10;background:var(--ink);color:#fff;padding:.6rem 1rem}.skip-link:focus{transform:none}.admin-header{height:64px;display:flex;align-items:center;justify-content:space-between;padding:0 clamp(1rem,4vw,3rem);border-bottom:1px solid var(--line);background:color-mix(in srgb,var(--panel) 88%,transparent);backdrop-filter:blur(12px)}.admin-brand{font-weight:800;text-decoration:none}.admin-header nav{display:flex;gap:1.2rem}.admin-main{width:min(1280px,calc(100% - 2rem));margin:0 auto;padding:clamp(2rem,6vw,5rem) 0}.admin-page-head{display:flex;justify-content:space-between;align-items:end;margin-bottom:2rem}.admin-page-head h1{font-size:clamp(2.4rem,7vw,5rem);line-height:1;margin:.1em 0}.kicker{color:var(--muted);font-weight:700;letter-spacing:.12em;text-transform:uppercase;font-size:.72rem}.primary-button,.editor-toolbar button{display:inline-block;border:0;border-radius:.45rem;padding:.75rem 1rem;background:var(--accent);color:#fff;text-decoration:none;font-weight:700;cursor:pointer}.content-table{border-top:1px solid var(--line)}.content-table>a{display:flex;justify-content:space-between;align-items:center;padding:1.25rem 0;border-bottom:1px solid var(--line);text-decoration:none}.content-table strong,.content-table small{display:block}.content-table small,.status{color:var(--muted)}.editor{margin-top:-3rem}.editor-toolbar{position:sticky;top:0;z-index:3;display:flex;align-items:center;gap:1rem;padding:1rem 0;background:var(--bg)}.editor-toolbar [data-save-state]{margin-left:auto;color:var(--muted)}.editor-grid{display:grid;grid-template-columns:minmax(0,1fr) 280px;gap:3rem}.editor-fields,.editor-settings{display:grid;align-content:start;gap:1.2rem}.editor label{display:grid;gap:.35rem}.editor label>span{font-size:.75rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}.editor input,.editor textarea,.editor select,.auth-card input{width:100%;border:1px solid var(--line);border-radius:.35rem;background:var(--panel);color:var(--ink);padding:.7rem;font:inherit}.title-field input{font-size:clamp(1.7rem,5vw,3.2rem);font-weight:750;line-height:1.1}.body-field textarea{font:16px/1.65 ui-monospace,SFMono-Regular,Consolas,monospace;min-height:55vh;resize:vertical}.cm-editor{min-height:55vh;border:1px solid var(--line);border-radius:.35rem;background:var(--panel);font:16px/1.65 ui-monospace,SFMono-Regular,Consolas,monospace}.cm-editor.cm-focused{outline:3px solid color-mix(in srgb,var(--accent) 45%,transparent);outline-offset:3px}.cm-scroller{min-height:55vh}.cm-gutters{background:var(--surface);color:var(--muted);border-right:1px solid var(--line)}.live-preview{min-height:12rem;padding:1.25rem;background:var(--panel);border:1px solid var(--line);border-radius:.5rem}.live-preview h2{margin-top:0;font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}[data-media-drop][data-dragging=true]{outline:3px dashed var(--accent);outline-offset:5px}.revision-list{display:grid;gap:.5rem;padding-left:1.2rem}.revision-list a{font-size:.78rem}.editor-settings{padding:1.25rem;background:var(--panel);border:1px solid var(--line);border-radius:.5rem}.conflict{max-width:1000px;margin:auto}.conflict h1{font-size:2.5rem}.conflict-grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin:2rem 0}.conflict article{min-width:0;padding:1rem;background:var(--panel);border:1px solid var(--line);border-radius:.5rem}.conflict pre{overflow:auto;white-space:pre-wrap}.auth-body{min-height:100vh;display:grid;place-items:center;padding:1rem}.auth-card{width:min(440px,100%);padding:clamp(1.5rem,6vw,3rem);background:var(--panel);border:1px solid var(--line);border-radius:.8rem;box-shadow:0 20px 60px #0001}.auth-card h1{font-size:2rem;line-height:1.1}.auth-card label{display:grid;gap:.4rem;margin:1.5rem 0}[data-auth-error]{color:var(--danger)}:focus-visible{outline:3px solid color-mix(in srgb,var(--accent) 45%,transparent);outline-offset:3px}.security-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1.5rem}.security-grid>section{padding:1.5rem;background:var(--panel);border:1px solid var(--line);border-radius:.5rem}.security-grid label{display:grid;gap:.35rem;margin:1rem 0}.security-grid input{width:100%;border:1px solid var(--line);border-radius:.35rem;background:var(--panel);color:var(--ink);padding:.7rem;font:inherit}.settings-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1.5rem}.settings-form section{display:grid;align-content:start;gap:1rem;padding:1.5rem;background:var(--panel);border:1px solid var(--line);border-radius:.5rem}.settings-form section:last-of-type{grid-column:1/-1}.settings-form h2{margin:0}.settings-form label{display:grid;gap:.35rem}.settings-form label>span{font-size:.75rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}.settings-form input,.settings-form textarea,.settings-form select{width:100%;border:1px solid var(--line);border-radius:.35rem;background:var(--panel);color:var(--ink);padding:.7rem;font:inherit}.settings-form button{justify-self:start}@media(max-width:760px){.editor-grid,.conflict-grid,.settings-form,.security-grid{grid-template-columns:1fr}.editor-settings{order:-1}.admin-header nav a:first-child{display:none}}
+/* Simple Blog admin styles. Hand-written, unminified on purpose.
+
+   Plain by conviction: no shadows, no tints, one ink. Style exists here to
+   line things up — shared container widths, fixed columns, tabular numbers —
+   not to decorate them. */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+/* Any rule that sets display (e.g. .editor-drawer's grid) would otherwise
+   override the UA's [hidden] { display: none } and pin the element visible. */
+[hidden] {
+  display: none !important;
+}
+
+:root {
+  color-scheme: light dark;
+  --bg: #fafaf8;
+  --panel: #ffffff;
+  --ink: #1a1b1e;
+  --muted: #6b6e74;
+  --faint: #9a9da3;
+  --line: #e3e1da;
+  --line-strong: #c9c6bd;
+  --danger: #b3392c;
+  --radius: 6px;
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    "Hiragino Sans", "Noto Sans JP", "Yu Gothic", Meiryo, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #151517;
+    --panel: #1d1e21;
+    --ink: #e7e6e3;
+    --muted: #9b9ea6;
+    --faint: #6e7178;
+    --line: #2b2d31;
+    --line-strong: #43464c;
+    --danger: #e0685c;
+  }
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.65 var(--sans);
+}
+
+a {
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+.skip-link {
+  position: fixed;
+  transform: translateY(-150%);
+  z-index: 10;
+  background: var(--ink);
+  color: var(--bg);
+  padding: 0.6rem 1rem;
+}
+
+.skip-link:focus {
+  transform: none;
+}
+
+/* ------------------------------------------------------------------ */
+/* Shared chrome. One content width rules every aligned edge.         */
+/* ------------------------------------------------------------------ */
+
+.admin-header {
+  display: flex;
+  align-items: center;
+  width: min(720px, calc(100% - 2.5rem));
+  margin: 0 auto;
+  padding: 1.1rem 0 0;
+}
+
+.admin-brand {
+  font-weight: 700;
+  font-size: 0.8rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.admin-brand:hover {
+  color: var(--ink);
+}
+
+.admin-main {
+  width: min(720px, calc(100% - 2.5rem));
+  margin: 0 auto;
+  padding: 1.5rem 0 6rem;
+}
+
+.admin-page-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1.75rem;
+}
+
+.admin-page-head h1 {
+  font-size: 1.7rem;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+
+.kicker {
+  color: var(--muted);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-size: 0.7rem;
+}
+
+/* ------------------------------------------------------------------ */
+/* Buttons                                                            */
+/* ------------------------------------------------------------------ */
+
+.primary-button {
+  display: inline-block;
+  border: 1px solid var(--ink);
+  border-radius: 999px;
+  padding: 0.5rem 1.2rem;
+  background: var(--ink);
+  color: var(--bg);
+  text-decoration: none;
+  font-weight: 650;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.primary-button:hover {
+  opacity: 0.85;
+}
+
+/* ------------------------------------------------------------------ */
+/* Dashboard. Every row is the same grid, so every column lines up:   */
+/* title | views | likes | status — regardless of label widths.       */
+/* ------------------------------------------------------------------ */
+
+.content-table {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.content-table > a {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content max-content max-content;
+  align-items: center;
+  column-gap: 1.5rem;
+  padding: 0.9rem 1.25rem;
+  text-decoration: none;
+}
+
+.content-table > a + a {
+  border-top: 1px solid var(--line);
+}
+
+.content-table > a:hover {
+  background: var(--bg);
+}
+
+.content-table strong {
+  display: block;
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.content-table small {
+  display: block;
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  margin-top: 0.1rem;
+}
+
+.content-table p {
+  margin: 0;
+  padding: 1.1rem 1.25rem;
+  color: var(--muted);
+}
+
+/* Each metric is its own fixed-width, right-aligned cell; the numbers use
+   tabular figures so digits stack into columns across rows. */
+.engagement {
+  display: contents;
+}
+
+.engagement .metric {
+  min-width: 4.5em;
+  text-align: right;
+  color: var(--faint);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.status {
+  min-width: 5.5em;
+  text-align: center;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  padding: 0.22rem 0.6rem;
+  color: var(--muted);
+}
+
+.status-public {
+  color: var(--ink);
+  border-color: var(--ink);
+}
+
+.dashboard-links {
+  display: flex;
+  gap: 1.5rem;
+  margin-top: 1.5rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.dashboard-links a:hover {
+  color: var(--ink);
+}
+
+/* ------------------------------------------------------------------ */
+/* Forms                                                              */
+/* ------------------------------------------------------------------ */
+
+label {
+  display: grid;
+  gap: 0.35rem;
+}
+
+label > span {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+input,
+textarea,
+select,
+button {
+  font: inherit;
+}
+
+input,
+textarea,
+select {
+  width: 100%;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--ink);
+  padding: 0.5rem 0.65rem;
+}
+
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: none;
+  border-color: var(--ink);
+}
+
+/* ------------------------------------------------------------------ */
+/* Editor: one quiet document. The bar, the title, and the body share */
+/* the exact same column, edge to edge.                               */
+/* ------------------------------------------------------------------ */
+
+.editor-bar {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  width: min(42rem, calc(100% - 2rem));
+  margin: 0 auto;
+  padding: 0.7rem 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+  background: var(--bg);
+}
+
+.editor-back {
+  text-decoration: none;
+  margin-right: 0.65rem;
+  white-space: nowrap;
+}
+
+.editor-back:hover {
+  color: var(--ink);
+}
+
+.editor-save-state {
+  color: var(--faint);
+  font-size: 0.8rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.editor-bar-spacer {
+  margin-left: auto;
+}
+
+.editor-status {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--faint);
+  margin-right: 0.3rem;
+  white-space: nowrap;
+}
+
+.editor-bar-button {
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0.3rem 0.75rem;
+  white-space: nowrap;
+}
+
+.editor-bar-button:hover {
+  color: var(--ink);
+  border-color: var(--line-strong);
+}
+
+.editor-bar-button[aria-pressed="true"],
+.editor-bar-button[aria-expanded="true"] {
+  color: var(--ink);
+  border-color: var(--ink);
+}
+
+/* Publishing is the one solid button in the room. */
+.editor-bar-button[data-publish] {
+  color: var(--bg);
+  background: var(--ink);
+  border-color: var(--ink);
+  font-weight: 650;
+}
+
+.editor-bar-button[data-publish]:hover {
+  opacity: 0.85;
+}
+
+.editor-bar-button[data-unpublish]:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.editor-document {
+  width: min(42rem, calc(100% - 2rem));
+  margin: 0 auto;
+  padding-bottom: 6rem;
+}
+
+.editor-title {
+  width: 100%;
+  border: 0;
+  padding: 1.2rem 0 0.2rem;
+  background: none;
+  color: var(--ink);
+  font-size: 2.2rem;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  resize: none;
+  overflow: hidden;
+}
+
+.editor-title:focus {
+  outline: none;
+}
+
+.editor-title::placeholder {
+  color: var(--faint);
+  opacity: 0.7;
+}
+
+/* CodeMirror continues the document: no chrome, no gutters. */
+.cm-editor {
+  background: none;
+  font: 1.02rem/1.9 var(--sans);
+}
+
+.cm-editor.cm-focused {
+  outline: none;
+}
+
+.cm-scroller {
+  min-height: 55vh;
+  font: inherit;
+}
+
+.cm-gutters {
+  display: none;
+}
+
+.cm-content {
+  padding: 0.5rem 0 4rem;
+  caret-color: var(--ink);
+}
+
+.editor-drop-hint {
+  color: var(--faint);
+  font-size: 0.85rem;
+}
+
+.drop-zone-hint,
+.editor-drop-hint {
+  cursor: pointer;
+}
+
+.editor-preview .prose img {
+  max-width: 100%;
+  height: auto;
+}
+
+/* Preview parity with the default theme's monochrome code highlighting. */
+.editor-preview pre {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  padding: 0.9em 1.1em;
+  font-size: 0.92em;
+  line-height: 1.6;
+  font-family: var(--mono);
+}
+
+.editor-preview .hl-comment {
+  font-style: italic;
+  opacity: 0.6;
+}
+
+.editor-preview .hl-keyword,
+.editor-preview .hl-storage {
+  font-weight: 700;
+}
+
+.editor-preview .hl-entity {
+  font-weight: 600;
+}
+
+.editor-preview .hl-string {
+  opacity: 0.75;
+}
+
+[data-media-drop][data-dragging="true"],
+[data-media-target][data-dragging="true"] {
+  outline: 2px dashed var(--ink);
+  outline-offset: 6px;
+}
+
+/* ------------------------------------------------------------------ */
+/* Detail drawer: a bordered side panel, nothing more.                */
+/* ------------------------------------------------------------------ */
+
+.editor-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(12, 12, 14, 0.25);
+  z-index: 4;
+}
+
+.editor-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(360px, 92vw);
+  z-index: 5;
+  overflow-y: auto;
+  display: grid;
+  align-content: start;
+  gap: 1.15rem;
+  padding: 1.5rem 1.4rem 2.5rem;
+  background: var(--panel);
+  border-left: 1px solid var(--line-strong);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .editor-drawer {
+    transition: translate 0.2s ease, opacity 0.2s ease;
+  }
+
+  .editor-drawer-backdrop {
+    transition: opacity 0.2s ease;
+  }
+
+  @starting-style {
+    .editor-drawer {
+      translate: 2rem 0;
+      opacity: 0;
+    }
+
+    .editor-drawer-backdrop {
+      opacity: 0;
+    }
+  }
+}
+
+.editor-drawer summary {
+  cursor: pointer;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.editor-drawer details[open] summary {
+  margin-bottom: 0.7rem;
+}
+
+.editor-drawer input[name="slug"] {
+  font-family: var(--mono);
+  font-size: 0.85rem;
+}
+
+.cover-field {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.cover-field > span {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.cover-thumb {
+  max-width: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.drop-zone-hint {
+  margin: 0;
+  padding: 1rem 0.9rem;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius);
+  text-align: center;
+  color: var(--muted);
+}
+
+.drop-zone-hint:hover {
+  border-color: var(--ink);
+  color: var(--ink);
+}
+
+.cover-field button {
+  justify-self: start;
+  border: 0;
+  background: none;
+  color: var(--danger);
+  cursor: pointer;
+  padding: 0;
+  font-size: 0.85rem;
+}
+
+.revision-list {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+  padding-left: 1.2rem;
+  font-size: 0.8rem;
+}
+
+.revision-list a {
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.revision-list a:hover {
+  color: var(--ink);
+}
+
+.revision-list time {
+  color: var(--faint);
+}
+
+/* ------------------------------------------------------------------ */
+/* Conflict and revision comparison                                   */
+/* ------------------------------------------------------------------ */
+
+.conflict h1 {
+  font-size: 1.6rem;
+  letter-spacing: -0.02em;
+  margin: 0.2em 0 0.4em;
+}
+
+.conflict-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin: 1.75rem 0;
+}
+
+.conflict article {
+  min-width: 0;
+  padding: 1.1rem 1.2rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.conflict article h2 {
+  margin-top: 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.conflict pre {
+  overflow: auto;
+  white-space: pre-wrap;
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  line-height: 1.7;
+}
+
+/* ------------------------------------------------------------------ */
+/* Auth pages                                                         */
+/* ------------------------------------------------------------------ */
+
+.auth-body {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.65 var(--sans);
+}
+
+.auth-card {
+  width: min(440px, 100%);
+  padding: clamp(1.75rem, 6vw, 3rem);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.auth-card h1 {
+  font-size: 1.6rem;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  margin: 0.3em 0 0.5em;
+}
+
+.auth-card > p {
+  color: var(--muted);
+}
+
+.auth-card label {
+  margin: 1.5rem 0;
+}
+
+.auth-card details {
+  margin-top: 1.5rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.auth-card summary {
+  cursor: pointer;
+}
+
+.auth-card pre {
+  font-family: var(--mono);
+  background: var(--bg);
+  padding: 1rem 1.2rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  line-height: 1.9;
+}
+
+[data-auth-error] {
+  color: var(--danger);
+}
+
+[data-auth-error]:empty {
+  margin: 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Settings. Same bar as the editor, same content column as the       */
+/* dashboard; short fields share one label column so every control    */
+/* starts on the same vertical line.                                  */
+/* ------------------------------------------------------------------ */
+
+.settings-bar {
+  width: min(720px, calc(100% - 2.5rem));
+}
+
+.settings-title {
+  font-size: 1.7rem;
+  letter-spacing: -0.02em;
+  margin: 0.5rem 0 1.5rem;
+}
+
+.settings-form {
+  display: grid;
+  gap: 1.25rem;
+}
+
+.settings-form label.row,
+.settings-form .cover-field.row {
+  grid-template-columns: 10rem minmax(0, 1fr);
+  column-gap: 1rem;
+  align-items: baseline;
+}
+
+.settings-form .cover-field.row {
+  align-items: start;
+}
+
+.settings-form .cover-field.row > span {
+  padding-top: 0.55rem;
+}
+
+/* Logo and favicon are one compact line: thumbnail, pick/drop area, clear. */
+.media-slot {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.media-slot .cover-thumb {
+  max-height: 2.5rem;
+  max-width: 6rem;
+  width: auto;
+}
+
+.media-slot .drop-zone-hint {
+  flex: 1;
+  min-width: 12rem;
+  padding: 0.55rem 0.9rem;
+  text-align: left;
+}
+
+.media-slot button {
+  border: 0;
+  background: none;
+  color: var(--danger);
+  cursor: pointer;
+  font-size: 0.85rem;
+  padding: 0;
+}
+
+/* The theme editor: CodeMirror in a bordered field, monospace. */
+.settings-form .cm-editor {
+  font: 0.84rem/1.6 var(--mono);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.settings-form .cm-editor.cm-focused {
+  border-color: var(--ink);
+}
+
+.settings-form .cm-scroller {
+  min-height: 45vh;
+  max-height: 70vh;
+  overflow: auto;
+}
+
+.settings-form .cm-content {
+  padding: 0.6rem 0;
+}
+
+.passkey-add {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  gap: 0.75rem;
+  align-items: end;
+}
+
+.passkey-add [data-auth-error] {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.passkey-add [data-auth-error]:empty {
+  display: none;
+}
+
+.recovery-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  gap: 1rem;
+  align-items: center;
+}
+
+.recovery-row p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.settings-form section {
+  display: grid;
+  align-content: start;
+  gap: 1rem;
+  padding: 1.3rem 1.25rem 1.5rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.settings-form section section {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+}
+
+.settings-form h2 {
+  margin: 0;
+  font-size: 1.05rem;
+  letter-spacing: -0.01em;
+}
+
+.settings-form h3 {
+  margin: 0.6rem 0 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.settings-form section > p {
+  margin: -0.5rem 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.settings-form textarea[name="custom_css"],
+.settings-form textarea[name="navigation"] {
+  font-family: var(--mono);
+  font-size: 0.83rem;
+  line-height: 1.6;
+}
+
+.settings-form > button {
+  justify-self: start;
+}
+
+.settings-form ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+}
+
+.settings-form ul li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.55rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.settings-form ul li:last-child {
+  border-bottom: 0;
+}
+
+.settings-form ul li form {
+  display: contents;
+}
+
+.settings-form ul li button {
+  width: auto;
+  border: 0;
+  background: none;
+  color: var(--danger);
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.security-section {
+  margin-top: 1.25rem;
+}
+
+/* Legacy security page (until it merges into settings) */
+.security-grid {
+  display: grid;
+  gap: 2rem;
+}
+
+.security-grid ul {
+  list-style: none;
+  padding: 0;
+}
+
+.security-grid ul li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.security-grid label {
+  margin: 1rem 0;
+}
+
+@media (max-width: 760px) {
+  .conflict-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .editor-title {
+    font-size: 1.7rem;
+  }
+
+  /* Metrics fold away before the title ever truncates into uselessness. */
+  .content-table > a {
+    grid-template-columns: minmax(0, 1fr) max-content;
+  }
+
+  .engagement {
+    display: none;
+  }
+
+  .settings-form label.row,
+  .settings-form .cover-field.row {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-form .cover-field.row > span {
+    padding-top: 0;
+  }
+
+  .passkey-add,
+  .recovery-row {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+}

@@ -10,15 +10,24 @@ use sqlx::{
 
 use crate::{
     application::ports::{
-        AuthError, AuthRepository, ContentRepository, MediaRepository, MediaRepositoryError,
-        PasskeyRepository, PreparedContent, RepositoryError, SetupRegistration, SiteRepository,
+        AuthError, AuthRepository, ContentLink, ContentRepository, Engagement,
+        EngagementRepository, LikeRepository, MediaRepository, MediaRepositoryError,
+        PasskeyRepository, PortableRepository, PreparedContent, PublicSnapshotRepository,
+        PublicationState, RepositoryError, SearchHit, SearchRepository, SetupRegistration,
+        SiteRepository,
     },
+    application::site_compiler::{PublicRedirect, SiteSnapshotV1},
     domain::auth::{SecretHash, SessionRecord, SetupPurpose, StoredPasskey},
     domain::content::{
         Content, ContentId, ContentKind, ContentRevision, Publication, SaveIntent, Slug, Tag,
     },
     domain::media::{MediaAsset, MediaId, MediaVariant},
-    domain::theme::{ColorScheme, FontPreset, Locale, NavigationItem, SiteSettings},
+    domain::search::{self, SearchTerms},
+    domain::theme::{Locale, NavigationItem, SiteSettings},
+    portable::{
+        PortableContent, PortableEngagement, PortableOwner, PortablePasskey,
+        PortablePublicationState, PortableRecoveryCode, PortableRedirect, PortableSiteV1,
+    },
 };
 use uuid::Uuid;
 
@@ -474,7 +483,39 @@ impl SqliteRepository {
             .await
             .map_err(storage)?;
         MIGRATOR.run(&pool).await.map_err(storage)?;
-        Ok(Self { pool })
+        let repository = Self { pool };
+        repository.backfill_search_index().await?;
+        Ok(repository)
+    }
+
+    /// Indexes any content rows the search index does not know yet — the one
+    /// bridge existing databases need, since normalization and kana folding
+    /// happen in Rust and cannot run inside a SQL migration.
+    async fn backfill_search_index(&self) -> Result<(), RepositoryError> {
+        let rows = sqlx::query(
+            "SELECT id, title, body_html FROM contents
+             WHERE id NOT IN (SELECT rowid FROM search_index)",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage)?;
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let mut transaction = self.pool.begin().await.map_err(storage)?;
+        for row in rows {
+            let id: i64 = row.try_get("id").map_err(storage)?;
+            let title: String = row.try_get("title").map_err(storage)?;
+            let body_html: String = row.try_get("body_html").map_err(storage)?;
+            index_search_document(
+                &mut transaction,
+                ContentId::from_i64(id),
+                &title,
+                &body_html,
+            )
+            .await?;
+        }
+        transaction.commit().await.map_err(storage)
     }
 
     #[must_use]
@@ -558,6 +599,13 @@ impl ContentRepository for SqliteRepository {
         replace_tags(&mut transaction, id, &prepared.tags).await?;
         let content = content_from_prepared(id, prepared, 1, now, now);
         insert_revision(&mut transaction, &content, intent, now).await?;
+        index_search_document(&mut transaction, id, &content.title, &content.body_html).await?;
+        refresh_publication_state(
+            &mut transaction,
+            now,
+            content.publication.is_visible_at(now),
+        )
+        .await?;
         transaction.commit().await.map_err(storage)?;
         Ok(content)
     }
@@ -571,15 +619,22 @@ impl ContentRepository for SqliteRepository {
         now: DateTime<Utc>,
     ) -> Result<Content, RepositoryError> {
         let mut transaction = self.pool.begin().await.map_err(storage)?;
-        let current = sqlx::query("SELECT slug, version, created_at FROM contents WHERE id = ?")
-            .bind(id.as_i64())
-            .fetch_optional(&mut *transaction)
-            .await
-            .map_err(storage)?
-            .ok_or(RepositoryError::NotFound)?;
+        let current = sqlx::query(
+            "SELECT slug, version, created_at, status, publish_at FROM contents WHERE id = ?",
+        )
+        .bind(id.as_i64())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(storage)?
+        .ok_or(RepositoryError::NotFound)?;
         let old_slug: String = current.try_get("slug").map_err(storage)?;
         let actual_version: i64 = current.try_get("version").map_err(storage)?;
         let created_at: DateTime<Utc> = current.try_get("created_at").map_err(storage)?;
+        let current_status: String = current.try_get("status").map_err(storage)?;
+        let current_publish_at: Option<DateTime<Utc>> =
+            current.try_get("publish_at").map_err(storage)?;
+        let was_visible = current_status == "public"
+            && current_publish_at.is_some_and(|publish_at| publish_at <= now);
         if actual_version != expected_version {
             return Err(RepositoryError::Conflict {
                 expected: expected_version,
@@ -649,9 +704,16 @@ impl ContentRepository for SqliteRepository {
         replace_tags(&mut transaction, id, &prepared.tags).await?;
         let content = content_from_prepared(id, prepared, expected_version + 1, created_at, now);
         insert_revision(&mut transaction, &content, intent, now).await?;
+        index_search_document(&mut transaction, id, &content.title, &content.body_html).await?;
         if intent == SaveIntent::Autosave {
             prune_autosaves(&mut transaction, id).await?;
         }
+        refresh_publication_state(
+            &mut transaction,
+            now,
+            was_visible || content.publication.is_visible_at(now),
+        )
+        .await?;
         transaction.commit().await.map_err(storage)?;
         Ok(content)
     }
@@ -823,6 +885,320 @@ impl ContentRepository for SqliteRepository {
         .map_err(storage)?;
         self.hydrate_many(rows).await
     }
+
+    async fn neighbor_posts(
+        &self,
+        id: ContentId,
+        publish_at: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> Result<(Option<ContentLink>, Option<ContentLink>), RepositoryError> {
+        // Ties on publish_at are broken by id so the ordering is total and
+        // the chain never skips or repeats an entry.
+        let older = self
+            .neighbor(
+                "SELECT id, slug, title FROM contents
+                 WHERE kind = 'post' AND status = 'public' AND publish_at <= ?
+                   AND (publish_at < ? OR (publish_at = ? AND id < ?))
+                 ORDER BY publish_at DESC, id DESC LIMIT 1",
+                id,
+                publish_at,
+                now,
+            )
+            .await?;
+        let newer = self
+            .neighbor(
+                "SELECT id, slug, title FROM contents
+                 WHERE kind = 'post' AND status = 'public' AND publish_at <= ?
+                   AND (publish_at > ? OR (publish_at = ? AND id > ?))
+                 ORDER BY publish_at ASC, id ASC LIMIT 1",
+                id,
+                publish_at,
+                now,
+            )
+            .await?;
+        Ok((older, newer))
+    }
+}
+
+/// Rewrites the search index row for one content, inside the same transaction
+/// as the content write so index and content can never drift.
+async fn index_search_document(
+    transaction: &mut Transaction<'_, Sqlite>,
+    id: ContentId,
+    title: &str,
+    body_html: &str,
+) -> Result<(), RepositoryError> {
+    let title = search::normalize(title);
+    let body = search::normalize(&search::html_to_text(body_html));
+    let title_fold = search::fold(&title);
+    let body_fold = search::fold(&body);
+    // FTS5 tables have no upsert; delete-then-insert is the documented idiom.
+    sqlx::query("DELETE FROM search_index WHERE rowid = ?")
+        .bind(id.as_i64())
+        .execute(&mut **transaction)
+        .await
+        .map_err(storage)?;
+    sqlx::query(
+        "INSERT INTO search_index (rowid, title_fold, body_fold, title, body)
+         VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(id.as_i64())
+    .bind(&title_fold)
+    .bind(&body_fold)
+    .bind(&title)
+    .bind(&body)
+    .execute(&mut **transaction)
+    .await
+    .map_err(storage)?;
+    Ok(())
+}
+
+/// Builds the hybrid search statement for one parsed query: an optional FTS
+/// MATCH for trigram-capable terms, one LIKE group per short term, and a
+/// ranking clause that prefers bm25 (title-weighted) when FTS took part.
+fn build_search_sql(terms: &SearchTerms) -> String {
+    // The FTS table keeps its real name: SQLite rejects MATCH through an
+    // alias ("no such column") in a plain join like this.
+    let mut sql = String::from(
+        "SELECT c.slug, search_index.title, search_index.body, c.kind, c.publish_at
+         FROM search_index JOIN contents c ON c.id = search_index.rowid
+         WHERE c.status = 'public' AND c.publish_at <= ?",
+    );
+    if !terms.fts.is_empty() {
+        sql.push_str(" AND search_index MATCH ?");
+    }
+    for _ in &terms.like {
+        sql.push_str(
+            " AND (search_index.title_fold LIKE ? ESCAPE '\\' OR search_index.body_fold LIKE ? ESCAPE '\\')",
+        );
+    }
+    if terms.fts.is_empty() {
+        // No bm25 without a MATCH: rank by how much of the query hits the
+        // title, then by recency.
+        sql.push_str(" ORDER BY (0");
+        for _ in &terms.like {
+            sql.push_str(" + (search_index.title_fold LIKE ? ESCAPE '\\')");
+        }
+        sql.push_str(") DESC, c.publish_at DESC");
+    } else {
+        sql.push_str(" ORDER BY bm25(search_index, 4.0, 1.0), c.publish_at DESC");
+    }
+    sql.push_str(" LIMIT ?");
+    sql
+}
+
+#[async_trait]
+impl SearchRepository for SqliteRepository {
+    /// Hybrid CJK-first search: terms of three or more characters go through
+    /// the trigram FTS index (with bm25 ranking, title weighted above body);
+    /// one- and two-character terms — most Japanese words — are LIKE filters
+    /// over the folded columns. Both kinds combine as AND.
+    async fn search(
+        &self,
+        terms: &SearchTerms,
+        now: DateTime<Utc>,
+        limit: u32,
+    ) -> Result<Vec<SearchHit>, RepositoryError> {
+        if terms.is_empty() {
+            return Ok(Vec::new());
+        }
+        let sql = build_search_sql(terms);
+
+        let mut query = sqlx::query(&sql).bind(now);
+        if !terms.fts.is_empty() {
+            let match_expression = terms
+                .fts
+                .iter()
+                .map(|term| search::quote_fts(term))
+                .collect::<Vec<_>>()
+                .join(" ");
+            query = query.bind(match_expression);
+        }
+        let like_patterns: Vec<String> = terms
+            .like
+            .iter()
+            .map(|term| format!("%{}%", search::escape_like(term)))
+            .collect();
+        for pattern in &like_patterns {
+            query = query.bind(pattern).bind(pattern);
+        }
+        if terms.fts.is_empty() {
+            for pattern in &like_patterns {
+                query = query.bind(pattern);
+            }
+        }
+        let rows = query
+            .bind(i64::from(limit))
+            .fetch_all(&self.pool)
+            .await
+            .map_err(storage)?;
+
+        rows.into_iter()
+            .map(|row| {
+                let slug: String = row.try_get("slug").map_err(storage)?;
+                let kind: String = row.try_get("kind").map_err(storage)?;
+                Ok(SearchHit {
+                    slug: Slug::parse(&slug)
+                        .map_err(|error| RepositoryError::Storage(error.to_string()))?,
+                    title: row.try_get("title").map_err(storage)?,
+                    body: row.try_get("body").map_err(storage)?,
+                    kind: match kind.as_str() {
+                        "page" => ContentKind::Page,
+                        _ => ContentKind::Post,
+                    },
+                    publish_at: row.try_get("publish_at").map_err(storage)?,
+                })
+            })
+            .collect()
+    }
+}
+
+#[async_trait]
+impl EngagementRepository for SqliteRepository {
+    async fn record_view(&self, id: ContentId) -> Result<(), RepositoryError> {
+        sqlx::query(
+            "INSERT INTO content_views (content_id, view_count) VALUES (?, 1)
+             ON CONFLICT(content_id) DO UPDATE SET view_count = view_count + 1",
+        )
+        .bind(id.as_i64())
+        .execute(&self.pool)
+        .await
+        .map_err(storage)?;
+        Ok(())
+    }
+
+    async fn engagement_totals(
+        &self,
+    ) -> Result<std::collections::HashMap<i64, Engagement>, RepositoryError> {
+        let rows = sqlx::query(
+            "SELECT c.id,
+                    COALESCE(l.like_count, 0) AS likes,
+                    COALESCE(v.view_count, 0) AS views
+             FROM contents c
+             LEFT JOIN content_likes l ON l.content_id = c.id
+             LEFT JOIN content_views v ON v.content_id = c.id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage)?;
+        rows.into_iter()
+            .map(|row| {
+                let id: i64 = row.try_get("id").map_err(storage)?;
+                let likes: i64 = row.try_get("likes").map_err(storage)?;
+                let views: i64 = row.try_get("views").map_err(storage)?;
+                Ok((
+                    id,
+                    Engagement {
+                        likes: u64::try_from(likes).unwrap_or_default(),
+                        views: u64::try_from(views).unwrap_or_default(),
+                    },
+                ))
+            })
+            .collect()
+    }
+}
+
+impl SqliteRepository {
+    async fn neighbor(
+        &self,
+        sql: &str,
+        id: ContentId,
+        publish_at: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> Result<Option<ContentLink>, RepositoryError> {
+        let row = sqlx::query(sql)
+            .bind(now)
+            .bind(publish_at)
+            .bind(publish_at)
+            .bind(id.as_i64())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(storage)?;
+        row.map(|row| {
+            let slug: String = row.try_get("slug").map_err(storage)?;
+            Ok(ContentLink {
+                id: ContentId::from_i64(row.try_get("id").map_err(storage)?),
+                slug: Slug::parse(&slug)
+                    .map_err(|error| RepositoryError::Storage(error.to_string()))?,
+                title: row.try_get("title").map_err(storage)?,
+            })
+        })
+        .transpose()
+    }
+
+    async fn content_is_visible(
+        &self,
+        id: ContentId,
+        now: DateTime<Utc>,
+    ) -> Result<bool, RepositoryError> {
+        let visible: i64 = sqlx::query_scalar(
+            "SELECT EXISTS (
+                SELECT 1 FROM contents WHERE id = ? AND status = 'public' AND publish_at <= ?
+             )",
+        )
+        .bind(id.as_i64())
+        .bind(now)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(storage)?;
+        Ok(visible == 1)
+    }
+}
+
+#[async_trait]
+impl LikeRepository for SqliteRepository {
+    async fn add_like(&self, id: ContentId, now: DateTime<Utc>) -> Result<u64, RepositoryError> {
+        // The inner SELECT gates the upsert on public visibility, so an
+        // invisible id inserts nothing and RETURNING stays empty.
+        let count: Option<i64> = sqlx::query_scalar(
+            "INSERT INTO content_likes (content_id, like_count)
+             SELECT id, 1 FROM contents WHERE id = ? AND status = 'public' AND publish_at <= ?
+             ON CONFLICT(content_id) DO UPDATE SET like_count = like_count + 1
+             RETURNING like_count",
+        )
+        .bind(id.as_i64())
+        .bind(now)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(storage)?;
+        count.map_or(Err(RepositoryError::NotFound), |value| {
+            Ok(unsigned_count(value))
+        })
+    }
+
+    async fn remove_like(&self, id: ContentId, now: DateTime<Utc>) -> Result<u64, RepositoryError> {
+        if !self.content_is_visible(id, now).await? {
+            return Err(RepositoryError::NotFound);
+        }
+        let count: Option<i64> = sqlx::query_scalar(
+            "UPDATE content_likes SET like_count = MAX(like_count - 1, 0)
+             WHERE content_id = ?
+             RETURNING like_count",
+        )
+        .bind(id.as_i64())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(storage)?;
+        Ok(count.map_or(0, unsigned_count))
+    }
+
+    async fn like_count(&self, id: ContentId, now: DateTime<Utc>) -> Result<u64, RepositoryError> {
+        if !self.content_is_visible(id, now).await? {
+            return Err(RepositoryError::NotFound);
+        }
+        let count: Option<i64> =
+            sqlx::query_scalar("SELECT like_count FROM content_likes WHERE content_id = ?")
+                .bind(id.as_i64())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(storage)?;
+        Ok(count.map_or(0, unsigned_count))
+    }
+}
+
+fn unsigned_count(value: i64) -> u64 {
+    // like_count carries a CHECK (>= 0); a negative value cannot be read back.
+    u64::try_from(value).unwrap_or_default()
 }
 
 #[async_trait]
@@ -830,39 +1206,24 @@ impl SiteRepository for SqliteRepository {
     async fn site_settings(&self) -> Result<SiteSettings, RepositoryError> {
         let row = sqlx::query(
             "SELECT site_title, site_description, locale, logo_media_id, favicon_media_id,
-                    accent_color, font_preset, content_width, color_scheme, custom_css
+                    custom_css
              FROM site_settings WHERE singleton = 1",
         )
         .fetch_one(&self.pool)
         .await
         .map_err(storage)?;
         let locale: String = row.try_get("locale").map_err(storage)?;
-        let font: String = row.try_get("font_preset").map_err(storage)?;
-        let scheme: String = row.try_get("color_scheme").map_err(storage)?;
-        let width: i64 = row.try_get("content_width").map_err(storage)?;
         Ok(SiteSettings {
             site_title: row.try_get("site_title").map_err(storage)?,
             site_description: row.try_get("site_description").map_err(storage)?,
             locale: match locale.as_str() {
-                "ja" => Locale::Ja,
                 "en" => Locale::En,
+                "ja" => Locale::Ja,
+                "zh" => Locale::Zh,
                 _ => return Err(RepositoryError::Storage("invalid locale".into())),
             },
             logo_media_id: row.try_get("logo_media_id").map_err(storage)?,
             favicon_media_id: row.try_get("favicon_media_id").map_err(storage)?,
-            accent_color: row.try_get("accent_color").map_err(storage)?,
-            font_preset: match font.as_str() {
-                "sans" => FontPreset::Sans,
-                "serif" => FontPreset::Serif,
-                _ => return Err(RepositoryError::Storage("invalid font preset".into())),
-            },
-            content_width: u16::try_from(width).map_err(storage)?,
-            color_scheme: match scheme.as_str() {
-                "system" => ColorScheme::System,
-                "light" => ColorScheme::Light,
-                "dark" => ColorScheme::Dark,
-                _ => return Err(RepositoryError::Storage("invalid color scheme".into())),
-            },
             custom_css: row.try_get("custom_css").map_err(storage)?,
         })
     }
@@ -899,8 +1260,7 @@ impl SiteRepository for SqliteRepository {
         sqlx::query(
             "UPDATE site_settings SET
                 site_title = ?, site_description = ?, locale = ?, logo_media_id = ?,
-                favicon_media_id = ?, accent_color = ?, font_preset = ?, content_width = ?,
-                color_scheme = ?, custom_css = ?, updated_at = ?
+                favicon_media_id = ?, custom_css = ?, updated_at = ?
              WHERE singleton = 1",
         )
         .bind(&settings.site_title)
@@ -908,10 +1268,6 @@ impl SiteRepository for SqliteRepository {
         .bind(settings.locale.as_str())
         .bind(&settings.logo_media_id)
         .bind(&settings.favicon_media_id)
-        .bind(&settings.accent_color)
-        .bind(settings.font_preset.as_str())
-        .bind(i64::from(settings.content_width))
-        .bind(settings.color_scheme.as_str())
         .bind(&settings.custom_css)
         .bind(now)
         .execute(&mut *transaction)
@@ -934,9 +1290,631 @@ impl SiteRepository for SqliteRepository {
             .await
             .map_err(storage)?;
         }
+        refresh_publication_state(&mut transaction, now, true).await?;
         transaction.commit().await.map_err(storage)?;
         Ok(())
     }
+}
+
+#[async_trait]
+impl PublicSnapshotRepository for SqliteRepository {
+    async fn publication_state(&self) -> Result<PublicationState, RepositoryError> {
+        let row = sqlx::query(
+            "SELECT public_revision, next_publish_at
+             FROM publication_state WHERE singleton = 1",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(storage)?;
+        publication_state_from_row(&row)
+    }
+
+    #[tracing::instrument(name = "publication.clock.advance", skip_all, fields(now = %now))]
+    async fn advance_publication_clock(&self, now: DateTime<Utc>) -> Result<bool, RepositoryError> {
+        let mut transaction = self.pool.begin().await.map_err(storage)?;
+        let next: Option<DateTime<Utc>> =
+            sqlx::query_scalar("SELECT next_publish_at FROM publication_state WHERE singleton = 1")
+                .fetch_one(&mut *transaction)
+                .await
+                .map_err(storage)?;
+        if next.is_none_or(|next| next > now) {
+            transaction.commit().await.map_err(storage)?;
+            tracing::debug!(event = "publication.clock.unchanged");
+            return Ok(false);
+        }
+        refresh_publication_state(&mut transaction, now, true).await?;
+        transaction.commit().await.map_err(storage)?;
+        tracing::info!(event = "publication.clock.advanced");
+        Ok(true)
+    }
+
+    #[tracing::instrument(
+        name = "publication.snapshot.load",
+        skip_all,
+        fields(effective_at = %effective_at)
+    )]
+    async fn public_snapshot(
+        &self,
+        effective_at: DateTime<Utc>,
+    ) -> Result<SiteSnapshotV1, RepositoryError> {
+        let mut transaction = self.pool.begin().await.map_err(storage)?;
+
+        // This first read establishes the WAL snapshot. Every subsequent row
+        // belongs to the same logical publication revision.
+        let state_row = sqlx::query(
+            "SELECT public_revision, next_publish_at
+             FROM publication_state WHERE singleton = 1",
+        )
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(storage)?;
+        let state = publication_state_from_row(&state_row)?;
+        let settings = snapshot_settings(&mut transaction).await?;
+        let navigation = snapshot_navigation(&mut transaction).await?;
+        let contents = snapshot_contents(&mut transaction, effective_at).await?;
+        let redirects = snapshot_redirects(&mut transaction, effective_at).await?;
+        let media = snapshot_media(&mut transaction).await?;
+        transaction.commit().await.map_err(storage)?;
+
+        tracing::info!(
+            event = "publication.snapshot.loaded",
+            public_revision = state.revision,
+            content_count = contents.len(),
+            redirect_count = redirects.len(),
+            media_count = media.len()
+        );
+        Ok(SiteSnapshotV1 {
+            public_revision: state.revision,
+            effective_at,
+            settings,
+            navigation,
+            contents,
+            redirects,
+            media,
+        })
+    }
+}
+
+#[async_trait]
+impl PortableRepository for SqliteRepository {
+    #[tracing::instrument(
+        name = "portable.snapshot.load",
+        skip_all,
+        fields(exported_at = %exported_at)
+    )]
+    async fn portable_site(
+        &self,
+        canonical_origin: &str,
+        exported_at: DateTime<Utc>,
+    ) -> Result<PortableSiteV1, RepositoryError> {
+        let mut transaction = self.pool.begin().await.map_err(storage)?;
+        let settings = snapshot_settings(&mut transaction).await?;
+        let navigation = snapshot_navigation(&mut transaction).await?;
+        let contents = portable_contents(&mut transaction).await?;
+        let redirects = portable_redirects(&mut transaction).await?;
+        let media = snapshot_media(&mut transaction).await?;
+        let engagement = portable_engagement(&mut transaction).await?;
+        let owner = portable_owner(&mut transaction).await?;
+        let publication = portable_publication(&mut transaction).await?;
+        transaction.commit().await.map_err(storage)?;
+        let site = PortableSiteV1 {
+            format_version: crate::portable::PORTABLE_SITE_FORMAT_VERSION,
+            exported_at,
+            canonical_origin: canonical_origin.to_owned(),
+            settings,
+            navigation,
+            contents,
+            redirects,
+            media,
+            engagement,
+            owner,
+            publication,
+        };
+        site.validate()
+            .map_err(|error| RepositoryError::Storage(error.to_string()))?;
+        tracing::info!(
+            event = "portable.snapshot.loaded",
+            content_count = site.contents.len(),
+            revision_count = site
+                .contents
+                .iter()
+                .map(|content| content.revisions.len())
+                .sum::<usize>(),
+            media_count = site.media.len(),
+            has_owner = site.owner.is_some()
+        );
+        Ok(site)
+    }
+
+    #[tracing::instrument(
+        name = "portable.snapshot.replace",
+        skip_all,
+        fields(
+            content_count = site.contents.len(),
+            media_count = site.media.len(),
+            public_revision = site.publication.public_revision
+        ),
+        err
+    )]
+    async fn replace_portable_site(
+        &self,
+        site: &PortableSiteV1,
+        markdown: &dyn crate::application::ports::MarkdownRenderer,
+    ) -> Result<(), RepositoryError> {
+        site.validate()
+            .map_err(|error| RepositoryError::Validation(error.to_string()))?;
+        let mut transaction = self.pool.begin().await.map_err(storage)?;
+        clear_portable_state(&mut transaction).await?;
+        insert_portable_media(&mut transaction, &site.media).await?;
+        insert_portable_settings(&mut transaction, site).await?;
+        insert_portable_contents(&mut transaction, &site.contents, markdown).await?;
+        insert_portable_redirects(&mut transaction, &site.redirects).await?;
+        insert_portable_engagement(&mut transaction, &site.engagement).await?;
+        insert_portable_owner(&mut transaction, site.owner.as_ref()).await?;
+        sqlx::query(
+            "UPDATE publication_state SET public_revision = ?, next_publish_at = ?, updated_at = ?
+             WHERE singleton = 1",
+        )
+        .bind(i64::try_from(site.publication.public_revision).map_err(storage)?)
+        .bind(site.publication.next_publish_at)
+        .bind(site.exported_at)
+        .execute(&mut *transaction)
+        .await
+        .map_err(storage)?;
+        transaction.commit().await.map_err(storage)?;
+        tracing::info!(event = "portable.snapshot.replaced");
+        Ok(())
+    }
+}
+
+async fn portable_contents(
+    transaction: &mut Transaction<'_, Sqlite>,
+) -> Result<Vec<PortableContent>, RepositoryError> {
+    let rows = sqlx::query_as::<_, ContentRow>("SELECT * FROM contents ORDER BY id")
+        .fetch_all(&mut **transaction)
+        .await
+        .map_err(storage)?;
+    let mut contents = Vec::with_capacity(rows.len());
+    for row in rows {
+        let id = ContentId::from_i64(row.id);
+        let tags = snapshot_tags(transaction, id).await?;
+        let current = row.into_content(tags)?;
+        let revisions = portable_revisions(transaction, id).await?;
+        contents.push(PortableContent { current, revisions });
+    }
+    Ok(contents)
+}
+
+async fn portable_revisions(
+    transaction: &mut Transaction<'_, Sqlite>,
+    content_id: ContentId,
+) -> Result<Vec<ContentRevision>, RepositoryError> {
+    let rows = sqlx::query(
+        "SELECT id, intent, snapshot_json, created_at FROM revisions
+         WHERE content_id = ? ORDER BY id",
+    )
+    .bind(content_id.as_i64())
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(storage)?;
+    rows.into_iter()
+        .map(|row| {
+            let intent: String = row.try_get("intent").map_err(storage)?;
+            let snapshot: String = row.try_get("snapshot_json").map_err(storage)?;
+            Ok(ContentRevision {
+                id: row.try_get("id").map_err(storage)?,
+                content_id,
+                intent: SaveIntent::from_str(&intent)
+                    .map_err(|error| RepositoryError::Storage(error.to_owned()))?,
+                snapshot: serde_json::from_str(&snapshot).map_err(storage)?,
+                created_at: row.try_get("created_at").map_err(storage)?,
+            })
+        })
+        .collect()
+}
+
+async fn portable_redirects(
+    transaction: &mut Transaction<'_, Sqlite>,
+) -> Result<Vec<PortableRedirect>, RepositoryError> {
+    let rows =
+        sqlx::query("SELECT old_slug, content_id, created_at FROM redirects ORDER BY old_slug")
+            .fetch_all(&mut **transaction)
+            .await
+            .map_err(storage)?;
+    rows.into_iter()
+        .map(|row| {
+            let old_slug: String = row.try_get("old_slug").map_err(storage)?;
+            Ok(PortableRedirect {
+                old_slug: Slug::parse(old_slug).map_err(|_| {
+                    RepositoryError::Storage("database contains an invalid redirect slug".into())
+                })?,
+                content_id: ContentId::from_i64(row.try_get("content_id").map_err(storage)?),
+                created_at: row.try_get("created_at").map_err(storage)?,
+            })
+        })
+        .collect()
+}
+
+async fn portable_engagement(
+    transaction: &mut Transaction<'_, Sqlite>,
+) -> Result<std::collections::BTreeMap<i64, PortableEngagement>, RepositoryError> {
+    let rows = sqlx::query(
+        "SELECT contents.id,
+                COALESCE(content_likes.like_count, 0) AS likes,
+                COALESCE(content_views.view_count, 0) AS views
+         FROM contents
+         LEFT JOIN content_likes ON content_likes.content_id = contents.id
+         LEFT JOIN content_views ON content_views.content_id = contents.id
+         ORDER BY contents.id",
+    )
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(storage)?;
+    rows.into_iter()
+        .map(|row| {
+            let id: i64 = row.try_get("id").map_err(storage)?;
+            let likes: i64 = row.try_get("likes").map_err(storage)?;
+            let views: i64 = row.try_get("views").map_err(storage)?;
+            Ok((
+                id,
+                PortableEngagement {
+                    likes: u64::try_from(likes).map_err(storage)?,
+                    views: u64::try_from(views).map_err(storage)?,
+                },
+            ))
+        })
+        .collect()
+}
+
+async fn portable_owner(
+    transaction: &mut Transaction<'_, Sqlite>,
+) -> Result<Option<PortableOwner>, RepositoryError> {
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+
+    let owner = sqlx::query("SELECT user_handle, created_at FROM owner WHERE singleton = 1")
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(storage)?;
+    let Some(owner) = owner else {
+        return Ok(None);
+    };
+    let handle: Vec<u8> = owner.try_get("user_handle").map_err(storage)?;
+    let passkey_rows = sqlx::query(
+        "SELECT credential_id, name, passkey_json, created_at, last_used_at
+         FROM passkeys ORDER BY credential_id",
+    )
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(storage)?;
+    let passkeys = passkey_rows
+        .into_iter()
+        .map(|row| {
+            let credential_id: Vec<u8> = row.try_get("credential_id").map_err(storage)?;
+            Ok(PortablePasskey {
+                credential_id: URL_SAFE_NO_PAD.encode(credential_id),
+                name: row.try_get("name").map_err(storage)?,
+                passkey_json: row.try_get("passkey_json").map_err(storage)?,
+                created_at: row.try_get("created_at").map_err(storage)?,
+                last_used_at: row.try_get("last_used_at").map_err(storage)?,
+            })
+        })
+        .collect::<Result<Vec<_>, RepositoryError>>()?;
+    let recovery_rows = sqlx::query(
+        "SELECT code_hash, consumed_at, created_at FROM recovery_codes ORDER BY code_hash",
+    )
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(storage)?;
+    let recovery_codes = recovery_rows
+        .into_iter()
+        .map(|row| {
+            let code_hash: Vec<u8> = row.try_get("code_hash").map_err(storage)?;
+            Ok(PortableRecoveryCode {
+                code_hash: hex::encode(code_hash),
+                consumed_at: row.try_get("consumed_at").map_err(storage)?,
+                created_at: row.try_get("created_at").map_err(storage)?,
+            })
+        })
+        .collect::<Result<Vec<_>, RepositoryError>>()?;
+    Ok(Some(PortableOwner {
+        user_handle: Uuid::from_slice(&handle).map_err(storage)?,
+        created_at: owner.try_get("created_at").map_err(storage)?,
+        passkeys,
+        recovery_codes,
+    }))
+}
+
+async fn portable_publication(
+    transaction: &mut Transaction<'_, Sqlite>,
+) -> Result<PortablePublicationState, RepositoryError> {
+    let row = sqlx::query(
+        "SELECT public_revision, next_publish_at FROM publication_state WHERE singleton = 1",
+    )
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(storage)?;
+    let revision: i64 = row.try_get("public_revision").map_err(storage)?;
+    Ok(PortablePublicationState {
+        public_revision: u64::try_from(revision).map_err(storage)?,
+        next_publish_at: row.try_get("next_publish_at").map_err(storage)?,
+    })
+}
+
+async fn clear_portable_state(
+    transaction: &mut Transaction<'_, Sqlite>,
+) -> Result<(), RepositoryError> {
+    for statement in [
+        "DELETE FROM sessions",
+        "DELETE FROM setup_tokens",
+        "DELETE FROM recovery_codes",
+        "DELETE FROM passkeys",
+        "DELETE FROM owner",
+        "DELETE FROM redirects",
+        "DELETE FROM revisions",
+        "DELETE FROM content_tags",
+        "DELETE FROM search_index",
+        "DELETE FROM content_likes",
+        "DELETE FROM content_views",
+        "DELETE FROM tags",
+        "DELETE FROM contents",
+        "DELETE FROM navigation",
+        "UPDATE site_settings SET logo_media_id = NULL, favicon_media_id = NULL WHERE singleton = 1",
+        "DELETE FROM media_variants",
+        "DELETE FROM media",
+    ] {
+        sqlx::query(statement)
+            .execute(&mut **transaction)
+            .await
+            .map_err(storage)?;
+    }
+    Ok(())
+}
+
+async fn insert_portable_media(
+    transaction: &mut Transaction<'_, Sqlite>,
+    media: &[MediaAsset],
+) -> Result<(), RepositoryError> {
+    for asset in media {
+        sqlx::query(
+            "INSERT INTO media (
+                id, original_name, mime_type, extension, width, height, byte_size,
+                alt_text, caption, animated, created_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(asset.id.as_str())
+        .bind(&asset.original_name)
+        .bind(&asset.mime_type)
+        .bind(&asset.extension)
+        .bind(i64::from(asset.width))
+        .bind(i64::from(asset.height))
+        .bind(i64::try_from(asset.byte_size).map_err(storage)?)
+        .bind(&asset.alt_text)
+        .bind(&asset.caption)
+        .bind(i64::from(asset.animated))
+        .bind(asset.created_at)
+        .execute(&mut **transaction)
+        .await
+        .map_err(storage)?;
+        for variant in &asset.variants {
+            sqlx::query(
+                "INSERT INTO media_variants (media_id, width, height, byte_size, filename)
+                 VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(asset.id.as_str())
+            .bind(i64::from(variant.width))
+            .bind(i64::from(variant.height))
+            .bind(i64::try_from(variant.byte_size).map_err(storage)?)
+            .bind(&variant.filename)
+            .execute(&mut **transaction)
+            .await
+            .map_err(storage)?;
+        }
+    }
+    Ok(())
+}
+
+async fn insert_portable_settings(
+    transaction: &mut Transaction<'_, Sqlite>,
+    site: &PortableSiteV1,
+) -> Result<(), RepositoryError> {
+    sqlx::query(
+        "UPDATE site_settings SET site_title = ?, site_description = ?, locale = ?,
+                logo_media_id = ?, favicon_media_id = ?, custom_css = ?, updated_at = ?
+         WHERE singleton = 1",
+    )
+    .bind(&site.settings.site_title)
+    .bind(&site.settings.site_description)
+    .bind(site.settings.locale.as_str())
+    .bind(&site.settings.logo_media_id)
+    .bind(&site.settings.favicon_media_id)
+    .bind(&site.settings.custom_css)
+    .bind(site.exported_at)
+    .execute(&mut **transaction)
+    .await
+    .map_err(storage)?;
+    for item in &site.navigation {
+        sqlx::query(
+            "INSERT INTO navigation (id, label, destination, is_external, position)
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(item.id)
+        .bind(&item.label)
+        .bind(&item.destination)
+        .bind(i64::from(item.is_external))
+        .bind(i64::from(item.position))
+        .execute(&mut **transaction)
+        .await
+        .map_err(storage)?;
+    }
+    Ok(())
+}
+
+async fn insert_portable_contents(
+    transaction: &mut Transaction<'_, Sqlite>,
+    contents: &[PortableContent],
+    markdown: &dyn crate::application::ports::MarkdownRenderer,
+) -> Result<(), RepositoryError> {
+    for record in contents {
+        let content = &record.current;
+        let (status, publish_at) = publication_columns(&content.publication);
+        let body_html = markdown.render(&content.body_markdown).html;
+        sqlx::query(
+            "INSERT INTO contents (
+                id, kind, title, slug, summary, body_markdown, body_html, status, publish_at,
+                cover_media_id, seo_title, seo_description, version, created_at, updated_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(content.id.as_i64())
+        .bind(content.kind.as_str())
+        .bind(&content.title)
+        .bind(content.slug.as_str())
+        .bind(&content.summary)
+        .bind(&content.body_markdown)
+        .bind(&body_html)
+        .bind(status)
+        .bind(publish_at)
+        .bind(&content.cover_media_id)
+        .bind(&content.seo_title)
+        .bind(&content.seo_description)
+        .bind(content.version)
+        .bind(content.created_at)
+        .bind(content.updated_at)
+        .execute(&mut **transaction)
+        .await
+        .map_err(storage)?;
+        insert_portable_tags(transaction, content).await?;
+        index_search_document(transaction, content.id, &content.title, &body_html).await?;
+        for revision in &record.revisions {
+            let mut snapshot = revision.snapshot.clone();
+            snapshot.body_html = markdown.render(&snapshot.body_markdown).html;
+            let snapshot = serde_json::to_string(&snapshot).map_err(storage)?;
+            sqlx::query(
+                "INSERT INTO revisions (id, content_id, intent, snapshot_json, created_at)
+                 VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(revision.id)
+            .bind(revision.content_id.as_i64())
+            .bind(revision.intent.as_str())
+            .bind(snapshot)
+            .bind(revision.created_at)
+            .execute(&mut **transaction)
+            .await
+            .map_err(storage)?;
+        }
+    }
+    Ok(())
+}
+
+async fn insert_portable_tags(
+    transaction: &mut Transaction<'_, Sqlite>,
+    content: &Content,
+) -> Result<(), RepositoryError> {
+    for (position, tag) in content.tags.iter().enumerate() {
+        sqlx::query("INSERT INTO tags (name, slug) VALUES (?, ?) ON CONFLICT(slug) DO NOTHING")
+            .bind(&tag.name)
+            .bind(tag.slug.as_str())
+            .execute(&mut **transaction)
+            .await
+            .map_err(storage)?;
+        let tag_id: i64 = sqlx::query_scalar("SELECT id FROM tags WHERE slug = ?")
+            .bind(tag.slug.as_str())
+            .fetch_one(&mut **transaction)
+            .await
+            .map_err(storage)?;
+        sqlx::query("INSERT INTO content_tags (content_id, tag_id, position) VALUES (?, ?, ?)")
+            .bind(content.id.as_i64())
+            .bind(tag_id)
+            .bind(i64::try_from(position).map_err(storage)?)
+            .execute(&mut **transaction)
+            .await
+            .map_err(storage)?;
+    }
+    Ok(())
+}
+
+async fn insert_portable_redirects(
+    transaction: &mut Transaction<'_, Sqlite>,
+    redirects: &[PortableRedirect],
+) -> Result<(), RepositoryError> {
+    for redirect in redirects {
+        sqlx::query("INSERT INTO redirects (old_slug, content_id, created_at) VALUES (?, ?, ?)")
+            .bind(redirect.old_slug.as_str())
+            .bind(redirect.content_id.as_i64())
+            .bind(redirect.created_at)
+            .execute(&mut **transaction)
+            .await
+            .map_err(storage)?;
+    }
+    Ok(())
+}
+
+async fn insert_portable_engagement(
+    transaction: &mut Transaction<'_, Sqlite>,
+    engagement: &std::collections::BTreeMap<i64, PortableEngagement>,
+) -> Result<(), RepositoryError> {
+    for (&content_id, totals) in engagement {
+        sqlx::query("INSERT INTO content_likes (content_id, like_count) VALUES (?, ?)")
+            .bind(content_id)
+            .bind(i64::try_from(totals.likes).map_err(storage)?)
+            .execute(&mut **transaction)
+            .await
+            .map_err(storage)?;
+        sqlx::query("INSERT INTO content_views (content_id, view_count) VALUES (?, ?)")
+            .bind(content_id)
+            .bind(i64::try_from(totals.views).map_err(storage)?)
+            .execute(&mut **transaction)
+            .await
+            .map_err(storage)?;
+    }
+    Ok(())
+}
+
+async fn insert_portable_owner(
+    transaction: &mut Transaction<'_, Sqlite>,
+    owner: Option<&PortableOwner>,
+) -> Result<(), RepositoryError> {
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+
+    let Some(owner) = owner else {
+        return Ok(());
+    };
+    sqlx::query("INSERT INTO owner (singleton, user_handle, created_at) VALUES (1, ?, ?)")
+        .bind(owner.user_handle.as_bytes().as_slice())
+        .bind(owner.created_at)
+        .execute(&mut **transaction)
+        .await
+        .map_err(storage)?;
+    for passkey in &owner.passkeys {
+        let credential = URL_SAFE_NO_PAD
+            .decode(&passkey.credential_id)
+            .map_err(storage)?;
+        sqlx::query(
+            "INSERT INTO passkeys (
+                credential_id, name, passkey_json, created_at, last_used_at
+             ) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(credential)
+        .bind(&passkey.name)
+        .bind(&passkey.passkey_json)
+        .bind(passkey.created_at)
+        .bind(passkey.last_used_at)
+        .execute(&mut **transaction)
+        .await
+        .map_err(storage)?;
+    }
+    for recovery in &owner.recovery_codes {
+        let hash = hex::decode(&recovery.code_hash).map_err(storage)?;
+        sqlx::query(
+            "INSERT INTO recovery_codes (code_hash, consumed_at, created_at) VALUES (?, ?, ?)",
+        )
+        .bind(hash)
+        .bind(recovery.consumed_at)
+        .bind(recovery.created_at)
+        .execute(&mut **transaction)
+        .await
+        .map_err(storage)?;
+    }
+    Ok(())
 }
 
 #[async_trait]
@@ -1015,6 +1993,21 @@ impl MediaRepository for SqliteRepository {
         media_from_row(&row, variants).map(Some)
     }
 
+    async fn delete_media(&self, id: &MediaId) -> Result<(), MediaRepositoryError> {
+        let mut transaction = self.pool.begin().await.map_err(media_storage)?;
+        sqlx::query("DELETE FROM media_variants WHERE media_id = ?")
+            .bind(id.as_str())
+            .execute(&mut *transaction)
+            .await
+            .map_err(media_storage)?;
+        sqlx::query("DELETE FROM media WHERE id = ?")
+            .bind(id.as_str())
+            .execute(&mut *transaction)
+            .await
+            .map_err(media_storage)?;
+        transaction.commit().await.map_err(media_storage)
+    }
+
     async fn list_media(&self) -> Result<Vec<MediaAsset>, MediaRepositoryError> {
         let ids: Vec<String> =
             sqlx::query_scalar("SELECT id FROM media ORDER BY created_at DESC, id")
@@ -1089,6 +2082,228 @@ async fn load_tags(pool: &SqlitePool, content_id: ContentId) -> Result<Vec<Tag>,
             })
         })
         .collect()
+}
+
+async fn snapshot_settings(
+    transaction: &mut Transaction<'_, Sqlite>,
+) -> Result<SiteSettings, RepositoryError> {
+    let row = sqlx::query(
+        "SELECT site_title, site_description, locale, logo_media_id, favicon_media_id,
+                custom_css
+         FROM site_settings WHERE singleton = 1",
+    )
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(storage)?;
+    let locale: String = row.try_get("locale").map_err(storage)?;
+    Ok(SiteSettings {
+        site_title: row.try_get("site_title").map_err(storage)?,
+        site_description: row.try_get("site_description").map_err(storage)?,
+        locale: locale_from_database(&locale)?,
+        logo_media_id: row.try_get("logo_media_id").map_err(storage)?,
+        favicon_media_id: row.try_get("favicon_media_id").map_err(storage)?,
+        custom_css: row.try_get("custom_css").map_err(storage)?,
+    })
+}
+
+async fn snapshot_navigation(
+    transaction: &mut Transaction<'_, Sqlite>,
+) -> Result<Vec<NavigationItem>, RepositoryError> {
+    let rows = sqlx::query(
+        "SELECT id, label, destination, is_external, position
+         FROM navigation ORDER BY position",
+    )
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(storage)?;
+    rows.into_iter()
+        .map(|row| {
+            let position: i64 = row.try_get("position").map_err(storage)?;
+            Ok(NavigationItem {
+                id: row.try_get("id").map_err(storage)?,
+                label: row.try_get("label").map_err(storage)?,
+                destination: row.try_get("destination").map_err(storage)?,
+                is_external: row.try_get::<i64, _>("is_external").map_err(storage)? == 1,
+                position: u16::try_from(position).map_err(storage)?,
+            })
+        })
+        .collect()
+}
+
+async fn snapshot_contents(
+    transaction: &mut Transaction<'_, Sqlite>,
+    effective_at: DateTime<Utc>,
+) -> Result<Vec<Content>, RepositoryError> {
+    let rows = sqlx::query_as::<_, ContentRow>(
+        "SELECT * FROM contents
+         WHERE status = 'public' AND publish_at <= ?
+         ORDER BY publish_at DESC, id DESC",
+    )
+    .bind(effective_at)
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(storage)?;
+    let mut contents = Vec::with_capacity(rows.len());
+    for row in rows {
+        let id = ContentId::from_i64(row.id);
+        let tags = snapshot_tags(transaction, id).await?;
+        contents.push(row.into_content(tags)?);
+    }
+    Ok(contents)
+}
+
+async fn snapshot_tags(
+    transaction: &mut Transaction<'_, Sqlite>,
+    content_id: ContentId,
+) -> Result<Vec<Tag>, RepositoryError> {
+    let rows = sqlx::query(
+        "SELECT tags.name, tags.slug FROM content_tags
+         JOIN tags ON tags.id = content_tags.tag_id
+         WHERE content_tags.content_id = ? ORDER BY content_tags.position",
+    )
+    .bind(content_id.as_i64())
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(storage)?;
+    rows.into_iter()
+        .map(|row| {
+            let slug: String = row.try_get("slug").map_err(storage)?;
+            Ok(Tag {
+                name: row.try_get("name").map_err(storage)?,
+                slug: Slug::parse(slug).map_err(|_| {
+                    RepositoryError::Storage("database contains an invalid tag slug".into())
+                })?,
+            })
+        })
+        .collect()
+}
+
+async fn snapshot_redirects(
+    transaction: &mut Transaction<'_, Sqlite>,
+    effective_at: DateTime<Utc>,
+) -> Result<Vec<PublicRedirect>, RepositoryError> {
+    let rows = sqlx::query(
+        "SELECT redirects.old_slug, contents.slug AS target_slug
+         FROM redirects
+         JOIN contents ON contents.id = redirects.content_id
+         WHERE contents.status = 'public' AND contents.publish_at <= ?
+         ORDER BY redirects.old_slug",
+    )
+    .bind(effective_at)
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(storage)?;
+    rows.into_iter()
+        .map(|row| {
+            let from: String = row.try_get("old_slug").map_err(storage)?;
+            let to: String = row.try_get("target_slug").map_err(storage)?;
+            Ok(PublicRedirect {
+                from: Slug::parse(from).map_err(|_| {
+                    RepositoryError::Storage("database contains an invalid redirect slug".into())
+                })?,
+                to: Slug::parse(to).map_err(|_| {
+                    RepositoryError::Storage("database contains an invalid redirect target".into())
+                })?,
+            })
+        })
+        .collect()
+}
+
+async fn snapshot_media(
+    transaction: &mut Transaction<'_, Sqlite>,
+) -> Result<Vec<MediaAsset>, RepositoryError> {
+    let rows = sqlx::query(
+        "SELECT id, original_name, mime_type, extension, width, height, byte_size,
+                alt_text, caption, animated, created_at
+         FROM media ORDER BY created_at DESC, id",
+    )
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(storage)?;
+    let mut media = Vec::with_capacity(rows.len());
+    for row in rows {
+        let raw_id: String = row.try_get("id").map_err(storage)?;
+        let id = MediaId::parse(&raw_id).map_err(storage)?;
+        let variants = snapshot_media_variants(transaction, &id).await?;
+        media.push(
+            media_from_row(&row, variants)
+                .map_err(|error| RepositoryError::Storage(error.to_string()))?,
+        );
+    }
+    Ok(media)
+}
+
+async fn snapshot_media_variants(
+    transaction: &mut Transaction<'_, Sqlite>,
+    media_id: &MediaId,
+) -> Result<Vec<MediaVariant>, RepositoryError> {
+    let rows = sqlx::query(
+        "SELECT width, height, byte_size, filename FROM media_variants
+         WHERE media_id = ? ORDER BY width",
+    )
+    .bind(media_id.as_str())
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(storage)?;
+    rows.into_iter()
+        .map(|row| {
+            let width: i64 = row.try_get("width").map_err(storage)?;
+            let height: i64 = row.try_get("height").map_err(storage)?;
+            let byte_size: i64 = row.try_get("byte_size").map_err(storage)?;
+            Ok(MediaVariant {
+                width: u32::try_from(width).map_err(storage)?,
+                height: u32::try_from(height).map_err(storage)?,
+                byte_size: u64::try_from(byte_size).map_err(storage)?,
+                filename: row.try_get("filename").map_err(storage)?,
+            })
+        })
+        .collect()
+}
+
+fn publication_state_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<PublicationState, RepositoryError> {
+    let revision: i64 = row.try_get("public_revision").map_err(storage)?;
+    Ok(PublicationState {
+        revision: u64::try_from(revision).map_err(storage)?,
+        next_publish_at: row.try_get("next_publish_at").map_err(storage)?,
+    })
+}
+
+fn locale_from_database(locale: &str) -> Result<Locale, RepositoryError> {
+    match locale {
+        "en" => Ok(Locale::En),
+        "ja" => Ok(Locale::Ja),
+        "zh" => Ok(Locale::Zh),
+        _ => Err(RepositoryError::Storage("invalid locale".into())),
+    }
+}
+
+async fn refresh_publication_state(
+    transaction: &mut Transaction<'_, Sqlite>,
+    now: DateTime<Utc>,
+    increment: bool,
+) -> Result<(), RepositoryError> {
+    let next_publish_at: Option<DateTime<Utc>> = sqlx::query_scalar(
+        "SELECT MIN(publish_at) FROM contents
+         WHERE status = 'public' AND publish_at > ?",
+    )
+    .bind(now)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(storage)?;
+    sqlx::query(
+        "UPDATE publication_state SET
+            public_revision = public_revision + ?, next_publish_at = ?, updated_at = ?
+         WHERE singleton = 1",
+    )
+    .bind(i64::from(increment))
+    .bind(next_publish_at)
+    .bind(now)
+    .execute(&mut **transaction)
+    .await
+    .map_err(storage)?;
+    Ok(())
 }
 
 async fn ensure_slug_available(

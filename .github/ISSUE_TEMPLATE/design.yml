@@ -1,0 +1,57 @@
+name: Design proposal
+description: Propose a behavior, host adapter, or architectural change
+title: "[Design]: "
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Start with the user or operator problem. Durable-format, security-boundary,
+        and cross-adapter changes normally require an ADR after agreement.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem and invariant
+      description: What must become true, and who benefits?
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Current evidence
+      description: Give a reproduction, trace, benchmark, or concrete limitation.
+    validations:
+      required: true
+
+  - type: textarea
+    id: design
+    attributes:
+      label: Proposed design
+      description: Include host boundaries, durable data, and compatibility effects.
+    validations:
+      required: true
+
+  - type: textarea
+    id: failures
+    attributes:
+      label: Failure and recovery model
+      description: How will failures be detected, correlated, diagnosed, and recovered?
+    validations:
+      required: true
+
+  - type: textarea
+    id: tests
+    attributes:
+      label: Red test
+      description: Which automated test or executable check should fail first?
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: compatibility
+    attributes:
+      label: Compatibility review
+      options:
+        - label: I considered `.simple-blog`, diagnostics, and cross-adapter compatibility.
+          required: true

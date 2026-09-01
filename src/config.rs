@@ -1,5 +1,7 @@
 use std::{
     collections::BTreeMap,
+    fs::File,
+    io::Write,
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
 };
@@ -7,6 +9,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
+use uuid::Uuid;
 
 const DEFAULT_DATA_DIR: &str = "./data";
 const DEFAULT_BIND: &str = "127.0.0.1:8080";
@@ -64,6 +67,13 @@ pub enum ConfigError {
     Parse {
         path: PathBuf,
         source: toml::de::Error,
+    },
+    #[error("could not serialize configuration: {0}")]
+    Serialize(#[from] toml::ser::Error),
+    #[error("could not write configuration at {path}: {source}")]
+    Write {
+        path: PathBuf,
+        source: std::io::Error,
     },
 }
 
@@ -161,6 +171,50 @@ impl Config {
     pub fn backup_dir(&self) -> PathBuf {
         self.data_dir.join("backups")
     }
+
+    #[must_use]
+    pub fn release_dir(&self) -> PathBuf {
+        self.data_dir.join("releases")
+    }
+
+    /// Durably replaces `config.toml` without exposing a partially written file.
+    pub fn persist(&self) -> Result<(), ConfigError> {
+        let file = ConfigFile {
+            data_dir: None,
+            bind: Some(self.bind.to_string()),
+            public_url: Some(self.public_url.to_string()),
+            trusted_proxies: Some(self.trusted_proxies.clone()),
+            max_upload_bytes: Some(self.max_upload_bytes),
+        };
+        let contents = toml::to_string_pretty(&file)?;
+        std::fs::create_dir_all(&self.data_dir).map_err(|source| ConfigError::Write {
+            path: self.data_dir.clone(),
+            source,
+        })?;
+        let path = self.data_dir.join("config.toml");
+        let temporary = self
+            .data_dir
+            .join(format!(".config-{}.toml", Uuid::new_v4()));
+        let result = (|| {
+            let mut output = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)?;
+            output.write_all(contents.as_bytes())?;
+            output.sync_all()?;
+            std::fs::rename(&temporary, &path)?;
+            sync_directory(&self.data_dir)
+        })();
+        if let Err(source) = result {
+            let _cleanup = std::fs::remove_file(&temporary);
+            return Err(ConfigError::Write { path, source });
+        }
+        Ok(())
+    }
+}
+
+fn sync_directory(path: &Path) -> Result<(), std::io::Error> {
+    File::open(path)?.sync_all()
 }
 
 fn read_optional_file(path: &Path) -> Result<Option<ConfigFile>, ConfigError> {

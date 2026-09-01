@@ -15,10 +15,77 @@ fn help_exposes_the_v01_operational_surface() {
     assert!(output.status.success());
     let help = String::from_utf8(output.stdout).unwrap();
     for command in [
-        "init", "serve", "backup", "restore", "export", "doctor", "owner",
+        "init", "build", "serve", "backup", "restore", "export", "migrate", "doctor", "owner",
     ] {
         assert!(help.contains(command), "missing {command}");
     }
+}
+
+#[test]
+fn migrate_cli_moves_a_site_without_requiring_the_destination_to_be_initialized() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    let destination = temp.path().join("destination");
+    let archive = temp.path().join("site.simple-blog");
+    assert!(
+        binary()
+            .args(["--data-dir", source.to_str().unwrap(), "init"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+
+    let exported = binary()
+        .args([
+            "--data-dir",
+            source.to_str().unwrap(),
+            "migrate",
+            "export",
+            "--output",
+            archive.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        exported.status.success(),
+        "{}",
+        String::from_utf8_lossy(&exported.stderr)
+    );
+    let export_report: serde_json::Value = serde_json::from_slice(&exported.stdout).unwrap();
+    assert_eq!(export_report["archive"], archive.to_str().unwrap());
+    assert_eq!(export_report["archive_id"].as_str().unwrap().len(), 64);
+
+    let imported = binary()
+        .args([
+            "--data-dir",
+            destination.to_str().unwrap(),
+            "migrate",
+            "import",
+            archive.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        imported.status.success(),
+        "{}",
+        String::from_utf8_lossy(&imported.stderr)
+    );
+    let import_report: serde_json::Value = serde_json::from_slice(&imported.stdout).unwrap();
+    assert_eq!(import_report["data_dir"], destination.to_str().unwrap());
+    assert_eq!(import_report["release_id"].as_str().unwrap().len(), 64);
+    assert!(destination.join("simple-blog.sqlite3").is_file());
+    assert!(destination.join("releases/active").is_file());
+
+    let doctor = binary()
+        .args(["--data-dir", destination.to_str().unwrap(), "doctor"])
+        .output()
+        .unwrap();
+    assert!(
+        doctor.status.success(),
+        "{}",
+        String::from_utf8_lossy(&doctor.stderr)
+    );
 }
 
 #[test]
@@ -40,6 +107,7 @@ fn init_to_doctor_and_backup_works_with_only_the_release_binary_contract() {
     assert!(data.join("config.toml").is_file());
     assert!(data.join("media").is_dir());
     assert!(data.join("backups").is_dir());
+    assert!(data.join("releases").is_dir());
 
     let doctor = binary()
         .args(["--data-dir", data.to_str().unwrap(), "doctor"])
@@ -74,8 +142,12 @@ fn init_to_doctor_and_backup_works_with_only_the_release_binary_contract() {
         "filesystem.data",
         "filesystem.media",
         "filesystem.backups",
+        "filesystem.releases",
         "media.records",
         "media.orphans",
+        "release.active",
+        "release.history",
+        "release.temporary_files",
     ] {
         assert!(checks.iter().any(|check| check["name"] == expected));
     }
@@ -92,6 +164,57 @@ fn init_to_doctor_and_backup_works_with_only_the_release_binary_contract() {
     let archive = String::from_utf8(backup.stdout).unwrap();
     let archive = std::path::PathBuf::from(archive.trim());
     assert!(archive.is_file());
+}
+
+#[test]
+fn build_activates_a_verified_release_and_can_materialize_it_without_overwrite() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path().join("data");
+    let output = temp.path().join("public");
+    assert!(
+        binary()
+            .args(["--data-dir", data.to_str().unwrap(), "init"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+
+    let built = binary()
+        .args([
+            "--data-dir",
+            data.to_str().unwrap(),
+            "build",
+            "--output",
+            output.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let result: serde_json::Value = serde_json::from_slice(&built.stdout).unwrap();
+    assert_eq!(result["public_revision"], 0);
+    assert_eq!(result["materialized_to"], output.to_str().unwrap());
+    assert_eq!(result["release_id"].as_str().unwrap().len(), 64);
+    assert!(data.join("releases/active").is_file());
+    assert!(output.join("index.html").is_file());
+    assert!(output.join(".simple-blog-release.json").is_file());
+
+    let refused = binary()
+        .args([
+            "--data-dir",
+            data.to_str().unwrap(),
+            "build",
+            "--output",
+            output.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("already exists"));
 }
 
 #[test]

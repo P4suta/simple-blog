@@ -2,7 +2,7 @@
 name = "simple-blog"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.96"
 description = "A small, writing-focused, single-owner dynamic CMS"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/P4suta/simple-blog"
@@ -51,8 +51,9 @@ sqlx = { version = "0.8.6", default-features = false, features = ["chrono", "jso
 subtle = "2.6"
 tar = "0.4"
 thiserror = "2.0"
-tokio = { version = "1.46", features = ["fs", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio = { version = "1.46", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 toml = "0.9"
+unicode-normalization = "0.1"
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.7.0", features = ["catch-panic", "compression-full", "limit", "normalize-path", "request-id", "sensitive-headers", "set-header", "trace"] }
 tracing = "0.1"
@@ -61,6 +62,7 @@ url = { version = "2.5", features = ["serde"] }
 uuid = { version = "1.17", features = ["serde", "v4"] }
 walkdir = "2.5"
 webauthn-rs = "0.5.2"
+webpkit = { version = "0.1.0", features = ["image"] }
 zstd = "0.13"
 
 [dev-dependencies]

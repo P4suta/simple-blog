@@ -6,8 +6,16 @@
     <h1 itemprop="headline">{{ page.title }}</h1>
     {% if page.summary %}<p class="dek" itemprop="description">{{ page.summary }}</p>{% endif %}
   </header>
-  {% if page.cover %}<figure class="cover"><picture><source type="image/webp" srcset="{{ page.cover.srcset|safe }}" sizes="(max-width: 760px) 100vw, {{ site.content_width }}px"><img src="{{ page.cover.original_url|safe }}" alt="{{ page.cover.alt_text }}" width="{{ page.cover.width }}" height="{{ page.cover.height }}" loading="eager" fetchpriority="high"></picture></figure>{% endif %}
+  {% if page.cover %}<figure class="cover"><picture><source type="image/webp" srcset="{{ page.cover.srcset|safe }}" sizes="(max-width: 700px) 100vw, 640px"><img src="{{ page.cover.original_url|safe }}" alt="{{ page.cover.alt_text }}" width="{{ page.cover.width }}" height="{{ page.cover.height }}" loading="eager" fetchpriority="high"></picture></figure>{% endif %}
   <div class="prose" itemprop="articleBody">{{ page.body_html|safe }}</div>
-  {% if page.tags %}<footer><ul class="tags" aria-label="Tags">{% for tag in page.tags %}<li><a href="/tag/{{ tag.slug }}/">{{ tag.name }}</a></li>{% endfor %}</ul></footer>{% endif %}
+  {% if page.tags %}<footer><ul class="tags" aria-label="{{ t["public.tags"] }}">{% for tag in page.tags %}<li><a href="/tag/{{ tag.slug }}/">{{ tag.name }}</a></li>{% endfor %}</ul></footer>{% endif %}
+  <p class="like"><button type="button" class="like-button" hidden data-content-id="{{ page.id }}" data-label-like="{{ t["public.like"] }}" data-label-liked="{{ t["public.liked"] }}"></button></p>
 </article>
+{% if page.older or page.newer %}
+<nav class="post-nav" aria-label="{{ t["public.post_nav"] }}">
+  {% if page.newer %}<a class="post-nav-newer" rel="prev" href="/{{ page.newer.slug }}/">← {{ page.newer.title }}</a>{% endif %}
+  {% if page.older %}<a class="post-nav-older" rel="next" href="/{{ page.older.slug }}/">{{ page.older.title }} →</a>{% endif %}
+</nav>
+{% endif %}
+<script src="/assets/like.js?v={{ page.like_js_version }}" defer></script>
 {% endblock %}

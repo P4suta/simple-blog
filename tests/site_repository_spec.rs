@@ -3,7 +3,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use simple_blog::{
     application::{ports::SiteRepository, site::SiteService},
-    domain::theme::{ColorScheme, FontPreset, Locale, NavigationItem, SiteSettings},
+    domain::theme::{Locale, NavigationItem, SiteSettings},
     infrastructure::sqlite::SqliteRepository,
 };
 
@@ -14,12 +14,21 @@ fn settings(title: &str) -> SiteSettings {
         locale: Locale::En,
         logo_media_id: None,
         favicon_media_id: None,
-        accent_color: "#123abc".into(),
-        font_preset: FontPreset::Sans,
-        content_width: 680,
-        color_scheme: ColorScheme::Dark,
         custom_css: String::new(),
     }
+}
+
+#[tokio::test]
+async fn migration_seeds_default_theme_as_ordinary_custom_css() {
+    let temp = tempfile::tempdir().unwrap();
+    let repository = SqliteRepository::connect(&temp.path().join("blog.sqlite3"))
+        .await
+        .unwrap();
+    let stored = repository.site_settings().await.unwrap();
+    assert_eq!(
+        stored.custom_css,
+        include_str!("../static/default-theme.css")
+    );
 }
 
 #[tokio::test]
