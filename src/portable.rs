@@ -580,9 +580,7 @@ impl PortableArchive {
             }
             let encoder = archive.into_inner()?;
             encoder.finish()?.sync_all()?;
-            install_without_overwrite(&partial, output)?;
-            std::fs::remove_file(&partial)?;
-            File::open(parent)?.sync_all()?;
+            install_archive(&partial, output, parent, crate::durable_fs::sync_directory)?;
             Ok::<_, PortableArchiveError>(())
         })();
         if result.is_err() {
@@ -638,7 +636,7 @@ impl PortableArchive {
                     "decoded archive is too large".into(),
                 ));
             }
-            let capacity = usize::try_from(declared)
+            let capacity = usize::try_from(declared.min(64 * 1024))
                 .map_err(|error| PortableArchiveError::SafetyLimit(error.to_string()))?;
             let mut bytes = Vec::with_capacity(capacity);
             entry.read_to_end(&mut bytes)?;
@@ -713,6 +711,58 @@ fn install_without_overwrite(
             Err(PortableArchiveError::OutputExists(destination.to_owned()))
         }
         Err(error) => Err(error.into()),
+    }
+}
+
+fn install_archive(
+    partial: &Path,
+    output: &Path,
+    parent: &Path,
+    sync_parent: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> Result<(), PortableArchiveError> {
+    install_without_overwrite(partial, output)?;
+    let result = (|| {
+        std::fs::remove_file(partial)?;
+        sync_parent(parent)?;
+        Ok::<_, PortableArchiveError>(())
+    })();
+    if result.is_err() {
+        cleanup_failed_archive_path(partial, "portable.archive.partial_cleanup_failed");
+        cleanup_failed_archive_path(output, "portable.archive.output_cleanup_failed");
+    }
+    result
+}
+
+fn cleanup_failed_archive_path(path: &Path, event: &'static str) {
+    if let Err(error) = std::fs::remove_file(path)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(event, path = %path.display(), error = %error);
+    }
+}
+
+#[cfg(test)]
+mod archive_install_tests {
+    use super::*;
+
+    #[test]
+    fn a_post_install_directory_sync_failure_removes_every_visible_output() {
+        let temp = tempfile::tempdir().unwrap();
+        let partial = temp.path().join("archive.partial");
+        let output = temp.path().join("archive.simple-blog");
+        std::fs::write(&partial, b"complete archive").unwrap();
+
+        let error = install_archive(&partial, &output, temp.path(), |_| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "injected directory sync failure",
+            ))
+        })
+        .unwrap_err();
+
+        assert!(matches!(error, PortableArchiveError::Io(_)));
+        assert!(!partial.exists());
+        assert!(!output.exists());
     }
 }
 

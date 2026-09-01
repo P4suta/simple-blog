@@ -215,7 +215,7 @@ async fn build(overrides: Overrides, output: Option<PathBuf>) -> Result<()> {
         serde_json::to_string(&serde_json::json!({
             "release_id": outcome.release_id.as_str(),
             "public_revision": outcome.public_revision,
-            "disposition": format!("{:?}", outcome.disposition).to_ascii_lowercase(),
+            "disposition": outcome.disposition,
             "routes": outcome.route_count,
             "objects": verification.object_count,
             "bytes": verification.total_bytes,
@@ -333,10 +333,14 @@ async fn migrate_export(overrides: Overrides, output: Option<PathBuf>) -> Result
 async fn migrate_import(mut overrides: Overrides, archive: PathBuf, force: bool) -> Result<()> {
     let package = PortableArchive::read(&archive)
         .with_context(|| format!("could not read portable archive {}", archive.display()))?;
-    if overrides.public_url.is_none() {
+    let origin_is_explicit =
+        overrides.public_url.is_some() || std::env::var_os("SIMPLE_BLOG_PUBLIC_URL").is_some();
+    let mut config =
+        Config::load(overrides.clone()).context("could not load destination configuration")?;
+    if !origin_is_explicit && !config.data_dir.join("config.toml").is_file() {
         overrides.public_url = Some(package.site.canonical_origin.clone());
+        config = Config::load(overrides).context("could not load destination configuration")?;
     }
-    let config = Config::load(overrides).context("could not load destination configuration")?;
     let report = PortableMigrationService::import_package(&archive, package, &config, force)
         .await
         .with_context(|| format!("could not import portable archive {}", archive.display()))?;

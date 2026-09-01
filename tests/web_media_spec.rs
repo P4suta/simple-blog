@@ -156,11 +156,11 @@ async fn registered_media_is_served_immutably_and_cover_uses_srcset() {
     let home = get(&harness.state, "/").await;
     let home = String::from_utf8(response_body(home).await).unwrap();
     assert!(home.contains(&format!(
-        "rel=\"icon\" href=\"/media/{}\"",
+        "rel=\"icon\" href=\"&#x2f;media&#x2f;{}\"",
         asset.original_filename
     )));
     assert!(home.contains(&format!(
-        "class=\"site-logo\" src=\"/media/{}\"",
+        "class=\"site-logo\" src=\"&#x2f;media&#x2f;{}\"",
         asset.original_filename
     )));
 

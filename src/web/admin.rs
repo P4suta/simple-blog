@@ -257,10 +257,7 @@ pub async fn dashboard(
     let contents = contents
         .into_iter()
         .map(|content| {
-            let engagement = totals
-                .get(&content.id.as_i64())
-                .copied()
-                .unwrap_or_default();
+            let engagement = totals.get(&content.id).copied().unwrap_or_default();
             DashboardItem {
                 id: content.id.as_i64(),
                 title: content.title,
@@ -380,11 +377,7 @@ pub async fn update_settings(
         Ok(()) => {
             state.publish_now().await?;
             run_media_gc(&state).await;
-            let wants_json = headers
-                .get(header::ACCEPT)
-                .and_then(|accept| accept.to_str().ok())
-                .is_some_and(|accept| accept.contains("application/json"));
-            if wants_json {
+            if wants_json(&headers) {
                 Ok(Json(json!({ "ok": true })).into_response())
             } else {
                 Ok(redirect(StatusCode::SEE_OTHER, "/admin/settings/"))

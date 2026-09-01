@@ -5,6 +5,7 @@ import type {
   R2ObjectBody,
 } from "./bindings.ts";
 import type { DomainRegistrationState } from "./domain.ts";
+import { verifiedReleaseBytes } from "./integrity.ts";
 import type {
   EngagementWriter,
   HostDirectory,
@@ -16,7 +17,7 @@ import type {
 import { parseManifest, type ReleaseReader } from "./release.ts";
 
 const DIGEST = /^[0-9a-f]{64}$/;
-const SITE_ID = /^[0-9a-f-]{36}$/;
+const SITE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const STATES = new Set<DomainRegistrationState>([
   "pending_ownership",
   "pending_certificate",
@@ -93,8 +94,8 @@ class R2ReleaseReader implements ReleaseReader {
     if (releaseId !== this.releaseId || !DIGEST.test(releaseId)) return null;
     const object = await this.bucket.get(`sites/${this.siteId}/manifests/${releaseId}.json`);
     if (object === null) return null;
-    verifyMetadata(object, "manifest", releaseId);
-    const value = JSON.parse(new TextDecoder().decode(await object.arrayBuffer())) as unknown;
+    const bytes = await verifiedReleaseBytes(object, "manifest", releaseId);
+    const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
     return parseManifest(value);
   }
 
@@ -102,8 +103,7 @@ class R2ReleaseReader implements ReleaseReader {
     if (!DIGEST.test(objectId)) return null;
     const object = await this.bucket.get(`sites/${this.siteId}/objects/${objectId}`);
     if (object === null) return null;
-    verifyMetadata(object, "object", objectId);
-    return new Uint8Array(await object.arrayBuffer());
+    return verifiedReleaseBytes(object, "object", objectId);
   }
 }
 
@@ -170,20 +170,11 @@ export class DurableObjectEngagement implements EngagementWriter {
   }
 }
 
-function verifyMetadata(object: R2ObjectBody, kind: string, id: string): void {
-  if (
-    object.customMetadata?.["simple-blog-kind"] !== kind ||
-    object.customMetadata?.["blake3"] !== id ||
-    !DIGEST.test(object.customMetadata?.["sha256"] ?? "")
-  ) {
-    throw new Error(`release_${kind}_metadata_invalid`);
-  }
-}
-
 function exactKeys(value: Record<string, unknown>, expected: string[]): boolean {
   return JSON.stringify(Object.keys(value).sort()) === JSON.stringify(expected);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  if (value === null || Array.isArray(value)) return false;
+  return typeof value === "object";
 }

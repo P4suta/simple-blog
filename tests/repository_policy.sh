@@ -10,6 +10,11 @@ fail() {
   exit 1
 }
 
+((BASH_VERSINFO[0] >= 3)) || fail 'Bash 3 or newer is required'
+for command in awk find grep jq sort; do
+  command -v "$command" >/dev/null || fail "required command is unavailable: $command"
+done
+
 required_public_files=(
   README.md
   CONTRIBUTING.md
@@ -35,26 +40,26 @@ for path in "${required_public_files[@]}"; do
 done
 
 for ecosystem in cargo bun github-actions; do
-  grep --extended-regexp --quiet \
+  grep -Eq \
     "package-ecosystem:[[:space:]]*[\"']?${ecosystem}[\"']?" \
     .github/dependabot.yml \
     || fail "Dependabot does not cover $ecosystem"
 done
 
-if grep --extended-regexp --quiet \
+if grep -Eq \
   "package-ecosystem:[[:space:]]*(npm|\"npm\"|'npm')" \
   .github/dependabot.yml; then
   fail 'Dependabot must update bun.lock through the native bun ecosystem'
 fi
 
-jq --exit-status 'type == "object"' .github/rulesets/main.json >/dev/null \
+jq -e 'type == "object"' .github/rulesets/main.json >/dev/null \
   || fail 'main ruleset is not valid JSON'
-jq --exit-status 'type == "object"' .github/rulesets/release-tags.json >/dev/null \
+jq -e 'type == "object"' .github/rulesets/release-tags.json >/dev/null \
   || fail 'release tag ruleset is not valid JSON'
-jq --exit-status 'type == "object"' .github/repository-settings.json >/dev/null \
+jq -e 'type == "object"' .github/repository-settings.json >/dev/null \
   || fail 'repository settings policy is not valid JSON'
 
-jq --exit-status '
+jq -e '
   .visibility == "public"
   and .merge.allow_squash_merge
   and (.merge.allow_merge_commit | not)
@@ -66,6 +71,7 @@ jq --exit-status '
   and .actions.allowed_actions == "selected"
   and .actions.sha_pinning_required
   and .actions.github_owned_allowed
+  and (.actions.verified_allowed | not)
   and .actions.default_workflow_permissions == "read"
   and (.actions.can_approve_pull_request_reviews | not)
   and .security.vulnerability_alerts
@@ -86,27 +92,30 @@ jq --exit-status '
 ' .github/repository-settings.json >/dev/null \
   || fail 'repository settings policy is missing a public safety invariant'
 
-mapfile -t third_party_actions < <(
-  awk '$1 == "-" && $2 == "uses:" { split($3, reference, "@"); print reference[1] }' \
-    .github/workflows/*.yml \
-    | grep --extended-regexp --invert-match '^(actions|github)/' \
-    | sort --unique
-)
+third_party_actions="$({
+  awk '
+    $1 == "-" && $2 == "uses:" {
+      split($3, reference, "@")
+      if (reference[1] !~ /^(actions|github)\//) print reference[1]
+    }
+  ' .github/workflows/*.yml | sort -u
+})"
 
-for action in "${third_party_actions[@]}"; do
-  jq --exit-status --arg pattern "${action}@*" \
+while IFS= read -r action; do
+  [[ -n "$action" ]] || continue
+  jq -e --arg pattern "${action}@*" \
     '.actions.patterns_allowed | index($pattern) != null' \
     .github/repository-settings.json >/dev/null \
     || fail "third-party action $action is absent from the selected-actions policy"
-done
+done <<< "$third_party_actions"
 
-mapfile -t actual_checks < <(
-  jq --raw-output '
+actual_checks="$({
+  jq -r '
     .rules[]
     | select(.type == "required_status_checks")
     | .parameters.required_status_checks[].context
   ' .github/rulesets/main.json | sort
-)
+})"
 
 ci_checks=(
   'Coverage floor'
@@ -117,6 +126,7 @@ ci_checks=(
   'Repository policy'
   'Stable compatibility (macos-latest)'
   'Stable compatibility (ubuntu-latest)'
+  'Stable compatibility (windows-latest)'
 )
 
 expected_checks=(
@@ -125,25 +135,58 @@ expected_checks=(
   'Analyze (rust)'
   "${ci_checks[@]}"
 )
+expected_check_lines="$(printf '%s\n' "${expected_checks[@]}" | sort)"
 
-[[ "${actual_checks[*]}" == "${expected_checks[*]}" ]] \
+[[ "$actual_checks" == "$expected_check_lines" ]] \
   || fail 'main ruleset required checks do not exactly match the protected check contract'
 
 for check in "${ci_checks[@]}"; do
   if [[ "$check" == 'Stable compatibility (macos-latest)' \
-    || "$check" == 'Stable compatibility (ubuntu-latest)' ]]; then
+    || "$check" == 'Stable compatibility (ubuntu-latest)' \
+    || "$check" == 'Stable compatibility (windows-latest)' ]]; then
     # shellcheck disable=SC2016 # The GitHub expression must remain literal.
-    grep --fixed-strings --quiet 'name: Stable compatibility (${{ matrix.os }})' \
+    grep -Fq 'name: Stable compatibility (${{ matrix.os }})' \
       .github/workflows/ci.yml \
       || fail "required matrix checks are not emitted by CI"
     continue
   fi
-  grep --fixed-strings --quiet "name: $check" .github/workflows/ci.yml \
+  grep -Fq "name: $check" .github/workflows/ci.yml \
     || fail "required check '$check' is not emitted by CI"
 done
 
+if ! awk '
+  function finish_step() {
+    if (checkout && !credentials_disabled) {
+      print workflow ":" checkout_line ": checkout persists credentials" > "/dev/stderr"
+      failed = 1
+    }
+  }
+  FNR == 1 {
+    finish_step()
+    checkout = 0
+    credentials_disabled = 0
+    workflow = FILENAME
+  }
+  /^[[:space:]]+- (uses|name|run):/ {
+    finish_step()
+    checkout = ($0 ~ /uses:[[:space:]]+actions\/checkout@/)
+    credentials_disabled = 0
+    checkout_line = FNR
+    next
+  }
+  checkout && /^[[:space:]]+persist-credentials:[[:space:]]+false([[:space:]]|$)/ {
+    credentials_disabled = 1
+  }
+  END {
+    finish_step()
+    exit failed
+  }
+' .github/workflows/*.yml; then
+  fail 'every checkout step must disable persisted credentials'
+fi
+
 # shellcheck disable=SC2016 # The GitHub expression must remain literal.
-grep --fixed-strings --quiet 'name: Analyze (${{ matrix.language }})' \
+grep -Fq 'name: Analyze (${{ matrix.language }})' \
   .github/workflows/codeql.yml \
   || fail 'the advanced CodeQL workflow does not emit per-language checks'
 
@@ -167,15 +210,15 @@ rust_build_mode="$({
 [[ "$rust_build_mode" == 'none' ]] \
   || fail 'advanced CodeQL must use the only Rust build mode supported by CodeQL: none'
 
-if grep --fixed-strings --quiet 'build-mode: manual' .github/workflows/codeql.yml; then
+if grep -Fq 'build-mode: manual' .github/workflows/codeql.yml; then
   fail 'CodeQL currently rejects manual build mode for Rust'
 fi
 
-grep --fixed-strings --quiet 'queries: security-and-quality' \
+grep -Fq 'queries: security-and-quality' \
   .github/workflows/codeql.yml \
   || fail 'advanced CodeQL must run the security-and-quality suite'
 
-jq --exit-status '
+jq -e '
   .name == "Protect main"
   and .target == "branch"
   and .enforcement == "active"
@@ -198,7 +241,7 @@ jq --exit-status '
 ' .github/rulesets/main.json >/dev/null \
   || fail 'main ruleset does not enforce the documented branch invariants'
 
-jq --exit-status '
+jq -e '
   .name == "Protect release tags"
   and .target == "tag"
   and .enforcement == "active"
@@ -208,26 +251,50 @@ jq --exit-status '
 ' .github/rulesets/release-tags.json >/dev/null \
   || fail 'release tag ruleset does not make published version tags immutable'
 
-grep --fixed-strings --quiet 'github.com/P4suta/simple-blog/security/advisories/new' SECURITY.md \
+grep -Fq 'github.com/P4suta/simple-blog/security/advisories/new' SECURITY.md \
   || fail 'SECURITY.md must route private reports to GitHub Security Advisories'
 
-grep --fixed-strings --quiet '* @P4suta' .github/CODEOWNERS \
+grep -Fq '* @P4suta' .github/CODEOWNERS \
   || fail 'the repository must retain an explicit default code owner'
 
-if grep --recursive --perl-regexp --line-number \
-  '^\s*-\s+uses:\s+[^@\s]+@(?![0-9a-f]{40}(?:\s|#|$))' \
-  .github/workflows; then
-  fail 'GitHub Actions must be pinned to a full commit SHA'
-fi
+while IFS= read -r reference; do
+  version="${reference##*@}"
+  [[ "$version" =~ ^[0-9a-f]{40}$ ]] \
+    || fail "GitHub Action is not pinned to a full commit SHA: $reference"
+done < <(awk '$1 == "-" && $2 == "uses:" { print $3 }' .github/workflows/*.yml)
 
-if grep --recursive --perl-regexp --line-number --include='*.rs' \
-  '#\s*\[\s*allow\b' src tests build.rs; then
+rust_sources=(build.rs)
+while IFS= read -r path; do
+  rust_sources+=("$path")
+done < <(find src tests -type f -name '*.rs' -print)
+
+if grep -En '#[[:space:]]*\[[[:space:]]*allow([[:space:](]|$)' \
+  "${rust_sources[@]}"; then
   fail 'allow attributes are forbidden'
 fi
 
-if grep --recursive --perl-regexp --null-data --quiet --include='*.rs' \
-  '#\s*\[\s*expect\s*\((?:(?!reason\s*=)[\s\S])*?\)\s*\]' \
-  src tests build.rs; then
+if ! awk '
+  function finish_attribute() {
+    if (in_expect && !has_reason) {
+      print attribute_file ":" attribute_line ": expect attribute lacks reason" > "/dev/stderr"
+      failed = 1
+    }
+    in_expect = 0
+    has_reason = 0
+  }
+  FNR == 1 { finish_attribute() }
+  !in_expect && /#[[:space:]]*\[[[:space:]]*expect[[:space:]]*\(/ {
+    in_expect = 1
+    attribute_file = FILENAME
+    attribute_line = FNR
+  }
+  in_expect && /reason[[:space:]]*=/ { has_reason = 1 }
+  in_expect && /\)[[:space:]]*\]/ { finish_attribute() }
+  END {
+    finish_attribute()
+    exit failed
+  }
+' "${rust_sources[@]}"; then
   fail 'expect attributes require an explicit reason'
 fi
 

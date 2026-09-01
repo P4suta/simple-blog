@@ -150,7 +150,8 @@ export class RegistrationService {
 
   private async provision(record: RegistrationRecord): Promise<void> {
     const hostname = await this.createSafely(record);
-    if (hostname !== null) this.applyProvider(record, hostname, false, this.now());
+    if (hostname === null) return;
+    this.applyProvider(record, hostname, false, this.now());
     await this.repository.save(record);
   }
 

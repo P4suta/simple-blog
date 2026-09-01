@@ -1028,7 +1028,7 @@ impl SearchRepository for SqliteRepository {
             }
         }
         let rows = query
-            .bind(i64::from(limit))
+            .bind(i64::from(limit.min(100)))
             .fetch_all(&self.pool)
             .await
             .map_err(storage)?;
@@ -1069,7 +1069,7 @@ impl EngagementRepository for SqliteRepository {
 
     async fn engagement_totals(
         &self,
-    ) -> Result<std::collections::HashMap<i64, Engagement>, RepositoryError> {
+    ) -> Result<std::collections::HashMap<ContentId, Engagement>, RepositoryError> {
         let rows = sqlx::query(
             "SELECT c.id,
                     COALESCE(l.like_count, 0) AS likes,
@@ -1087,7 +1087,7 @@ impl EngagementRepository for SqliteRepository {
                 let likes: i64 = row.try_get("likes").map_err(storage)?;
                 let views: i64 = row.try_get("views").map_err(storage)?;
                 Ok((
-                    id,
+                    ContentId::from_i64(id),
                     Engagement {
                         likes: u64::try_from(likes).unwrap_or_default(),
                         views: u64::try_from(views).unwrap_or_default(),

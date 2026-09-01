@@ -50,6 +50,14 @@ fn html_reduces_to_text_without_splitting_cjk_words() {
 }
 
 #[test]
+fn entity_decoding_never_slices_through_following_cjk_text() {
+    assert_eq!(
+        html_to_text("<p>紅茶 &amp;日本語の話。</p>"),
+        "紅茶 &日本語の話。"
+    );
+}
+
+#[test]
 fn excerpt_highlights_folded_matches_in_the_display_text() {
     let display = "静的サイトのサーバーをRustで書き直した記録。";
     let terms = ["さーばー".to_string(), "rust".to_string()];

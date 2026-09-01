@@ -6,7 +6,7 @@
   const fold = (value) =>
     value
       .normalize("NFKC")
-      .toLowerCase()
+      .replace(/[A-Z]/gu, (character) => character.toLowerCase())
       .replace(/[ァ-ヶ]/gu, (character) =>
         String.fromCodePoint(character.codePointAt(0) - 0x60),
       );

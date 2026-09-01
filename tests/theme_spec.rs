@@ -69,3 +69,23 @@ fn navigation_is_single_level_ordered_and_has_explicit_url_kinds() {
         .is_err()
     );
 }
+
+#[test]
+fn embedded_styles_preserve_font_names_and_apply_hairline_color_last() {
+    let admin = include_str!("../static/admin.css");
+    for family in [
+        "\"Meiryo\"",
+        "\"SFMono-Regular\"",
+        "\"Menlo\"",
+        "\"Consolas\"",
+    ] {
+        assert!(admin.contains(family), "unquoted font family {family}");
+    }
+
+    let theme = include_str!("../static/default-theme.css");
+    let post_nav_border = theme.rfind(".post-nav {").unwrap();
+    let hairline_color = theme
+        .rfind("border-color: color-mix(in srgb, currentcolor")
+        .unwrap();
+    assert!(hairline_color > post_nav_border);
+}

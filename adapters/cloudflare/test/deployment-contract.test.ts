@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { parseConfigFileTextToJson } from "typescript";
 
 test("deployment template denies service subdomains and declares every durable boundary", () => {
-  const config = JSON.parse(readFileSync(
+  const source = readFileSync(
     new URL("../wrangler.example.jsonc", import.meta.url),
     "utf8",
-  )) as Record<string, unknown>;
+  );
+  const parsed = parseConfigFileTextToJson("wrangler.example.jsonc", source);
+  assert.equal(parsed.error, undefined);
+  const config = parsed.config as Record<string, unknown>;
 
   assert.equal(config.main, "src/index.ts");
   assert.equal(config.compatibility_date, "2026-09-02");
@@ -21,6 +25,11 @@ test("deployment template denies service subdomains and declares every durable b
     (config.r2_buckets as Array<{ binding: string }>).map((value) => value.binding),
     ["RELEASES"],
   );
+  assert.deepEqual(config.ratelimits, [{
+    name: "REGISTRATION_RATE_LIMITER",
+    namespace_id: "1001",
+    simple: { limit: 10, period: 60 },
+  }]);
   assert.deepEqual(
     (config.d1_databases as Array<{ binding: string }>).map((value) => value.binding),
     ["REGISTRY"],

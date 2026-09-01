@@ -9,6 +9,8 @@ import type {
 } from "../src/bindings.ts";
 import { SiteCoordinator } from "../src/site-object.ts";
 
+const internalCapability = `test-only-internal-${"x".repeat(32)}`;
+
 class Storage implements DurableObjectStorage {
   readonly values = new Map<string, unknown>();
   alarm: number | null = null;
@@ -23,11 +25,11 @@ class Storage implements DurableObjectStorage {
 function setup(core: Fetcher = { async fetch() { return new Response(null, { status: 204 }); } }) {
   const storage = new Storage();
   const state: DurableObjectState = { storage };
-  const env: SiteCoordinatorEnv = { INTERNAL_DO_TOKEN: "internal-secret", CORE: core };
+  const env: SiteCoordinatorEnv = { INTERNAL_DO_TOKEN: internalCapability, CORE: core };
   return { object: new SiteCoordinator(state, env), storage };
 }
 
-function internal(path: string, body?: unknown, token = "internal-secret"): Request {
+function internal(path: string, body?: unknown, token = internalCapability): Request {
   return new Request(`https://site.internal${path}`, {
     method: "POST",
     headers: {

@@ -70,6 +70,10 @@
             "integration_id": 15368
           },
           {
+            "context": "Stable compatibility (windows-latest)",
+            "integration_id": 15368
+          },
+          {
             "context": "Embedded frontend is reproducible",
             "integration_id": 15368
           },

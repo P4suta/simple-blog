@@ -97,4 +97,22 @@ mod tests {
         assert_eq!(merged.get("only_base").map(String::as_str), Some("Base"));
         assert_eq!(merged.get("shared").map(String::as_str), Some("日本語"));
     }
+
+    #[test]
+    fn embedded_catalogs_translate_every_supported_key() {
+        let en = parse("locales/en.json", include_str!("../locales/en.json")).unwrap();
+        let ja = parse("locales/ja.json", include_str!("../locales/ja.json")).unwrap();
+        let zh = parse("locales/zh.json", include_str!("../locales/zh.json")).unwrap();
+        let mut expected = en.keys().collect::<Vec<_>>();
+        expected.sort();
+
+        for (locale, catalog) in [("ja", ja), ("zh", zh)] {
+            let mut actual = catalog.keys().collect::<Vec<_>>();
+            actual.sort();
+            assert_eq!(
+                actual, expected,
+                "{locale} catalog has missing or unknown keys"
+            );
+        }
+    }
 }

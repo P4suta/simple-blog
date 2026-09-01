@@ -11,4 +11,5 @@ CREATE TABLE publication_state (
 INSERT INTO publication_state (singleton, public_revision, next_publish_at, updated_at)
 SELECT 1, 0, MIN(publish_at), '1970-01-01T00:00:00Z'
 FROM contents
-WHERE status = 'public' AND publish_at > CURRENT_TIMESTAMP;
+WHERE status = 'public'
+  AND publish_at > strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now');

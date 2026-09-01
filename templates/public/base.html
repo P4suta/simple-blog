@@ -8,23 +8,23 @@
   <meta property="og:title" content="{{ meta.title }}">
   <meta property="og:description" content="{{ meta.description }}">
   <meta property="og:type" content="{{ meta.og_type }}">
-  <meta property="og:url" content="{{ meta.canonical_url|safe }}">
-  {% if meta.image_url %}<meta property="og:image" content="{{ meta.image_url|safe }}">{% endif %}
+  <meta property="og:url" content="{{ meta.canonical_url }}">
+  {% if meta.image_url %}<meta property="og:image" content="{{ meta.image_url }}">{% endif %}
   <meta name="twitter:card" content="summary_large_image">
-  <link rel="canonical" href="{{ meta.canonical_url|safe }}">
+  <link rel="canonical" href="{{ meta.canonical_url }}">
   <link rel="alternate" type="application/atom+xml" title="{{ site.site_title }}" href="/feed.xml">
   <link rel="stylesheet" href="/assets/site.css?v={{ assets.css_version }}">
   {# Synchronous on purpose: a saved reader preference (measure, text size,
      scheme) must apply before first paint. Tiny and immutable-cached. #}
   <script src="/assets/prefs.js?v={{ assets.prefs_js_version }}"></script>
-  {% if assets.favicon_url %}<link rel="icon" href="{{ assets.favicon_url|safe }}">{% endif %}
+  {% if assets.favicon_url %}<link rel="icon" href="{{ assets.favicon_url }}">{% endif %}
 </head>
 <body>
   <a class="skip-link" href="#main">{{ t["public.skip"] }}</a>
   <header class="site-header">
-    <a class="brand" href="/">{% if assets.logo_url %}<img class="site-logo" src="{{ assets.logo_url|safe }}" alt=""><span>{{ site.site_title }}</span>{% else %}{{ site.site_title }}{% endif %}</a>
+    <a class="brand" href="/">{% if assets.logo_url %}<img class="site-logo" src="{{ assets.logo_url }}" alt=""><span>{{ site.site_title }}</span>{% else %}{{ site.site_title }}{% endif %}</a>
     {% if navigation %}
-    <nav aria-label="Primary"><ul>{% for item in navigation %}<li><a href="{{ item.destination|safe }}"{% if item.is_external %} rel="noopener noreferrer"{% endif %}>{{ item.label }}</a></li>{% endfor %}</ul></nav>
+    <nav aria-label="Primary"><ul>{% for item in navigation %}<li><a href="{{ item.destination }}"{% if item.is_external %} rel="noopener noreferrer"{% endif %}>{{ item.label }}</a></li>{% endfor %}</ul></nav>
     {% endif %}
   </header>
   <main id="main" class="site-main" itemscope itemtype="https://schema.org/WebPage">

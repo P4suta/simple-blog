@@ -89,6 +89,69 @@ fn migrate_cli_moves_a_site_without_requiring_the_destination_to_be_initialized(
 }
 
 #[test]
+fn migrate_cli_preserves_an_existing_destination_origin_guard() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    let destination = temp.path().join("destination");
+    let archive = temp.path().join("site.simple-blog");
+    for (data, origin) in [
+        (&source, "https://source.example"),
+        (&destination, "https://destination.example"),
+    ] {
+        let initialized = binary()
+            .args([
+                "--data-dir",
+                data.to_str().unwrap(),
+                "--public-url",
+                origin,
+                "init",
+            ])
+            .env_remove("SIMPLE_BLOG_PUBLIC_URL")
+            .output()
+            .unwrap();
+        assert!(
+            initialized.status.success(),
+            "{}",
+            String::from_utf8_lossy(&initialized.stderr)
+        );
+    }
+    let exported = binary()
+        .args([
+            "--data-dir",
+            source.to_str().unwrap(),
+            "migrate",
+            "export",
+            "--output",
+            archive.to_str().unwrap(),
+        ])
+        .env_remove("SIMPLE_BLOG_PUBLIC_URL")
+        .output()
+        .unwrap();
+    assert!(exported.status.success());
+    let destination_config_before = std::fs::read(destination.join("config.toml")).unwrap();
+
+    let imported = binary()
+        .args([
+            "--data-dir",
+            destination.to_str().unwrap(),
+            "migrate",
+            "import",
+            archive.to_str().unwrap(),
+            "--force",
+        ])
+        .env_remove("SIMPLE_BLOG_PUBLIC_URL")
+        .output()
+        .unwrap();
+
+    assert!(!imported.status.success());
+    assert!(String::from_utf8_lossy(&imported.stderr).contains("origin"));
+    assert_eq!(
+        std::fs::read(destination.join("config.toml")).unwrap(),
+        destination_config_before
+    );
+}
+
+#[test]
 fn init_to_doctor_and_backup_works_with_only_the_release_binary_contract() {
     let temp = tempfile::tempdir().unwrap();
     let data = temp.path().join("data");

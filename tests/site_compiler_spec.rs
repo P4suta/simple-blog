@@ -3,7 +3,7 @@ use simple_blog::{
     application::site_compiler::{PublicRedirect, SiteCompiler, SiteSnapshotV1},
     domain::{
         content::{Content, ContentId, ContentKind, Publication, Slug, Tag},
-        theme::{Locale, SiteSettings},
+        theme::{Locale, NavigationItem, SiteSettings},
     },
     release::{PreparedRelease, ReleaseRoute},
 };
@@ -137,10 +137,98 @@ fn compiler_emits_the_complete_public_surface_without_non_visible_content() {
     assert!(home.contains("Published"));
     assert!(!home.contains("Private"));
     assert!(!home.contains("Future"));
-    assert!(home.contains("https://writing.example/"));
+    assert!(home.contains("https:&#x2f;&#x2f;writing.example&#x2f;"));
     assert!(body(&release, "/feed.xml").contains("Body for Published"));
-    assert!(body(&release, "/sitemap.xml").contains("/published/"));
+    assert!(body(&release, "/sitemap.xml").contains("&#x2f;published&#x2f;"));
     assert!(body(&release, "/assets/search-index.json").contains("Published"));
+}
+
+#[test]
+fn archive_never_silently_omits_older_posts() {
+    let now = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
+    let posts = (1..=101)
+        .map(|id| {
+            content(
+                id,
+                &format!("Post {id}"),
+                &format!("post-{id}"),
+                Publication::Public {
+                    publish_at: now - Duration::minutes(id),
+                },
+                id,
+            )
+        })
+        .collect();
+
+    let release = SiteCompiler::embedded()
+        .unwrap()
+        .compile(&snapshot(posts), "https://writing.example", None)
+        .unwrap();
+    let archive = body(&release, "/archive/");
+
+    assert!(archive.contains("Post 1"));
+    assert!(archive.contains("Post 101"));
+}
+
+#[test]
+fn feed_updated_tracks_the_most_recent_edit_not_publication_order() {
+    let now = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
+    let newest_publication = content(
+        1,
+        "Newly published",
+        "newly-published",
+        Publication::Public {
+            publish_at: now - Duration::hours(1),
+        },
+        1,
+    );
+    let older_but_edited = content(
+        2,
+        "Recently edited",
+        "recently-edited",
+        Publication::Public {
+            publish_at: now - Duration::days(1),
+        },
+        120,
+    );
+
+    let release = SiteCompiler::embedded()
+        .unwrap()
+        .compile(
+            &snapshot(vec![newest_publication, older_but_edited]),
+            "https://writing.example",
+            None,
+        )
+        .unwrap();
+    let feed_header = body(&release, "/feed.xml").split("<entry>").next().unwrap();
+
+    assert!(feed_header.contains("<updated>2026-09-01T02:00:00Z</updated>"));
+}
+
+#[test]
+fn generated_url_attributes_rely_on_contextual_escaping() {
+    let now = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
+    let mut site = snapshot(vec![content(
+        1,
+        "Escaped links",
+        "escaped-links",
+        Publication::Public { publish_at: now },
+        1,
+    )]);
+    site.navigation.push(NavigationItem {
+        id: 1,
+        label: "Query link".into(),
+        destination: "https://example.com/read?first=1&second=2".into(),
+        is_external: true,
+        position: 0,
+    });
+
+    let release = SiteCompiler::embedded()
+        .unwrap()
+        .compile(&site, "https://writing.example", None)
+        .unwrap();
+
+    assert!(body(&release, "/").contains("first=1&amp;second=2"));
 }
 
 #[test]

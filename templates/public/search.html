@@ -6,7 +6,7 @@
   <button type="submit">{{ t["public.search"] }}</button>
 </form>
 {% if page.static_search %}
-<p class="empty" data-search-status data-empty="{{ t["public.search_empty"] }}" data-loading="Searching…" data-failed="Search is temporarily unavailable."></p>
+<p class="empty" data-search-status data-empty="{{ t["public.search_empty"] }}" data-loading="{{ t["public.search_loading"] }}" data-failed="{{ t["public.search_failed"] }}"></p>
 <section class="post-list search-results" data-search-results aria-label="{{ t["public.search"] }}" hidden></section>
 <script src="/assets/search.js?v={{ page.search_js_version }}" defer></script>
 {% else %}

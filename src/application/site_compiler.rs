@@ -117,11 +117,11 @@ impl SiteCompiler {
                 )?;
         }
 
-        builder = self.add_home(builder, snapshot, &origin, &posts)?;
-        builder = self.add_archives(builder, snapshot, &origin, &public, &posts)?;
+        builder = self.add_home(builder, snapshot, &origin, &posts, &media)?;
+        builder = self.add_archives(builder, snapshot, &origin, &public, &posts, &media)?;
         builder = self.add_contents(builder, snapshot, &origin, &public, &posts, &media)?;
         builder = self.add_machine_files(builder, snapshot, &origin, &public, &posts)?;
-        builder = self.add_static_assets(builder, snapshot, &origin)?;
+        builder = self.add_static_assets(builder, snapshot, &origin, &media)?;
 
         let release = builder.finish()?;
         tracing::info!(
@@ -139,10 +139,12 @@ impl SiteCompiler {
         snapshot: &SiteSnapshotV1,
         origin: &str,
         posts: &[Content],
+        media: &HashMap<&str, &MediaAsset>,
     ) -> Result<ReleaseBuilder, SiteCompilerError> {
         let context = self.theme_context(
             snapshot,
             origin,
+            media,
             PagePresentation {
                 path: "/",
                 title: MetaTitle::Site,
@@ -164,6 +166,7 @@ impl SiteCompiler {
         origin: &str,
         public: &[Content],
         posts: &[Content],
+        media: &HashMap<&str, &MediaAsset>,
     ) -> Result<ReleaseBuilder, SiteCompilerError> {
         builder = builder.redirect("/archive", "/archive/", 308)?;
         let archive_heading = self
@@ -173,9 +176,12 @@ impl SiteCompiler {
             builder,
             snapshot,
             origin,
-            "/archive/",
-            archive_heading,
-            posts.iter().take(100),
+            media,
+            ArchivePresentation {
+                path: "/archive/",
+                heading: archive_heading,
+            },
+            posts.iter(),
         )?;
 
         let mut tags: BTreeMap<String, (String, Vec<&Content>)> = BTreeMap::new();
@@ -194,8 +200,11 @@ impl SiteCompiler {
                 builder,
                 snapshot,
                 origin,
-                &path,
-                format!("#{name}"),
+                media,
+                ArchivePresentation {
+                    path: &path,
+                    heading: format!("#{name}"),
+                },
                 contents.into_iter(),
             )?;
         }
@@ -207,10 +216,11 @@ impl SiteCompiler {
         builder: ReleaseBuilder,
         snapshot: &SiteSnapshotV1,
         origin: &str,
-        path: &str,
-        heading: String,
+        media: &HashMap<&str, &MediaAsset>,
+        presentation: ArchivePresentation<'_>,
         contents: impl Iterator<Item = &'a Content>,
     ) -> Result<ReleaseBuilder, SiteCompilerError> {
+        let ArchivePresentation { path, heading } = presentation;
         let mut years: Vec<ArchiveYear> = Vec::new();
         for content in contents {
             let card = ContentCard::from(content);
@@ -226,6 +236,7 @@ impl SiteCompiler {
         let context = self.theme_context(
             snapshot,
             origin,
+            media,
             PagePresentation {
                 path,
                 title: MetaTitle::Page(heading.clone()),
@@ -278,6 +289,7 @@ impl SiteCompiler {
             let mut context = self.theme_context(
                 snapshot,
                 origin,
+                media,
                 PagePresentation {
                     path: &path,
                     title,
@@ -315,8 +327,10 @@ impl SiteCompiler {
         posts: &[Content],
     ) -> Result<ReleaseBuilder, SiteCompilerError> {
         let updated = posts
-            .first()
-            .map_or(snapshot.effective_at, |post| post.updated_at);
+            .iter()
+            .map(|post| post.updated_at)
+            .max()
+            .unwrap_or(snapshot.effective_at);
         let entries = posts
             .iter()
             .take(50)
@@ -413,6 +427,7 @@ impl SiteCompiler {
         mut builder: ReleaseBuilder,
         snapshot: &SiteSnapshotV1,
         origin: &str,
+        media: &HashMap<&str, &MediaAsset>,
     ) -> Result<ReleaseBuilder, SiteCompilerError> {
         builder = builder
             .asset(
@@ -444,6 +459,7 @@ impl SiteCompiler {
         let search_context = self.theme_context(
             snapshot,
             origin,
+            media,
             PagePresentation {
                 path: "/search/",
                 title: MetaTitle::Page(
@@ -474,6 +490,7 @@ impl SiteCompiler {
         let not_found_context = self.theme_context(
             snapshot,
             origin,
+            media,
             PagePresentation {
                 path: "/404/",
                 title: MetaTitle::Page("Page not found".into()),
@@ -499,6 +516,7 @@ impl SiteCompiler {
         &self,
         snapshot: &SiteSnapshotV1,
         origin: &str,
+        media: &HashMap<&str, &MediaAsset>,
         presentation: PagePresentation<'_>,
         page: T,
     ) -> ThemeContext<T> {
@@ -513,11 +531,6 @@ impl SiteCompiler {
             MetaTitle::Page(title) => format!("{title} — {}", snapshot.settings.site_title),
             MetaTitle::Override(title) => title,
         };
-        let media = snapshot
-            .media
-            .iter()
-            .map(|asset| (asset.id.as_str(), asset))
-            .collect::<HashMap<_, _>>();
         let media_url = |id: Option<&str>| {
             id.and_then(|id| media.get(id))
                 .map(|asset| format!("/media/{}", asset.original_filename))
@@ -572,6 +585,11 @@ struct PagePresentation<'a> {
     title: MetaTitle,
     description: Option<String>,
     og_type: &'a str,
+}
+
+struct ArchivePresentation<'a> {
+    path: &'a str,
+    heading: String,
 }
 
 #[derive(Serialize)]

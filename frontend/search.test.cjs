@@ -46,6 +46,21 @@ test("browser query semantics match the Core CJK contract", () => {
   );
 });
 
+test("browser folding preserves non-ASCII case exactly like the Core index", () => {
+  const accented = [{
+    id: 4,
+    slug: "ecole",
+    title: "École",
+    summary: "",
+    body: "",
+    folded: "École  ",
+    published: "2026-09-02",
+  }];
+
+  assert.equal(fold("ÉCOLE"), "École");
+  assert.deepEqual(queryDocuments(accented, "École", 50).map((item) => item.slug), ["ecole"]);
+});
+
 test("title matches rank above body matches and limits are deterministic", () => {
   assert.deepEqual(
     queryDocuments(documents, "検索エンジン", 50).map((item) => item.slug),

@@ -64,6 +64,10 @@ export interface Fetcher {
   fetch(request: Request): Promise<Response>;
 }
 
+export interface RateLimit {
+  limit(options: { key: string }): Promise<{ success: boolean }>;
+}
+
 export interface SiteCoordinatorEnv {
   INTERNAL_DO_TOKEN: string;
   CORE: Fetcher;
@@ -93,6 +97,7 @@ export interface WorkerEnv {
   RELEASES: R2Bucket;
   REGISTRY: D1Database;
   SITES: DurableObjectNamespace;
+  REGISTRATION_RATE_LIMITER: RateLimit;
   CONTROL_HOSTNAME: string;
   ANONYMOUS_DEMO_HOSTNAME: string;
   SAAS_CNAME_TARGET: string;

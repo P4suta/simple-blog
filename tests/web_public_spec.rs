@@ -14,6 +14,7 @@ use simple_blog::{
     config::{Config, ConfigSources, Overrides},
     domain::content::{ContentDraft, ContentKind, Publication, Slug},
     infrastructure::{markdown::ComrakMarkdownRenderer, sqlite::SqliteRepository},
+    release::{FilesystemReleaseStore, ReleaseReader, ReleaseStore},
     web::{AppState, router},
 };
 use tower::ServiceExt;
@@ -182,7 +183,7 @@ async fn home_is_server_rendered_and_never_leaks_drafts_or_javascript() {
     // preferences loader); inline JavaScript never appears.
     assert!(!body.contains("<script>"));
     assert!(body.contains("/assets/prefs.js?v="));
-    assert!(body.contains("rel=\"canonical\" href=\"http://localhost:8080/\""));
+    assert!(body.contains("rel=\"canonical\" href=\"http:&#x2f;&#x2f;localhost:8080&#x2f;\""));
     assert!(body.contains("class=\"skip-link\""));
 }
 
@@ -368,7 +369,27 @@ async fn host_header_is_validated_but_health_remains_probeable() {
 #[tokio::test]
 async fn every_response_has_a_server_generated_correlation_id_and_safe_failures() {
     let harness = Harness::new().await;
-    harness.repository.close().await;
+    let now = Utc::now() - Duration::seconds(1);
+    harness
+        .service
+        .create(
+            draft(
+                "Corrupt release",
+                "corrupt-release",
+                Publication::Public { publish_at: now },
+            ),
+            SaveIntent::Explicit,
+            now,
+        )
+        .await
+        .unwrap();
+    harness.state.publish_now().await.unwrap();
+    let store = FilesystemReleaseStore::new(harness._temp.path().join("releases"));
+    let active = store.active().await.unwrap().unwrap();
+    let manifest = store.manifest(&active.id).await.unwrap();
+    let object = manifest.routes["/"].object_id().unwrap();
+    std::fs::write(store.root().join("objects").join(object), b"corrupt").unwrap();
+
     let response = router(harness.state.clone())
         .oneshot(
             Request::builder()
@@ -479,7 +500,7 @@ async fn page_views_are_counted_server_side_but_never_shown() {
     let body = body_text(harness.request("/counted/").await).await;
     harness.request("/counted/").await;
     let totals = harness.repository.engagement_totals().await.unwrap();
-    assert_eq!(totals.get(&content.id.as_i64()).unwrap().views, 2);
+    assert_eq!(totals.get(&content.id).unwrap().views, 2);
     // The public page carries no counter of any kind ("view" alone would
     // trip on the viewport meta tag).
     assert!(!body.contains("views"));
@@ -497,7 +518,7 @@ async fn page_views_are_counted_server_side_but_never_shown() {
         .await
         .unwrap();
     let totals = harness.repository.engagement_totals().await.unwrap();
-    assert_eq!(totals.get(&content.id.as_i64()).unwrap().views, 2);
+    assert_eq!(totals.get(&content.id).unwrap().views, 2);
 }
 
 #[tokio::test]

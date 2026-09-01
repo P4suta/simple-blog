@@ -57,6 +57,12 @@ class R2 implements R2Bucket {
   async put() { return {}; }
 }
 
+async function sha256(bytes: Uint8Array): Promise<string> {
+  return [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 test("KV host records and R2 keys are strict, site-scoped adapter boundaries", async () => {
   const releaseId = "a".repeat(64);
   const objectId = "b".repeat(64);
@@ -84,21 +90,23 @@ test("KV host records and R2 keys are strict, site-scoped adapter boundaries", a
       },
     },
   };
+  const manifestBytes = new TextEncoder().encode(JSON.stringify(manifest));
+  const objectBytes = new TextEncoder().encode("missing");
   const r2 = new R2(new Map([
     [
       `sites/${siteId}/manifests/${releaseId}.json`,
-      new R2Object(new TextEncoder().encode(JSON.stringify(manifest)), {
+      new R2Object(manifestBytes, {
         "simple-blog-kind": "manifest",
         blake3: releaseId,
-        sha256: "a".repeat(64),
+        sha256: await sha256(manifestBytes),
       }),
     ],
     [
       `sites/${siteId}/objects/${objectId}`,
-      new R2Object(new TextEncoder().encode("missing"), {
+      new R2Object(objectBytes, {
         "simple-blog-kind": "object",
         blake3: objectId,
-        sha256: "a".repeat(64),
+        sha256: await sha256(objectBytes),
       }),
     ],
   ]));
@@ -124,8 +132,38 @@ test("KV host records and R2 keys are strict, site-scoped adapter boundaries", a
     /release_object_metadata_invalid/,
   );
 
+  const tampered = new R2(new Map([
+    [
+      `sites/${siteId}/objects/${objectId}`,
+      new R2Object(new TextEncoder().encode("tampered"), {
+        "simple-blog-kind": "object",
+        blake3: objectId,
+        sha256: await sha256(objectBytes),
+      }),
+    ],
+  ]));
   await assert.rejects(
-    new KvHostDirectory(new Kv({ ...host, future: true })).lookup("writing.example.com"),
+    new R2ReleaseDirectory(tampered).forSite(host!).object(objectId),
+    /release_object_integrity_invalid/,
+  );
+
+  await assert.rejects(
+    new KvHostDirectory(new Kv({
+      format_version: 1,
+      site_id: siteId,
+      active_release: releaseId,
+      state: "active",
+      future: true,
+    })).lookup("writing.example.com"),
+    /host_mapping_invalid/,
+  );
+  await assert.rejects(
+    new KvHostDirectory(new Kv({
+      format_version: 1,
+      site_id: "a".repeat(36),
+      active_release: releaseId,
+      state: "active",
+    })).lookup("writing.example.com"),
     /host_mapping_invalid/,
   );
 });

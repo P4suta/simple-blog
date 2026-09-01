@@ -2,6 +2,7 @@ import type { DurableObjectNamespace, R2Bucket } from "./bindings.ts";
 import { normalizeDomain } from "./domain.ts";
 import { authorizedBearer } from "./internal-auth.ts";
 import type { ReleaseCandidate } from "./publication.ts";
+import { boundedBytes } from "./request-body.ts";
 import { R2ReleaseStager, type StageManifestInput, type StageObjectInput } from "./staging.ts";
 
 export interface InternalActivationResult {
@@ -100,7 +101,7 @@ export async function handleInternalPublicationRequest(
         siteId: object[1]!,
         objectId: object[2]!,
         sha256: checksumHeader(request),
-        bytes: await boundedBytes(request, MAX_OBJECT_BYTES),
+        bytes: await publicationBytes(request, MAX_OBJECT_BYTES),
       });
       console.log(JSON.stringify({
         event: "release.object.staged",
@@ -121,7 +122,7 @@ export async function handleInternalPublicationRequest(
         releaseId: manifest[2]!,
         domain,
         sha256: checksumHeader(request),
-        bytes: await boundedBytes(request, MAX_MANIFEST_BYTES),
+        bytes: await publicationBytes(request, MAX_MANIFEST_BYTES),
       });
       console.log(JSON.stringify({
         event: "release.manifest.staged",
@@ -146,6 +147,17 @@ export async function handleInternalPublicationRequest(
     if (code.endsWith("_collision") || code === "release_activation_conflict") {
       return json({ error: code }, 409);
     }
+    if (
+      code.startsWith("release_activation_failed_") ||
+      code === "release_activation_response_invalid" ||
+      code === "release_manifest_missing" ||
+      code === "release_manifest_integrity_invalid" ||
+      code === "release_head_unavailable" ||
+      code.startsWith("release_object_missing:") ||
+      code === "release_object_integrity_invalid"
+    ) {
+      return json({ error: code }, 502);
+    }
     if (code.startsWith("release_") || code === "publication_request_invalid") {
       return json({ error: code }, 422);
     }
@@ -159,7 +171,7 @@ async function activationCandidate(
   releaseId: string,
 ): Promise<ReleaseCandidate> {
   if (mediaType(request) !== "application/json") throw new Error("publication_request_invalid");
-  const bytes = await boundedBytes(request, MAX_ACTIVATION_BYTES);
+  const bytes = await publicationBytes(request, MAX_ACTIVATION_BYTES);
   let value: unknown;
   try {
     value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
@@ -193,16 +205,13 @@ function checksumHeader(request: Request): string {
   return value;
 }
 
-async function boundedBytes(request: Request, maximum: number): Promise<Uint8Array> {
-  const declared = request.headers.get("content-length");
-  if (declared !== null) {
-    const value = Number(declared);
-    if (!Number.isSafeInteger(value) || value < 0) throw new Error("publication_request_invalid");
-    if (value > maximum) throw new Error("publication_request_too_large");
-  }
-  const bytes = new Uint8Array(await request.arrayBuffer());
-  if (bytes.byteLength > maximum) throw new Error("publication_request_too_large");
-  return bytes;
+function publicationBytes(request: Request, maximum: number): Promise<Uint8Array> {
+  return boundedBytes(
+    request,
+    maximum,
+    "publication_request_invalid",
+    "publication_request_too_large",
+  );
 }
 
 function mediaType(request: Request): string | null {

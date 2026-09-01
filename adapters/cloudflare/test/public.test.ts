@@ -114,6 +114,29 @@ test("only active, explicitly registered domains reach immutable releases", asyn
   assert.equal(unavailable.status, 404);
 });
 
+test("an active domain without a published release is temporarily unavailable", async () => {
+  const state = dependencies();
+  state.deps.releases = {
+    forSite() {
+      return {
+        async activeRelease() { return null; },
+        async manifest() { throw new Error("must not read a manifest"); },
+        async object() { throw new Error("must not read an object"); },
+      };
+    },
+  };
+
+  const response = await handlePublicRequest(
+    new Request("https://writing.example.com/"),
+    state.deps,
+    new Context(),
+  );
+
+  assert.equal(response.status, 503);
+  assert.equal(response.headers.get("retry-after"), "5");
+  assert.equal(response.headers.get("cache-control"), "no-store");
+});
+
 test("media and engagement stay dynamic without weakening release routing", async () => {
   const state = dependencies();
   const context = new Context();
@@ -149,4 +172,37 @@ test("media and engagement stay dynamic without weakening release routing", asyn
     context,
   );
   assert.equal(crossSiteForm.status, 415);
+});
+
+test("likes reject an oversized body even when Content-Length is absent", async () => {
+  const state = dependencies();
+  const response = await handlePublicRequest(
+    new Request("https://writing.example.com/likes/42", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ op: "like", padding: "x".repeat(2048) }),
+    }),
+    state.deps,
+    new Context(),
+  );
+
+  assert.equal(response.status, 413);
+  assert.deepEqual(state.likes, []);
+});
+
+test("a rejected asynchronous host lookup fails closed as not found", async () => {
+  const state = dependencies();
+  state.deps.directory = {
+    async lookup() {
+      throw new Error("untrusted adapter failure");
+    },
+  };
+
+  const response = await handlePublicRequest(
+    new Request("https://writing.example.com/"),
+    state.deps,
+    new Context(),
+  );
+
+  assert.equal(response.status, 404);
 });

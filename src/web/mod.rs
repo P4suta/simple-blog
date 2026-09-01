@@ -471,12 +471,31 @@ impl WebError {
 
 impl IntoResponse for WebError {
     fn into_response(self) -> Response {
+        let active_release_missing = matches!(
+            &self,
+            Self::Release(ReleaseError::NotFound {
+                kind: "active release",
+                ..
+            })
+        );
         tracing::error!(
             event = "http.request.failed",
             error_code = self.diagnostic_code(),
             error = %self,
             "request failed"
         );
-        (StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error").into_response()
+        if active_release_missing {
+            let mut response =
+                (StatusCode::SERVICE_UNAVAILABLE, "Service Unavailable").into_response();
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from_static("5"));
+            response
+                .headers_mut()
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            response
+        } else {
+            (StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error").into_response()
+        }
     }
 }

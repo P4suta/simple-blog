@@ -67,7 +67,14 @@ export default {
           () => crypto.randomUUID(),
           env.SAAS_CNAME_TARGET,
         );
-        const response = await handleControlRequest(request, registrations);
+        const response = await handleControlRequest(request, registrations, {
+          async allow(rateLimitedRequest) {
+            const result = await env.REGISTRATION_RATE_LIMITER.limit({
+              key: registrationRateLimitKey(rateLimitedRequest),
+            });
+            return result.success;
+          },
+        });
         status = response.status;
         return withRequestId(response, requestId);
       }
@@ -119,6 +126,13 @@ export default {
     }
   },
 };
+
+export function registrationRateLimitKey(request: Request): string {
+  const source = request.headers.get("cf-connecting-ip")?.trim().toLowerCase() ?? "";
+  return source.length >= 3 && source.length <= 64 && /^[0-9a-f:.]+$/.test(source)
+    ? `source:${source}`
+    : "source:unknown";
+}
 
 function isUnissuedServiceSubdomain(hostname: string, env: WorkerEnv): boolean {
   const labels = env.SAAS_CNAME_TARGET.toLowerCase().split(".");

@@ -9,7 +9,9 @@ Fast delivery has less value than a failure that can be reproduced, localized, a
 
 ## Decision
 
-Verification is part of the product boundary. Time is injected, durable multi-step work exposes failure seams, and panics unwind to a sanitized request failure. CI independently gates the declared MSRV, current Rust on Linux and macOS, property tests, line coverage, dependency policy, reproducible frontend assets, and a Node-free release-binary smoke test. Coverage floors may only stay constant or increase unless a superseding ADR explains the loss.
+Verification is part of the product boundary. Time is injected, durable multi-step work exposes failure seams, and panics unwind to a sanitized request failure. CI independently gates the declared MSRV, current Rust on Linux, macOS, and Windows, property tests, line coverage, dependency policy, reproducible frontend assets, and a Node-free release-binary smoke test. Coverage floors may only stay constant or increase unless a superseding ADR explains the loss.
+
+Atomic file replacement flushes file contents before installation and synchronizes the containing directory on platforms with a documented directory-flush contract. Windows documents `FlushFileBuffers` for writable file handles but not directory handles, so the Windows boundary validates the directory and emits a debug trace instead of promising or invoking an unsupported flush operation. Cross-platform CI exercises this deliberately weaker, explicit guarantee.
 
 ## Consequences
 

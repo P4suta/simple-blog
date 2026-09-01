@@ -3,6 +3,7 @@
 use std::{sync::Arc, time::Instant};
 
 use chrono::{DateTime, Utc};
+use serde::Serialize;
 use thiserror::Error;
 use tracing::Instrument;
 
@@ -17,7 +18,8 @@ use crate::{
     },
 };
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PublicationDisposition {
     Published,
     Unchanged,

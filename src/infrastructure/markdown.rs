@@ -335,6 +335,9 @@ fn string_end(code: &str, quote: u8) -> usize {
         let rest = &code[index..];
         let character = rest.chars().next().unwrap_or_default();
         let length = character.len_utf8();
+        if character == '\n' {
+            return index;
+        }
         if !escaped && character as u32 == u32::from(quote) {
             return index + length;
         }

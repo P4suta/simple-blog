@@ -14,6 +14,7 @@ import {
 class Repository implements RegistrationRepository {
   readonly records = new Map<string, RegistrationRecord>();
   readonly domains = new Set<string>();
+  saves = 0;
 
   async reserve(record: RegistrationRecord): Promise<boolean> {
     if (this.domains.has(record.domain)) return false;
@@ -30,12 +31,19 @@ class Repository implements RegistrationRepository {
   }
 
   async save(record: RegistrationRecord): Promise<void> {
+    const current = this.records.get(record.id);
+    if (current === undefined || current.storageVersion !== record.storageVersion) {
+      throw new Error("registration_stale_observation");
+    }
+    record.storageVersion += 1;
+    this.saves += 1;
     this.records.set(record.id, structuredClone(record));
   }
 }
 
 class Provider implements CustomHostnameProvider {
   creates = 0;
+  failCreate = false;
   hostname: CustomHostname = {
     id: "cf-7",
     hostnameStatus: "pending",
@@ -47,6 +55,7 @@ class Provider implements CustomHostnameProvider {
 
   async create(): Promise<CustomHostname> {
     this.creates += 1;
+    if (this.failCreate) throw new Error("provider unavailable");
     return structuredClone(this.hostname);
   }
 
@@ -143,4 +152,17 @@ test("provider failures become diagnosable action-required records instead of pa
   const stored = state.repository.records.get(started.id)!;
   assert.equal(stored.providerErrorCode, "hostname_validation_failed");
   assert.equal(stored.ownerRegisteredAt, null);
+});
+
+test("provider creation failure persists one retryable observation exactly once", async () => {
+  const state = service();
+  state.provider.failCreate = true;
+
+  const started = await state.registration.start("blog.writer.com");
+
+  assert.equal(started.state, "action_required");
+  assert.equal(state.repository.saves, 1);
+  const stored = state.repository.records.get(started.id)!;
+  assert.equal(stored.providerErrorCode, "provider_create_failed");
+  assert.equal(stored.storageVersion, 1);
 });

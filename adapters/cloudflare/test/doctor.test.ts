@@ -69,6 +69,7 @@ function environment(failures = new Set<string>()): WorkerEnv {
     RELEASES: releases,
     REGISTRY: database,
     SITES: sites,
+    REGISTRATION_RATE_LIMITER: { async limit() { return { success: true }; } },
     CONTROL_HOSTNAME: "control.service.dev",
     ANONYMOUS_DEMO_HOSTNAME: "demo.service.dev",
     SAAS_CNAME_TARGET: "customers.service.dev",

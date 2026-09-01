@@ -10,6 +10,9 @@ import {
 } from "../src/cloudflare-registration.ts";
 import type { RegistrationRecord } from "../src/registration.ts";
 
+const FIXTURE_CLAIM_TOKEN = "fixture-registration-claim-token";
+const FIXTURE_CLAIM_HASH = "cc9687e0e8b0e7ad3f854f140995a254da376300f4dc7179c6a74704589363c1";
+
 class Statement implements D1PreparedStatement {
   readonly query: string;
   readonly row: Record<string, unknown> | null;
@@ -48,7 +51,7 @@ function registration(): RegistrationRecord {
   return {
     id: "00000000-0000-4000-8000-000000000001",
     domain: "blog.writer.com",
-    claimHash: "a".repeat(64),
+    claimHash: FIXTURE_CLAIM_HASH,
     claimExpiresAt: "2026-09-03T00:00:00.000Z",
     providerHostnameId: "hostname_7",
     state: "pending_certificate",
@@ -154,8 +157,9 @@ test("D1 reservation and its audit event are one change-coupled batch", async ()
   assert.match(database.statements[0]!.query, /INSERT INTO domain_registrations/);
   assert.match(database.statements[1]!.query, /INSERT INTO hosting_audit_events/);
   assert.match(database.statements[1]!.query, /changes\(\) = 1/);
+  assert.equal(await new WebCryptoClaimSecrets().hash(FIXTURE_CLAIM_TOKEN), value.claimHash);
   assert.equal(database.statements[0]!.values.includes(value.claimHash), true);
-  assert.equal(database.statements[0]!.values.some((item) => item === "claim-token"), false);
+  assert.equal(database.statements[0]!.values.includes(FIXTURE_CLAIM_TOKEN), false);
 });
 
 test("D1 rows are decoded as an untrusted adapter boundary", async () => {

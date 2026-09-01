@@ -1,5 +1,6 @@
-import type { KvNamespace, R2Bucket, R2ObjectMetadata } from "./bindings.ts";
+import type { KvNamespace, R2Bucket } from "./bindings.ts";
 import { normalizeDomain } from "./domain.ts";
+import { verifiedReleaseBytes } from "./integrity.ts";
 import { parseManifest, type ReleaseManifest } from "./release.ts";
 
 export interface ActivationStorage {
@@ -43,6 +44,7 @@ export class CloudflareReleaseActivator {
     if (active === candidate.replacementRelease) {
       const manifest = await this.verifyGraph(candidate);
       await this.writeVisiblePointer(candidate);
+      await this.storage.delete("pending_release");
       return { changed: false, publicContentIds: publicContentIds(manifest) };
     }
     if (active !== expected || (pending !== undefined && pending !== candidate.replacementRelease)) {
@@ -61,22 +63,25 @@ export class CloudflareReleaseActivator {
       `sites/${candidate.siteId}/manifests/${candidate.replacementRelease}.json`;
     const stored = await this.bucket.get(manifestKey);
     if (stored === null) throw new Error("release_manifest_missing");
-    verifyMetadata(stored, "manifest", candidate.replacementRelease);
+    const manifestBytes = await verifiedReleaseBytes(
+      stored,
+      "manifest",
+      candidate.replacementRelease,
+    );
     const manifest = parseManifest(
-      JSON.parse(new TextDecoder().decode(await stored.arrayBuffer())) as unknown,
+      JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(manifestBytes)) as unknown,
     );
     if (manifest.canonical_origin !== `https://${candidate.domain}`) {
       throw new Error("release_origin_mismatch");
     }
-    if (this.bucket.head === undefined) throw new Error("release_head_unavailable");
     const objectIds = new Set<string>();
     for (const route of Object.values(manifest.routes)) {
       if (route.kind === "asset") objectIds.add(route.object_id);
     }
     for (const objectId of [...objectIds].sort()) {
-      const object = await this.bucket.head(`sites/${candidate.siteId}/objects/${objectId}`);
+      const object = await this.bucket.get(`sites/${candidate.siteId}/objects/${objectId}`);
       if (object === null) throw new Error(`release_object_missing:${objectId}`);
-      verifyMetadata(object, "object", objectId);
+      await verifiedReleaseBytes(object, "object", objectId);
     }
     return manifest;
   }
@@ -107,13 +112,5 @@ function validateCandidate(candidate: ReleaseCandidate): void {
       (candidate.expectedRelease !== null && !DIGEST.test(candidate.expectedRelease)) ||
       (candidate.nextPublishAt !== null && !Number.isFinite(Date.parse(candidate.nextPublishAt)))) {
     throw new Error("release_candidate_invalid");
-  }
-}
-
-function verifyMetadata(object: R2ObjectMetadata, kind: string, id: string): void {
-  if (object.customMetadata?.["simple-blog-kind"] !== kind ||
-      object.customMetadata?.["blake3"] !== id ||
-      !DIGEST.test(object.customMetadata?.["sha256"] ?? "")) {
-    throw new Error(`release_${kind}_metadata_invalid`);
   }
 }

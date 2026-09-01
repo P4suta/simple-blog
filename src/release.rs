@@ -898,7 +898,7 @@ async fn atomic_replace(path: &Path, bytes: &[u8]) -> Result<(), ReleaseError> {
 async fn sync_directory(path: &Path) -> Result<(), ReleaseError> {
     let path = path.to_owned();
     let display = path.display().to_string();
-    tokio::task::spawn_blocking(move || std::fs::File::open(&path).and_then(|file| file.sync_all()))
+    tokio::task::spawn_blocking(move || crate::durable_fs::sync_directory(&path))
         .await
         .map_err(|error| ReleaseError::Io {
             operation: "join directory sync",

@@ -169,7 +169,7 @@ pub trait EngagementRepository: Send + Sync {
     /// Likes and views per content id, for the dashboard.
     async fn engagement_totals(
         &self,
-    ) -> Result<std::collections::HashMap<i64, Engagement>, RepositoryError>;
+    ) -> Result<std::collections::HashMap<ContentId, Engagement>, RepositoryError>;
 }
 
 /// Anonymous like counters for public content. Every operation is gated on the

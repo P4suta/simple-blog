@@ -91,6 +91,7 @@
   "conflict.open_current": "Open the current version",
 
   "revision.heading": "History",
+  "revision.kicker": "Revision",
   "revision.note": "Compare a saved revision with the current content. Restoring is itself saved as a new explicit revision.",
   "revision.selected": "Selected revision",
   "revision.current": "Current version",
@@ -109,6 +110,8 @@
   "public.search": "Search",
   "public.search_placeholder": "Search posts and pages…",
   "public.search_empty": "Nothing found.",
+  "public.search_loading": "Searching…",
+  "public.search_failed": "Search is temporarily unavailable.",
   "public.post_nav": "More posts",
   "public.prefs": "Display",
   "public.prefs_measure": "Measure",

@@ -162,3 +162,30 @@ test("Cloudflare activation client reaches the site coordinator with its interna
   assert.equal(new URL(requests[0]!.url).pathname, "/publication/activate");
   assert.equal(requests[0]!.headers.get("authorization"), `Bearer ${token}`);
 });
+
+test("downstream activation failures are retryable host faults, not client validation errors", async () => {
+  for (const code of [
+    "release_activation_failed_503",
+    "release_activation_response_invalid",
+    "release_manifest_missing",
+    `release_object_missing:${objectId}`,
+  ]) {
+    const publication = new Publication();
+    publication.activate = async () => { throw new Error(code); };
+    const response = await handleInternalPublicationRequest(new Request(
+      `https://control.service.dev/internal/sites/${siteId}/releases/${releaseId}/activate`,
+      {
+        method: "POST",
+        headers: headers({ "Content-Type": "application/json" }),
+        body: JSON.stringify({
+          domain: "writing.example.com",
+          expected_release: null,
+          next_publish_at: null,
+        }),
+      },
+    ), publication, token);
+
+    assert.equal(response.status, 502, code);
+    assert.equal((await response.json() as { error: string }).error, code);
+  }
+});

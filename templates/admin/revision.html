@@ -1,6 +1,6 @@
 {% extends "admin/base.html" %}
 {% block content %}
-<section class="conflict"><p class="kicker">Revision {{ revision.version }}</p><h1>{{ t["revision.heading"] }}</h1><p>{{ t["revision.note"] }}</p>
+<section class="conflict"><p class="kicker">{{ t["revision.kicker"] }} {{ revision.version }}</p><h1>{{ t["revision.heading"] }}</h1><p>{{ t["revision.note"] }}</p>
 <div class="conflict-grid"><article><h2>{{ t["revision.selected"] }}</h2><h3>{{ revision.title }}</h3><pre>{{ revision.body_markdown }}</pre></article><article><h2>{{ t["revision.current"] }}</h2><h3>{{ current.title }}</h3><pre>{{ current.body_markdown }}</pre></article></div>
 <form method="post" action="/admin/content/{{ content_id }}/revisions/{{ revision_id }}/restore/"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="version" value="{{ expected_version }}"><button class="primary-button" type="submit">{{ t["revision.restore"] }}</button> <a href="/admin/content/{{ content_id }}/edit/">{{ t["revision.back"] }}</a></form></section>
 {% endblock %}

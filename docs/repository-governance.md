@@ -41,6 +41,9 @@ Release. Releases are a separate, explicit maintainer action.
   are pinned to full commit SHAs, and third-party Actions must also appear in
   the selected-actions allowlist.
 - Dependabot covers Cargo, Bun, and GitHub Actions manifests.
+- Stable Rust tests run on Linux, macOS, and Windows; all three named jobs are
+  protected checks. Checkout credentials are disabled before repository code
+  or build scripts execute.
 - CodeQL advanced setup uses the `security-and-quality` query suite for
   TypeScript, workflow, and Rust analysis. All three use no-build analysis;
   CodeQL's Rust extractor currently rejects manual and autobuild modes. The

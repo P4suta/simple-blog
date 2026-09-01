@@ -29,13 +29,15 @@ pub fn referenced_media_ids(contents: &[Content], settings: &SiteSettings) -> Ha
 
 fn collect_body_references(markdown: &str, referenced: &mut HashSet<String>) {
     for (index, _) in markdown.match_indices(MEDIA_URL_PREFIX) {
-        let candidate = &markdown[index + MEDIA_URL_PREFIX.len()..];
-        if candidate.len() >= MEDIA_ID_LENGTH
-            && candidate[..MEDIA_ID_LENGTH]
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        let candidate = &markdown.as_bytes()[index + MEDIA_URL_PREFIX.len()..];
+        let Some(id) = candidate.get(..MEDIA_ID_LENGTH) else {
+            continue;
+        };
+        if id
+            .iter()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
         {
-            referenced.insert(candidate[..MEDIA_ID_LENGTH].to_owned());
+            referenced.insert(id.iter().map(|byte| char::from(*byte)).collect());
         }
     }
 }
@@ -57,5 +59,15 @@ mod tests {
         collect_body_references(&markdown, &mut referenced);
 
         assert_eq!(referenced, HashSet::from([valid]));
+    }
+
+    #[test]
+    fn body_reference_scanner_never_slices_through_utf8() {
+        let markdown = format!("/media/{}é", "a".repeat(MEDIA_ID_LENGTH - 1));
+        let mut referenced = HashSet::new();
+
+        collect_body_references(&markdown, &mut referenced);
+
+        assert!(referenced.is_empty());
     }
 }

@@ -152,20 +152,6 @@ dd {
   margin-inline-start: 1.6em;
 }
 
-/* ---- Structural hairlines --------------------------------------------- */
-/* One stroke for every separator on the site: a quarter-strength line in
-   the text''s own color. Nothing else draws lines. */
-
-hr,
-thead th,
-blockquote,
-pre,
-.site-footer,
-.post-nav,
-.prose .footnotes {
-  border-color: color-mix(in srgb, currentColor 25%, transparent);
-}
-
 blockquote {
   margin-inline: 0;
   padding-inline-start: 1.2em;
@@ -514,6 +500,18 @@ thead th {
   padding-block-start: 1em;
   border-block-start: 1px solid;
   font-size: 0.9em;
+}
+
+/* One quarter-strength color is applied after every border shorthand and
+   longhand, so none of those declarations can reset it to currentcolor. */
+hr,
+thead th,
+blockquote,
+pre,
+.site-footer,
+.post-nav,
+.prose .footnotes {
+  border-color: color-mix(in srgb, currentcolor 25%, transparent);
 }
 
 .post-nav-older {

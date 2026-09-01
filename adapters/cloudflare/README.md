@@ -12,13 +12,14 @@ The adapter is under active development. Its domain lifecycle, static resolver, 
 | `RELEASES` (R2) | Site-scoped immutable manifests, generated objects, and media |
 | `HOSTS` (KV) | One public domain-to-active-release pointer; never staging state |
 | `SITES` (Durable Objects) | Per-site activation CAS, public-content gate, counters, and publication alarm |
+| `REGISTRATION_RATE_LIMITER` | Per-location registration admission control before D1 or provider work |
 | `CORE` (service binding) | CMS/admin, compiler, archive import/export, and release production |
 
-R2 staging verifies SHA-256 over transferred bytes and performs create-only writes. The Core supplies the BLAKE3 content identity; activation independently requires matching BLAKE3 and SHA-256 metadata and verifies every manifest reference before the single KV visibility write.
+R2 staging verifies SHA-256 over transferred bytes and performs create-only writes. The Core supplies the BLAKE3 content identity; activation and public reads independently hash the retrieved R2 bytes, require matching BLAKE3 and SHA-256 metadata, and reject a payload changed underneath retained metadata. Activation verifies every manifest reference before the single KV visibility write.
 
 ## Domain lifecycle
 
-`POST /v1/registrations` on `CONTROL_HOSTNAME` reserves a custom domain and returns a claim token once. Refresh calls authenticate with that token. The token is valid for 24 hours and D1 stores only its hash. Provider ownership, certificate, and CNAME traffic readiness progress independently through:
+`POST /v1/registrations` on `CONTROL_HOSTNAME` reserves a custom domain and returns a claim token once. The `REGISTRATION_RATE_LIMITER` binding is keyed by Cloudflare's authenticated source address and checked before parsing the body, reserving D1 state, or calling Cloudflare for SaaS; the example permits ten attempts per source per minute in each Cloudflare location. Choose an account-unique positive integer for its `namespace_id`, monitor 429 events in Workers Observability, and add Turnstile if public launch traffic needs stronger proof-of-human admission. Refresh calls authenticate with the claim token. The token is valid for 24 hours and D1 stores only its hash. Provider ownership, certificate, and CNAME traffic readiness progress independently through:
 
 `pending_ownership` → `pending_certificate` → `pending_dns` → `ready_for_owner` → `active`
 
@@ -30,7 +31,7 @@ The ready response carries the claim in `https://DOMAIN/admin/setup/#claim=…`.
 
 ## Prepare a deployment
 
-1. Copy `wrangler.example.jsonc` to `wrangler.jsonc` and replace every placeholder.
+1. Use Wrangler 4.36.0 or newer, copy `wrangler.example.jsonc` to `wrangler.jsonc`, replace every placeholder, and assign an account-unique positive integer to the rate-limit `namespace_id`.
 2. Create the D1 database, KV namespace, and R2 bucket named in the file.
 3. Apply `migrations/0001_registry.sql` with Wrangler's D1 migration command.
 4. Configure Cloudflare for SaaS on the zone, use the Worker fallback origin, and set `SAAS_CNAME_TARGET` to its customer CNAME target.

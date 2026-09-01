@@ -1,11 +1,54 @@
-use std::sync::Arc;
+use std::{borrow::Cow, path::Path, sync::Arc};
 
-use chrono::Utc;
+use chrono::{Duration, SecondsFormat, Utc};
 use simple_blog::{
-    application::{ports::SiteRepository, site::SiteService},
-    domain::theme::{Locale, NavigationItem, SiteSettings},
+    application::{
+        ports::{ContentRepository, SiteRepository},
+        site::SiteService,
+    },
+    domain::{
+        content::ContentId,
+        theme::{Locale, NavigationItem, SiteSettings},
+    },
     infrastructure::sqlite::SqliteRepository,
 };
+use sqlx::{
+    SqlitePool,
+    migrate::Migrator,
+    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
+};
+
+async fn migration_fixture(path: &Path, target: i64) -> SqlitePool {
+    let pool = SqlitePoolOptions::new()
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(path)
+                .create_if_missing(true),
+        )
+        .await
+        .unwrap();
+    let migration_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+    let mut migrator = Migrator::new(migration_path).await.unwrap();
+    migrator.migrations = Cow::Owned(
+        migrator
+            .iter()
+            .filter(|migration| migration.version <= target)
+            .cloned()
+            .collect(),
+    );
+    migrator.run(&pool).await.unwrap();
+    pool
+}
+
+async fn finish_migrations(pool: &SqlitePool) {
+    let migration_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+    Migrator::new(migration_path)
+        .await
+        .unwrap()
+        .run(pool)
+        .await
+        .unwrap();
+}
 
 fn settings(title: &str) -> SiteSettings {
     SiteSettings {
@@ -29,6 +72,122 @@ async fn migration_seeds_default_theme_as_ordinary_custom_css() {
         stored.custom_css,
         include_str!("../static/default-theme.css")
     );
+}
+
+#[tokio::test]
+async fn search_route_migration_preserves_legacy_content_tags_revisions_and_navigation() {
+    let temp = tempfile::tempdir().unwrap();
+    let database = temp.path().join("legacy-search.sqlite3");
+    let pool = migration_fixture(&database, 6).await;
+    let at = "2026-09-02T00:00:00+00:00";
+    sqlx::query(
+        "INSERT INTO contents (
+           id, kind, title, slug, summary, body_markdown, body_html, status, publish_at,
+           version, created_at, updated_at
+         ) VALUES (7, 'post', 'Legacy search', 'search', '', '# Legacy', '<h1>Legacy</h1>',
+                   'draft', NULL, 1, ?, ?)",
+    )
+    .bind(at)
+    .bind(at)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO tags (id, name, slug) VALUES (9, 'Search', 'search')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO content_tags (content_id, tag_id, position) VALUES (7, 9, 0)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let snapshot = serde_json::json!({
+        "id": 7,
+        "kind": "post",
+        "title": "Legacy search",
+        "slug": "search",
+        "summary": "",
+        "body_markdown": "# Legacy",
+        "body_html": "<h1>Legacy</h1>",
+        "tags": [{ "name": "Search", "slug": "search" }],
+        "cover_media_id": null,
+        "seo_title": null,
+        "seo_description": null,
+        "publication": { "state": "draft" },
+        "version": 1,
+        "created_at": at,
+        "updated_at": at
+    });
+    sqlx::query(
+        "INSERT INTO revisions (content_id, intent, snapshot_json, created_at)
+         VALUES (7, 'explicit', ?, ?)",
+    )
+    .bind(snapshot.to_string())
+    .bind(at)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO navigation (label, destination, is_external, position)
+         VALUES ('Legacy search', '/search/', 0, 0)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    finish_migrations(&pool).await;
+    pool.close().await;
+
+    let repository = SqliteRepository::connect(&database).await.unwrap();
+    let contents = repository.list_all_content().await.unwrap();
+    assert_eq!(contents.len(), 1);
+    assert_eq!(contents[0].slug.as_str(), "search-content-7");
+    assert_eq!(contents[0].tags[0].slug.as_str(), "search-tag-9");
+    let revisions = repository
+        .list_revisions(ContentId::from_i64(7))
+        .await
+        .unwrap();
+    assert_eq!(revisions[0].snapshot.slug.as_str(), "search-content-7");
+    assert_eq!(revisions[0].snapshot.tags[0].slug.as_str(), "search-tag-9");
+    assert_eq!(
+        repository.navigation().await.unwrap()[0].destination,
+        "/search-content-7/"
+    );
+}
+
+#[tokio::test]
+async fn publication_state_migration_compares_sqlx_rfc3339_timestamps() {
+    let temp = tempfile::tempdir().unwrap();
+    let database = temp.path().join("publication-clock.sqlite3");
+    let pool = migration_fixture(&database, 9).await;
+    let now = Utc::now();
+    let past = now - Duration::hours(1);
+    let future = now + Duration::hours(1);
+    for (id, slug, publish_at) in [(1, "past", past), (2, "future", future)] {
+        sqlx::query(
+            "INSERT INTO contents (
+               id, kind, title, slug, summary, body_markdown, body_html, status, publish_at,
+               version, created_at, updated_at
+             ) VALUES (?, 'post', ?, ?, '', '', '', 'public', ?, 1, ?, ?)",
+        )
+        .bind(id)
+        .bind(slug)
+        .bind(slug)
+        .bind(publish_at)
+        .bind(now)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    finish_migrations(&pool).await;
+    let next: String =
+        sqlx::query_scalar("SELECT next_publish_at FROM publication_state WHERE singleton = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+    assert_eq!(next, future.to_rfc3339_opts(SecondsFormat::AutoSi, false));
 }
 
 #[tokio::test]

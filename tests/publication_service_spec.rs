@@ -54,6 +54,18 @@ fn scheduler_delay_never_fires_early_and_caps_idle_health_checks() {
     }
 }
 
+#[test]
+fn publication_disposition_has_a_stable_machine_representation() {
+    assert_eq!(
+        serde_json::to_string(&PublicationDisposition::Published).unwrap(),
+        "\"published\""
+    );
+    assert_eq!(
+        serde_json::to_string(&PublicationDisposition::Unchanged).unwrap(),
+        "\"unchanged\""
+    );
+}
+
 async fn harness() -> (
     tempfile::TempDir,
     Arc<SqliteRepository>,

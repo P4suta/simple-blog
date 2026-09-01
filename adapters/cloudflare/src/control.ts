@@ -1,8 +1,13 @@
 import type { RegistrationView, StartedRegistration } from "./registration.ts";
+import { boundedBytes } from "./request-body.ts";
 
 export interface RegistrationControl {
   start(domain: string): Promise<StartedRegistration>;
   refresh(id: string, claimToken: string): Promise<RegistrationView>;
+}
+
+export interface RegistrationAbuseGuard {
+  allow(request: Request): Promise<boolean>;
 }
 
 const REGISTRATION = "/v1/registrations";
@@ -11,6 +16,7 @@ const REFRESH = /^\/v1\/registrations\/([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89
 export async function handleControlRequest(
   request: Request,
   registrations: RegistrationControl,
+  abuseGuard: RegistrationAbuseGuard,
 ): Promise<Response> {
   const path = new URL(request.url).pathname;
   if (path === "/healthz" && request.method === "GET") {
@@ -18,6 +24,11 @@ export async function handleControlRequest(
   }
   try {
     if (path === REGISTRATION && request.method === "POST") {
+      if (!(await abuseGuard.allow(request))) {
+        const response = problem(429, "registration_rate_limited");
+        response.headers.set("Retry-After", "60");
+        return response;
+      }
       const body = await strictJson(request, new Set(["domain"]));
       if (typeof body.domain !== "string") return problem(422, "invalid_registration");
       return json(await registrations.start(body.domain), 201);
@@ -53,11 +64,10 @@ async function strictJson(
   if (request.headers.get("content-type")?.split(";", 1)[0]?.trim() !== "application/json") {
     throw new Error("invalid_json");
   }
-  const text = await request.text();
-  if (new TextEncoder().encode(text).byteLength > 2048) throw new Error("request_too_large");
+  const bytes = await boundedBytes(request, 2048, "invalid_json", "request_too_large");
   let value: unknown;
   try {
-    value = JSON.parse(text) as unknown;
+    value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
   } catch {
     throw new Error("invalid_json");
   }

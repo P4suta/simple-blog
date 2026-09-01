@@ -1,6 +1,5 @@
 use std::{
     collections::BTreeMap,
-    fs::File,
     io::Write,
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
@@ -203,7 +202,7 @@ impl Config {
             output.write_all(contents.as_bytes())?;
             output.sync_all()?;
             std::fs::rename(&temporary, &path)?;
-            sync_directory(&self.data_dir)
+            crate::durable_fs::sync_directory(&self.data_dir)
         })();
         if let Err(source) = result {
             let _cleanup = std::fs::remove_file(&temporary);
@@ -211,10 +210,6 @@ impl Config {
         }
         Ok(())
     }
-}
-
-fn sync_directory(path: &Path) -> Result<(), std::io::Error> {
-    File::open(path)?.sync_all()
 }
 
 fn read_optional_file(path: &Path) -> Result<Option<ConfigFile>, ConfigError> {

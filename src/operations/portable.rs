@@ -1,6 +1,6 @@
 use std::{
     collections::BTreeMap,
-    fs::{File, OpenOptions},
+    fs::OpenOptions,
     io::Write,
     path::{Path, PathBuf},
     sync::Arc,
@@ -330,7 +330,7 @@ fn cleanup_staging(staging: &Path) {
 }
 
 fn sync_directory(path: &Path) -> Result<(), OperationError> {
-    File::open(path)?.sync_all()?;
+    crate::durable_fs::sync_directory(path)?;
     Ok(())
 }
 

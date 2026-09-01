@@ -12,7 +12,7 @@ use simple_blog::{
         ports::{Clock, EngagementRepository},
     },
     config::{Config, ConfigSources, Overrides},
-    domain::content::{ContentDraft, ContentKind, Publication, Slug},
+    domain::content::{ContentDraft, ContentId, ContentKind, Publication, Slug},
     infrastructure::{markdown::ComrakMarkdownRenderer, sqlite::SqliteRepository},
     release::{FilesystemReleaseStore, ReleaseReader, ReleaseStore},
     web::{AppState, router},
@@ -75,7 +75,7 @@ impl Harness {
         }
     }
 
-    async fn create_and_publish(&self) -> i64 {
+    async fn create_and_publish(&self) -> ContentId {
         let content = self
             .content
             .create(
@@ -99,7 +99,7 @@ impl Harness {
             .await
             .unwrap();
         self.state.publish_now().await.unwrap();
-        content.id.as_i64()
+        content.id
     }
 
     async fn request(&self, path: &str) -> axum::response::Response {
@@ -136,6 +136,17 @@ async fn body(response: axum::response::Response) -> Vec<u8> {
         .unwrap()
         .to_bytes()
         .to_vec()
+}
+
+#[tokio::test]
+async fn native_adapter_reports_an_unpublished_site_as_temporarily_unavailable() {
+    let harness = Harness::new().await;
+
+    let response = harness.request("/").await;
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.headers()[header::RETRY_AFTER], "5");
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
 }
 
 #[tokio::test]

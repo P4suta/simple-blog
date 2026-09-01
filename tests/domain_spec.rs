@@ -159,6 +159,18 @@ fn code_highlighting_has_stable_language_neutral_token_classes() {
 }
 
 #[test]
+fn unterminated_code_strings_do_not_consume_later_lines() {
+    let renderer = ComrakMarkdownRenderer::default();
+    let output = renderer.render("```rust\nlet value = \"unfinished\nfn main() {}\n```");
+
+    assert!(
+        output
+            .html
+            .contains("unfinished</span>\n<span class=\"hl-storage\">fn</span>")
+    );
+}
+
+#[test]
 fn highlighted_code_cannot_smuggle_markup() {
     let renderer = ComrakMarkdownRenderer::default();
     let output =

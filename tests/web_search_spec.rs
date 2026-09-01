@@ -12,11 +12,14 @@ use http_body_util::BodyExt;
 use simple_blog::{
     application::{
         content::{ContentService, SaveIntent},
-        ports::ContentRepository,
+        ports::{ContentRepository, SearchRepository},
         static_search::StaticSearchIndexV1,
     },
     config::{Config, ConfigSources, Overrides},
-    domain::content::{ContentDraft, ContentKind, Publication, Slug},
+    domain::{
+        content::{ContentDraft, ContentKind, Publication, Slug},
+        search::parse_query,
+    },
     infrastructure::{markdown::ComrakMarkdownRenderer, sqlite::SqliteRepository},
     web::{AppState, router},
 };
@@ -300,7 +303,7 @@ async fn edits_reindex_and_search_follows_the_current_text() {
 }
 
 #[tokio::test]
-async fn search_page_stays_calm_on_empty_and_hostile_input() {
+async fn static_search_page_is_query_independent_and_client_semantics_are_tested_separately() {
     let harness = Harness::new().await;
     harness
         .seed("普通の記事", "normal", "内容。", public_now())
@@ -311,15 +314,40 @@ async fn search_page_stays_calm_on_empty_and_hostile_input() {
     assert!(html.contains("search-form"));
     assert!(html.contains("data-static-search"));
     assert!(html.contains("data-search-results"));
-    assert!(html.contains("hidden"));
+    assert!(html.contains("data-search-results"));
+    assert!(html.contains("data-search-results aria-label=\"Search\" hidden"));
 
-    // FTS metacharacters and LIKE wildcards arrive as literal text.
+    // The release resolver intentionally discards the query string. Hostile
+    // query handling is exercised by frontend/search.test.cjs, which executes
+    // the client search implementation rather than this immutable HTML asset.
     for hostile in ["\"OR\" (", "100%", "_", "a* NOT b", "<script>"] {
-        let html = harness.search_page(hostile).await;
-        assert!(
-            html.contains("search-form"),
-            "query {hostile:?} must not error"
+        assert_eq!(
+            harness.search_page(hostile).await,
+            html,
+            "query {hostile:?}"
         );
-        assert!(!html.contains("<script>alert"));
     }
+}
+
+#[tokio::test]
+async fn sqlite_search_clamps_untrusted_repository_limits() {
+    let harness = Harness::new().await;
+    for id in 1..=101 {
+        harness
+            .seed(
+                &format!("Needle {id}"),
+                &format!("needle-{id}"),
+                "needle",
+                public_now(),
+            )
+            .await;
+    }
+
+    let hits = harness
+        .repository
+        .search(&parse_query("needle"), Utc::now(), u32::MAX)
+        .await
+        .unwrap();
+
+    assert_eq!(hits.len(), 100);
 }

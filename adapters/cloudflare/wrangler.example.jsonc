@@ -29,6 +29,16 @@
       "bucket_name": "simple-blog-releases"
     }
   ],
+  "ratelimits": [
+    {
+      "name": "REGISTRATION_RATE_LIMITER",
+      "namespace_id": "1001",
+      "simple": {
+        "limit": 10,
+        "period": 60
+      }
+    }
+  ],
   "d1_databases": [
     {
       "binding": "REGISTRY",

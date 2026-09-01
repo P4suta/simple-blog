@@ -5,6 +5,7 @@ import {
   responseFromResolved,
   type ReleaseReader,
 } from "./release.ts";
+import { boundedBytes } from "./request-body.ts";
 
 export interface HostedSite {
   siteId: string;
@@ -68,7 +69,19 @@ export async function handlePublicRequest(
   if (request.method !== "GET" && request.method !== "HEAD") {
     return new Response(null, { status: 405, headers: { Allow: "GET, HEAD" } });
   }
-  const route = await resolveRelease(dependencies.releases.forSite(site), url.pathname);
+  let route;
+  try {
+    route = await resolveRelease(dependencies.releases.forSite(site), url.pathname);
+  } catch (error) {
+    if (error instanceof Error && error.message === "release_active_missing") {
+      dependencies.diagnostics?.failure("release.not_found", error);
+      return new Response("Service Unavailable", {
+        status: 503,
+        headers: { "Retry-After": "5", "Cache-Control": "no-store" },
+      });
+    }
+    throw error;
+  }
   if (
     request.method === "GET" &&
     route.kind === "asset" &&
@@ -88,7 +101,7 @@ async function resolveHostedSite(
   directory: HostDirectory,
 ): Promise<HostedSite | null> {
   try {
-    return directory.lookup(normalizeDomain(new URL(request.url).hostname));
+    return await directory.lookup(normalizeDomain(new URL(request.url).hostname));
   } catch {
     return null;
   }
@@ -136,12 +149,16 @@ async function toggleLike(
   if (request.headers.get("content-type")?.split(";", 1)[0]?.trim() !== "application/json") {
     return new Response("application/json required", { status: 415 });
   }
-  const length = Number(request.headers.get("content-length") ?? "0");
-  if (!Number.isFinite(length) || length > 1024) return new Response("request too large", { status: 413 });
   let operation: unknown;
   try {
-    operation = (await request.json() as { op?: unknown }).op;
-  } catch {
+    const bytes = await boundedBytes(request, 1024, "invalid_json", "request_too_large");
+    operation = (JSON.parse(
+      new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+    ) as { op?: unknown }).op;
+  } catch (error) {
+    if (error instanceof Error && error.message === "request_too_large") {
+      return new Response("request too large", { status: 413 });
+    }
     return new Response("invalid JSON", { status: 400 });
   }
   if (operation !== "like" && operation !== "unlike") {

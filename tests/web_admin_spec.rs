@@ -395,7 +395,7 @@ async fn settings_and_ordered_navigation_work_without_javascript_and_require_csr
     let public = text(public).await;
     assert!(public.contains("Field Notes"));
     assert!(public.contains("href=\"/archive/\""));
-    assert!(public.contains("https://www.rust-lang.org/"));
+    assert!(public.contains("https:&#x2f;&#x2f;www.rust-lang.org&#x2f;"));
     assert!(public.contains("lang=\"en\""));
     assert!(public.contains("/assets/site.css?v="));
 
@@ -862,13 +862,7 @@ fn form_with_status(
 }
 
 fn is_timestamped_slug(slug: &str) -> bool {
-    let bytes = slug.as_bytes();
-    (bytes.len() == 13 || bytes.len() == 15)
-        && bytes[8] == b'-'
-        && bytes
-            .iter()
-            .enumerate()
-            .all(|(index, byte)| index == 8 || byte.is_ascii_digit())
+    Slug::parse(slug).is_ok_and(|slug| slug.is_timestamped())
 }
 
 #[tokio::test]

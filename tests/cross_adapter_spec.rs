@@ -78,6 +78,7 @@ async fn rust_and_cloudflare_resolvers_share_the_same_versioned_contract() {
     let contract: Contract =
         serde_json::from_str(include_str!("../contracts/release-resolution-v1.json")).unwrap();
     assert_eq!(contract.format_version, 1);
+    assert!(!contract.cases.is_empty(), "contract fixture has no cases");
     let manifest =
         ReleaseManifest::from_bytes(&serde_json::to_vec(&contract.manifest).unwrap()).unwrap();
     let objects = contract
@@ -103,6 +104,7 @@ async fn rust_and_cloudflare_resolvers_share_the_same_versioned_contract() {
         match actual {
             ResolvedRoute::Asset(asset) => {
                 assert_eq!(scenario.kind, "asset", "{}", scenario.path);
+                assert_eq!(scenario.location, None, "{}", scenario.path);
                 assert_eq!(asset.status, scenario.status, "{}", scenario.path);
                 assert_eq!(
                     Some(asset.object_id),
@@ -114,6 +116,7 @@ async fn rust_and_cloudflare_resolvers_share_the_same_versioned_contract() {
             }
             ResolvedRoute::Redirect(redirect) => {
                 assert_eq!(scenario.kind, "redirect", "{}", scenario.path);
+                assert_eq!(scenario.object_id, None, "{}", scenario.path);
                 assert_eq!(redirect.status, scenario.status, "{}", scenario.path);
                 assert_eq!(
                     Some(redirect.location),

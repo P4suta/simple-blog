@@ -197,7 +197,7 @@ async fn write_new_file(path: &Path, bytes: &[u8]) -> Result<(), MaterializeErro
 async fn sync_directory(path: &Path) -> Result<(), MaterializeError> {
     let owned = path.to_owned();
     let display = path.display().to_string();
-    tokio::task::spawn_blocking(move || std::fs::File::open(owned)?.sync_all())
+    tokio::task::spawn_blocking(move || crate::durable_fs::sync_directory(&owned))
         .await
         .map_err(|error| MaterializeError::Io {
             operation: "join directory sync",

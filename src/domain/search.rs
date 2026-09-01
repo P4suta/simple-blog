@@ -216,7 +216,7 @@ pub fn decode_entities(text: &str) -> String {
     while let Some(start) = rest.find('&') {
         decoded.push_str(&rest[..start]);
         let tail = &rest[start..];
-        let Some(end) = tail[..tail.len().min(12)].find(';') else {
+        let Some(end) = tail.bytes().take(12).position(|byte| byte == b';') else {
             decoded.push('&');
             rest = &tail[1..];
             continue;

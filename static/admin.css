@@ -28,8 +28,8 @@
   --danger: #b3392c;
   --radius: 6px;
   --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI",
-    "Hiragino Sans", "Noto Sans JP", "Yu Gothic", Meiryo, sans-serif;
-  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    "Hiragino Sans", "Noto Sans JP", "Yu Gothic", "Meiryo", sans-serif;
+  --mono: ui-monospace, "SFMono-Regular", "Menlo", "Consolas", monospace;
 }
 
 @media (prefers-color-scheme: dark) {
