@@ -38,22 +38,6 @@ jobs:
           "$RUNNER_TEMP/repository-tools/actionlint"
       - name: Validate public repository governance
         run: bash tests/repository_policy.sh
-      - name: Require immutable action references
-        run: |
-          if rg --pcre2 '^\s*-\s+uses:\s+[^@\s]+@(?![0-9a-f]{40}(?:\s|#|$))' .github/workflows; then
-            echo 'GitHub Actions must be pinned to a full commit SHA.' >&2
-            exit 1
-          fi
-      - name: Enforce lint expectation policy
-        run: |
-          if rg --pcre2 --multiline '#\s*\[\s*allow\b' --glob '*.rs' src tests build.rs; then
-            echo 'allow attributes are forbidden.' >&2
-            exit 1
-          fi
-          if rg --pcre2 --multiline '#\s*\[\s*expect\s*\((?:(?!reason\s*=)[\s\S])*?\)\s*\]' --glob '*.rs' src tests build.rs; then
-            echo 'expect attributes require an explicit reason.' >&2
-            exit 1
-          fi
       - name: Scan the repository for secrets
         run: |
           "$RUNNER_TEMP/repository-tools/gitleaks" git --no-banner --redact .

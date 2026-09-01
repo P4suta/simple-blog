@@ -36,11 +36,12 @@
     "secret_scanning_validity_checks": false,
     "secret_scanning_non_provider_patterns": false,
     "private_vulnerability_reporting": true,
-    "codeql_default_setup": true,
-    "codeql_query_suite": "extended",
+    "codeql_setup": "advanced",
+    "codeql_query_suite": "security-and-quality",
     "codeql_languages": [
       "actions",
-      "javascript-typescript"
+      "javascript-typescript",
+      "rust"
     ]
   },
   "topics": [

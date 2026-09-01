@@ -50,6 +50,10 @@
             "integration_id": 15368
           },
           {
+            "context": "Analyze (rust)",
+            "integration_id": 15368
+          },
+          {
             "context": "Repository policy",
             "integration_id": 15368
           },

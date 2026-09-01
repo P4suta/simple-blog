@@ -41,10 +41,10 @@ Release. Releases are a separate, explicit maintainer action.
   are pinned to full commit SHAs, and third-party Actions must also appear in
   the selected-actions allowlist.
 - Dependabot covers Cargo, Bun, and GitHub Actions manifests.
-- CodeQL default setup uses the extended query suite for TypeScript and workflow
-  analysis. GitHub currently rejects Rust as a default-setup CodeQL language for
-  this repository, so Rust is covered by both MSRV/current Clippy, tests,
-  coverage floors, and dependency policy instead.
+- CodeQL advanced setup uses the `security-and-quality` query suite for
+  TypeScript, workflow, and Rust analysis. Rust uses a complete manual Cargo
+  build because GitHub documents manual mode as the most accurate option for
+  compiled languages; the other languages use no-build analysis.
 - Secret scanning and push protection are active. Validity checks and
   non-provider patterns remain recorded as unavailable because GitHub kept both
   disabled after an explicit enable request; this should be revisited when the

@@ -26,6 +26,7 @@ required_public_files=(
   .github/ISSUE_TEMPLATE/config.yml
   .github/rulesets/main.json
   .github/rulesets/release-tags.json
+  .github/workflows/codeql.yml
   docs/repository-governance.md
 )
 
@@ -34,11 +35,15 @@ for path in "${required_public_files[@]}"; do
 done
 
 for ecosystem in cargo bun github-actions; do
-  rg --quiet "package-ecosystem:\s*[\"']?${ecosystem}[\"']?" .github/dependabot.yml \
+  grep --extended-regexp --quiet \
+    "package-ecosystem:[[:space:]]*[\"']?${ecosystem}[\"']?" \
+    .github/dependabot.yml \
     || fail "Dependabot does not cover $ecosystem"
 done
 
-if rg --quiet "package-ecosystem:\\s*(npm|[\"']npm[\"'])" .github/dependabot.yml; then
+if grep --extended-regexp --quiet \
+  "package-ecosystem:[[:space:]]*(npm|\"npm\"|'npm')" \
+  .github/dependabot.yml; then
   fail 'Dependabot must update bun.lock through the native bun ecosystem'
 fi
 
@@ -70,16 +75,16 @@ jq --exit-status '
   and (.security.secret_scanning_validity_checks | not)
   and (.security.secret_scanning_non_provider_patterns | not)
   and .security.private_vulnerability_reporting
-  and .security.codeql_default_setup
-  and .security.codeql_query_suite == "extended"
-  and .security.codeql_languages == ["actions", "javascript-typescript"]
+  and .security.codeql_setup == "advanced"
+  and .security.codeql_query_suite == "security-and-quality"
+  and .security.codeql_languages == ["actions", "javascript-typescript", "rust"]
 ' .github/repository-settings.json >/dev/null \
   || fail 'repository settings policy is missing a public safety invariant'
 
 mapfile -t third_party_actions < <(
   awk '$1 == "-" && $2 == "uses:" { split($3, reference, "@"); print reference[1] }' \
     .github/workflows/*.yml \
-    | rg --invert-match '^actions/' \
+    | grep --extended-regexp --invert-match '^(actions|github)/' \
     | sort --unique
 )
 
@@ -112,6 +117,7 @@ ci_checks=(
 expected_checks=(
   'Analyze (actions)'
   'Analyze (javascript-typescript)'
+  'Analyze (rust)'
   "${ci_checks[@]}"
 )
 
@@ -121,14 +127,26 @@ expected_checks=(
 for check in "${ci_checks[@]}"; do
   if [[ "$check" == 'Stable compatibility (macos-latest)' \
     || "$check" == 'Stable compatibility (ubuntu-latest)' ]]; then
-    rg --fixed-strings --quiet 'name: Stable compatibility (${{ matrix.os }})' \
+    grep --fixed-strings --quiet 'name: Stable compatibility (${{ matrix.os }})' \
       .github/workflows/ci.yml \
       || fail "required matrix checks are not emitted by CI"
     continue
   fi
-  rg --fixed-strings --quiet "name: $check" .github/workflows/ci.yml \
+  grep --fixed-strings --quiet "name: $check" .github/workflows/ci.yml \
     || fail "required check '$check' is not emitted by CI"
 done
+
+grep --fixed-strings --quiet 'name: Analyze (${{ matrix.language }})' \
+  .github/workflows/codeql.yml \
+  || fail 'the advanced CodeQL workflow does not emit per-language checks'
+
+grep --fixed-strings --quiet 'cargo build --locked --all-targets --all-features' \
+  .github/workflows/codeql.yml \
+  || fail 'advanced CodeQL must observe a complete manual Rust build'
+
+grep --fixed-strings --quiet 'queries: security-and-quality' \
+  .github/workflows/codeql.yml \
+  || fail 'advanced CodeQL must run the security-and-quality suite'
 
 jq --exit-status '
   .name == "Protect main"
@@ -163,10 +181,27 @@ jq --exit-status '
 ' .github/rulesets/release-tags.json >/dev/null \
   || fail 'release tag ruleset does not make published version tags immutable'
 
-rg --fixed-strings --quiet 'github.com/P4suta/simple-blog/security/advisories/new' SECURITY.md \
+grep --fixed-strings --quiet 'github.com/P4suta/simple-blog/security/advisories/new' SECURITY.md \
   || fail 'SECURITY.md must route private reports to GitHub Security Advisories'
 
-rg --fixed-strings --quiet '* @P4suta' .github/CODEOWNERS \
+grep --fixed-strings --quiet '* @P4suta' .github/CODEOWNERS \
   || fail 'the repository must retain an explicit default code owner'
+
+if grep --recursive --perl-regexp --line-number \
+  '^\s*-\s+uses:\s+[^@\s]+@(?![0-9a-f]{40}(?:\s|#|$))' \
+  .github/workflows; then
+  fail 'GitHub Actions must be pinned to a full commit SHA'
+fi
+
+if grep --recursive --perl-regexp --line-number --include='*.rs' \
+  '#\s*\[\s*allow\b' src tests build.rs; then
+  fail 'allow attributes are forbidden'
+fi
+
+if grep --recursive --perl-regexp --null-data --quiet --include='*.rs' \
+  '#\s*\[\s*expect\s*\((?:(?!reason\s*=)[\s\S])*?\)\s*\]' \
+  src tests build.rs; then
+  fail 'expect attributes require an explicit reason'
+fi
 
 printf 'repository policy: ok\n'
