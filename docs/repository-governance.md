@@ -42,9 +42,10 @@ Release. Releases are a separate, explicit maintainer action.
   the selected-actions allowlist.
 - Dependabot covers Cargo, Bun, and GitHub Actions manifests.
 - CodeQL advanced setup uses the `security-and-quality` query suite for
-  TypeScript, workflow, and Rust analysis. Rust uses a complete manual Cargo
-  build because GitHub documents manual mode as the most accurate option for
-  compiled languages; the other languages use no-build analysis.
+  TypeScript, workflow, and Rust analysis. All three use no-build analysis;
+  CodeQL's Rust extractor currently rejects manual and autobuild modes. The
+  normal CI matrix separately compiles and tests every Rust target, including
+  the pinned MSRV contract.
 - Secret scanning and push protection are active. Validity checks and
   non-provider patterns remain recorded as unavailable because GitHub kept both
   disabled after an explicit enable request; this should be revisited when the

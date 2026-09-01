@@ -77,6 +77,11 @@ jq --exit-status '
   and .security.private_vulnerability_reporting
   and .security.codeql_setup == "advanced"
   and .security.codeql_query_suite == "security-and-quality"
+  and .security.codeql_build_modes == {
+    "actions": "none",
+    "javascript-typescript": "none",
+    "rust": "none"
+  }
   and .security.codeql_languages == ["actions", "javascript-typescript", "rust"]
 ' .github/repository-settings.json >/dev/null \
   || fail 'repository settings policy is missing a public safety invariant'
@@ -127,6 +132,7 @@ expected_checks=(
 for check in "${ci_checks[@]}"; do
   if [[ "$check" == 'Stable compatibility (macos-latest)' \
     || "$check" == 'Stable compatibility (ubuntu-latest)' ]]; then
+    # shellcheck disable=SC2016 # The GitHub expression must remain literal.
     grep --fixed-strings --quiet 'name: Stable compatibility (${{ matrix.os }})' \
       .github/workflows/ci.yml \
       || fail "required matrix checks are not emitted by CI"
@@ -136,13 +142,34 @@ for check in "${ci_checks[@]}"; do
     || fail "required check '$check' is not emitted by CI"
 done
 
+# shellcheck disable=SC2016 # The GitHub expression must remain literal.
 grep --fixed-strings --quiet 'name: Analyze (${{ matrix.language }})' \
   .github/workflows/codeql.yml \
   || fail 'the advanced CodeQL workflow does not emit per-language checks'
 
-grep --fixed-strings --quiet 'cargo build --locked --all-targets --all-features' \
-  .github/workflows/codeql.yml \
-  || fail 'advanced CodeQL must observe a complete manual Rust build'
+rust_build_mode="$({
+  awk '
+    /^          - language: rust$/ {
+      in_rust = 1
+      next
+    }
+    in_rust && /^          - language:/ {
+      exit
+    }
+    in_rust && /^[[:space:]]*build-mode:/ {
+      sub(/^[[:space:]]*build-mode:[[:space:]]*/, "")
+      print
+      exit
+    }
+  ' .github/workflows/codeql.yml
+})"
+
+[[ "$rust_build_mode" == 'none' ]] \
+  || fail 'advanced CodeQL must use the only Rust build mode supported by CodeQL: none'
+
+if grep --fixed-strings --quiet 'build-mode: manual' .github/workflows/codeql.yml; then
+  fail 'CodeQL currently rejects manual build mode for Rust'
+fi
 
 grep --fixed-strings --quiet 'queries: security-and-quality' \
   .github/workflows/codeql.yml \

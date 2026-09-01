@@ -38,6 +38,11 @@
     "private_vulnerability_reporting": true,
     "codeql_setup": "advanced",
     "codeql_query_suite": "security-and-quality",
+    "codeql_build_modes": {
+      "actions": "none",
+      "javascript-typescript": "none",
+      "rust": "none"
+    },
     "codeql_languages": [
       "actions",
       "javascript-typescript",

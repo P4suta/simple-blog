@@ -34,21 +34,16 @@ jobs:
           - language: javascript-typescript
             build-mode: none
           - language: rust
-            build-mode: manual
+            # CodeQL's Rust extractor currently supports no-build analysis only.
+            build-mode: none
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-      - name: Install pinned Rust
-        if: matrix.language == 'rust'
-        run: rustup toolchain install 1.98.0 --profile minimal
       - name: Initialize CodeQL
         uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
           queries: security-and-quality
-      - name: Build every Rust target for analysis
-        if: matrix.build-mode == 'manual'
-        run: cargo build --locked --all-targets --all-features
       - name: Analyze
         uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
         with:
