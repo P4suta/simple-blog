@@ -1,16 +1,13 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { parseConfigFileTextToJson } from "typescript";
 
 test("deployment template denies service subdomains and declares every durable boundary", () => {
   const source = readFileSync(
     new URL("../wrangler.example.jsonc", import.meta.url),
     "utf8",
   );
-  const parsed = parseConfigFileTextToJson("wrangler.example.jsonc", source);
-  assert.equal(parsed.error, undefined);
-  const config = parsed.config as Record<string, unknown>;
+  const config = JSON.parse(source) as Record<string, unknown>;
 
   assert.equal(config.main, "src/index.ts");
   assert.equal(config.compatibility_date, "2026-09-02");

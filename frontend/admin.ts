@@ -641,7 +641,7 @@ if (editor) {
     drawerBackdrop.hidden = !open;
     drawerToggle.setAttribute("aria-expanded", String(open));
   };
-  drawerToggle.addEventListener("click", () => setDrawer(drawer.hidden));
+  drawerToggle.addEventListener("click", () => setDrawer(drawer.hidden !== false));
   drawerBackdrop.addEventListener("click", () => setDrawer(false));
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && !drawer.hidden) setDrawer(false);
