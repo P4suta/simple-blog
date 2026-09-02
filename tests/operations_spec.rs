@@ -375,6 +375,24 @@ async fn pending_migrations_create_a_schema_independent_safety_backup_first() {
         std::fs::read(restored.path().join("media/legacy.bin")).unwrap(),
         b"legacy-media"
     );
+    let restored_database = restored.path().join("simple-blog.sqlite3");
+    let restored_options = SqliteConnectOptions::new()
+        .filename(&restored_database)
+        .create_if_missing(false);
+    let mut restored_legacy = SqliteConnection::connect_with(&restored_options)
+        .await
+        .unwrap();
+    let migration_table_exists: i64 = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_sqlx_migrations')",
+    )
+    .fetch_one(&mut restored_legacy)
+    .await
+    .unwrap();
+    assert_eq!(
+        migration_table_exists, 0,
+        "restore validation must not migrate or otherwise rewrite the archived database"
+    );
+    restored_legacy.close().await.unwrap();
     let repository = SqliteRepository::connect(&restored.path().join("simple-blog.sqlite3"))
         .await
         .unwrap();

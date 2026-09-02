@@ -9,7 +9,7 @@ Slow delivery is acceptable; an undiagnosable failure is not. Authentication cap
 
 ## Decision
 
-Every phase treats tests and failure evidence as acceptance criteria. HTTP requests receive a server-generated correlation ID and structured spans containing only method, path, status, and latency. Query strings, cookies, credentials, CSRF values, and request bodies are never logged. Operational checks expose actionable failures through `doctor`, while user-facing errors remain non-sensitive.
+Every phase treats tests and failure evidence as acceptance criteria. HTTP requests receive a server-generated correlation ID and structured spans containing only method, path, status, and latency. Query strings, cookies, credentials, CSRF values, and request bodies are never logged. Operational workflows emit ordered, machine-readable phase events; restore reports extraction, manifest verification, database verification, installation failure, and completion without logging archived content. Operational checks expose actionable failures through `doctor`, while user-facing errors remain non-sensitive.
 
 ## Consequences
 

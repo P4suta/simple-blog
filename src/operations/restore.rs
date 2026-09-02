@@ -8,13 +8,22 @@ use uuid::Uuid;
 use walkdir::WalkDir;
 
 use crate::{
-    infrastructure::sqlite::SqliteRepository,
+    infrastructure::sqlite_maintenance::SqliteMaintenance,
     operations::{BackupManifest, OperationError, checksum_file},
 };
 
 pub struct RestoreService;
 
 impl RestoreService {
+    #[tracing::instrument(
+        name = "backup.restore",
+        skip_all,
+        fields(
+            archive = %archive.display(),
+            destination = %data_dir.display(),
+            force
+        )
+    )]
     pub async fn restore(
         archive: &Path,
         data_dir: &Path,
@@ -29,22 +38,20 @@ impl RestoreService {
         std::fs::create_dir(&staging)?;
         let guard = DirectoryGuard(staging.clone());
         extract(archive, &staging)?;
+        tracing::debug!(event = "backup.restore.extracted");
         verify(&staging)?;
+        tracing::debug!(event = "backup.restore.manifest_verified");
 
         let database = staging.join("database.sqlite3");
-        let repository = SqliteRepository::connect(&database)
+        let check = SqliteMaintenance::quick_check_read_only(&database)
             .await
             .map_err(|error| OperationError::InvalidArchive(error.to_string()))?;
-        let check: String = sqlx::query_scalar("PRAGMA quick_check")
-            .fetch_one(repository.pool())
-            .await
-            .map_err(|error| OperationError::InvalidArchive(error.to_string()))?;
-        repository.close().await;
         if check != "ok" {
             return Err(OperationError::InvalidArchive(format!(
                 "SQLite quick_check failed: {check}"
             )));
         }
+        tracing::debug!(event = "backup.restore.database_verified");
 
         std::fs::create_dir_all(data_dir)?;
         let rollback = parent.join(format!(".simple-blog-rollback-{}", Uuid::new_v4()));
@@ -76,6 +83,7 @@ impl RestoreService {
             Ok::<_, std::io::Error>(())
         })();
         if let Err(error) = install {
+            tracing::error!(event = "backup.restore.install_failed", error = %error);
             for name in ["simple-blog.sqlite3", "config.toml", "media"] {
                 let installed = data_dir.join(name);
                 if installed.exists() {
@@ -94,6 +102,7 @@ impl RestoreService {
         }
         drop(rollback_guard);
         drop(guard);
+        tracing::info!(event = "backup.restore.completed");
         Ok(())
     }
 }

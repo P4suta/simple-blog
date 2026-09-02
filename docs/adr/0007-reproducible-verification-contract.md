@@ -17,6 +17,8 @@ The Windows build vendors the OpenSSL implementation required by the WebAuthn de
 
 Backup manifests and archive diagnostics use `/`-separated portable entry identities on every operating system. Restore validates those identities before joining them to disk paths and reports exact missing or unexpected entries. Human-facing recovery errors render filesystem paths with their native display form so Windows paths remain directly usable instead of appearing debug-escaped.
 
+Restore integrity checks open the staged SQLite database read-only, run `PRAGMA quick_check`, and close the validation connection before installing any file. Validation must not run application migrations, create WAL state, or otherwise rewrite the archived schema; migrations begin only when the restored installation is subsequently opened by the application.
+
 ## Consequences
 
 - A flaky or non-diagnostic check is a defect, not tolerated noise.

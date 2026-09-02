@@ -310,6 +310,8 @@ fn restore_command_requires_force_before_replacing_an_installation() {
     assert!(!refused.status.success());
 
     let restored = binary()
+        .env("SIMPLE_BLOG_LOG_FORMAT", "json")
+        .env("RUST_LOG", "simple_blog=debug")
         .args([
             "--data-dir",
             destination.to_str().unwrap(),
@@ -323,6 +325,22 @@ fn restore_command_requires_force_before_replacing_an_installation() {
         restored.status.success(),
         "{}",
         String::from_utf8_lossy(&restored.stderr)
+    );
+    let restore_phases = String::from_utf8(restored.stderr)
+        .unwrap()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter_map(|event| event["fields"]["event"].as_str().map(str::to_owned))
+        .filter(|event| event.starts_with("backup.restore."))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        restore_phases,
+        [
+            "backup.restore.extracted",
+            "backup.restore.manifest_verified",
+            "backup.restore.database_verified",
+            "backup.restore.completed",
+        ]
     );
 }
 
