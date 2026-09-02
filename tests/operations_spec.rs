@@ -41,6 +41,17 @@ fn gif() -> Vec<u8> {
     .unwrap()
 }
 
+#[test]
+fn migration_errors_display_the_recoverable_backup_path_without_debug_escaping() {
+    let backup = std::path::PathBuf::from(r"C:\simple blog\backup.tar.zst");
+    let error = OperationError::Migration {
+        message: "schema rejected".into(),
+        backup: backup.clone(),
+    };
+
+    assert!(error.to_string().contains(&backup.display().to_string()));
+}
+
 async fn seeded(temp: &tempfile::TempDir) -> (Config, Arc<SqliteRepository>) {
     let config = config(temp.path());
     for directory in [

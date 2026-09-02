@@ -34,6 +34,8 @@ candidates(content_id, attempt, candidate) AS (
     FROM contents CROSS JOIN attempts
     WHERE contents.slug = 'search' COLLATE NOCASE
 )
+-- `contents.slug` has been UNIQUE COLLATE NOCASE since migration 0001, so a
+-- valid legacy database can contain at most one case-insensitive match.
 INSERT INTO legacy_search_content_slugs (content_id, new_slug)
 SELECT content_id, candidate
 FROM candidates
@@ -62,6 +64,8 @@ candidates(tag_id, attempt, candidate) AS (
     FROM tags CROSS JOIN attempts
     WHERE tags.slug = 'search' COLLATE NOCASE
 )
+-- The same schema invariant holds for `tags.slug`; LIMIT 1 chooses the first
+-- free candidate for that sole possible row, not one row from a larger set.
 INSERT INTO legacy_search_tag_slugs (tag_id, new_slug)
 SELECT tag_id, candidate
 FROM candidates

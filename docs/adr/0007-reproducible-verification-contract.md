@@ -15,6 +15,8 @@ Atomic file replacement flushes file contents before installation and synchroniz
 
 The Windows build vendors the OpenSSL implementation required by the WebAuthn dependency. This deliberately trades build time for a reproducible binary that does not depend on a developer machine or CI runner having a matching global OpenSSL/vcpkg installation.
 
+Backup manifests and archive diagnostics use `/`-separated portable entry identities on every operating system. Restore validates those identities before joining them to disk paths and reports exact missing or unexpected entries. Human-facing recovery errors render filesystem paths with their native display form so Windows paths remain directly usable instead of appearing debug-escaped.
+
 ## Consequences
 
 - A flaky or non-diagnostic check is a defect, not tolerated noise.

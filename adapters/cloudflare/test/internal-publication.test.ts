@@ -168,6 +168,8 @@ test("downstream activation failures are retryable host faults, not client valid
     "release_activation_failed_503",
     "release_activation_response_invalid",
     "release_manifest_missing",
+    "release_manifest_metadata_invalid",
+    "release_object_metadata_invalid",
     `release_object_missing:${objectId}`,
   ]) {
     const publication = new Publication();

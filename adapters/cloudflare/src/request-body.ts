@@ -14,7 +14,12 @@ export async function boundedBytes(
     if (value > maximum) throw new Error(tooLargeCode);
     declaredLength = value;
   }
-  if (request.body === null) return new Uint8Array();
+  if (request.body === null) {
+    if (declaredLength !== null && declaredLength !== 0) {
+      throw new Error(invalidLengthCode);
+    }
+    return new Uint8Array();
+  }
 
   const reader = request.body.getReader();
   const chunks: Uint8Array[] = [];

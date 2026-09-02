@@ -46,6 +46,26 @@ test("bounded request reads reject mismatched declared lengths", async () => {
   );
 });
 
+test("an absent request body must agree with its declared length", async () => {
+  const absent = new Request("https://control.service.dev/internal", {
+    method: "POST",
+    headers: { "content-length": "1" },
+  });
+  await assert.rejects(
+    boundedBytes(absent, 10, "invalid_length", "too_large"),
+    { message: "invalid_length" },
+  );
+
+  const empty = new Request("https://control.service.dev/internal", {
+    method: "POST",
+    headers: { "content-length": "0" },
+  });
+  assert.deepEqual(
+    await boundedBytes(empty, 10, "invalid_length", "too_large"),
+    new Uint8Array(),
+  );
+});
+
 test("stream cancellation failures cannot mask the stable oversized-body error", async () => {
   let cancelled = false;
   const request = streamedRequest([700, 700], undefined, () => {

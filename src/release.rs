@@ -194,6 +194,9 @@ impl ReleaseBuilder {
         })
     }
 
+    /// Starts a complete route snapshot while reusing object identities from
+    /// the previous manifest. Callers must add every route that belongs in the
+    /// replacement release; omitted routes are deliberately pruned.
     pub fn incremental(
         public_revision: u64,
         origin: &str,
@@ -219,7 +222,7 @@ impl ReleaseBuilder {
                 compiler_version: env!("CARGO_PKG_VERSION").to_owned(),
                 public_revision,
                 canonical_origin: previous.canonical_origin.clone(),
-                routes: previous.routes.clone(),
+                routes: BTreeMap::new(),
             },
             previous_objects,
             objects: BTreeMap::new(),

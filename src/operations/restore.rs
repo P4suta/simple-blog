@@ -131,15 +131,12 @@ fn validate_archive_path(path: &Path) -> Result<(), OperationError> {
             path.display()
         )));
     }
-    let mut components = path.components();
-    let first = components.next().and_then(|component| match component {
-        Component::Normal(name) => name.to_str(),
-        _ => None,
-    });
-    if !matches!(
-        first,
-        Some("database.sqlite3" | "config.toml" | "manifest.json" | "media")
-    ) {
+    let name = archive_entry_name(path)?;
+    let allowed = matches!(
+        name.as_str(),
+        "database.sqlite3" | "config.toml" | "manifest.json" | "media"
+    ) || name.starts_with("media/");
+    if !allowed {
         return Err(OperationError::InvalidArchive(format!(
             "unexpected entry: {}",
             path.display()
@@ -158,7 +155,14 @@ fn verify(staging: &Path) -> Result<(), OperationError> {
             manifest.format_version
         )));
     }
-    let expected: BTreeSet<_> = manifest.entries.keys().cloned().collect();
+    let expected: BTreeSet<_> = manifest
+        .entries
+        .keys()
+        .map(|name| {
+            validate_manifest_entry_name(name)?;
+            Ok(name.clone())
+        })
+        .collect::<Result<_, OperationError>>()?;
     for (name, checksum) in &manifest.entries {
         let path = staging.join(name);
         if !path.is_file() || checksum_file(&path)? != *checksum {
@@ -167,26 +171,83 @@ fn verify(staging: &Path) -> Result<(), OperationError> {
             )));
         }
     }
-    let actual: BTreeSet<_> = WalkDir::new(staging)
-        .into_iter()
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_file())
-        .filter_map(|entry| {
-            entry
-                .path()
-                .strip_prefix(staging)
-                .ok()
-                .and_then(Path::to_str)
-                .map(str::to_owned)
-        })
-        .filter(|name| name != "manifest.json")
-        .collect();
+    let mut actual = BTreeSet::new();
+    for entry in WalkDir::new(staging) {
+        let entry = entry.map_err(|error| OperationError::InvalidArchive(error.to_string()))?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let relative = entry
+            .path()
+            .strip_prefix(staging)
+            .map_err(|error| OperationError::InvalidArchive(error.to_string()))?;
+        let name = archive_entry_name(relative)?;
+        if name != "manifest.json" {
+            actual.insert(name);
+        }
+    }
     if actual != expected || !staging.join("database.sqlite3").is_file() {
-        return Err(OperationError::InvalidArchive(
-            "manifest does not match archive entries".into(),
-        ));
+        let missing = expected.difference(&actual).cloned().collect::<Vec<_>>();
+        let unexpected = actual.difference(&expected).cloned().collect::<Vec<_>>();
+        return Err(OperationError::InvalidArchive(format!(
+            "manifest does not match archive entries (missing: {}; unexpected: {})",
+            display_names(&missing),
+            display_names(&unexpected)
+        )));
     }
     Ok(())
+}
+
+fn archive_entry_name(path: &Path) -> Result<String, OperationError> {
+    let mut parts = Vec::new();
+    for component in path.components() {
+        let Component::Normal(value) = component else {
+            return Err(OperationError::InvalidArchive(format!(
+                "unsafe entry path: {}",
+                path.display()
+            )));
+        };
+        let value = value
+            .to_str()
+            .ok_or_else(|| OperationError::InvalidArchive("entry path is not UTF-8".into()))?;
+        if value.is_empty() || value.contains(['/', '\\', '\0']) {
+            return Err(OperationError::InvalidArchive(format!(
+                "unsafe entry path: {}",
+                path.display()
+            )));
+        }
+        parts.push(value);
+    }
+    if parts.is_empty() {
+        return Err(OperationError::InvalidArchive("entry path is empty".into()));
+    }
+    Ok(parts.join("/"))
+}
+
+fn validate_manifest_entry_name(name: &str) -> Result<(), OperationError> {
+    let safe_segments = !name.is_empty()
+        && !name.contains(['\\', '\0'])
+        && name
+            .split('/')
+            .all(|segment| !segment.is_empty() && !matches!(segment, "." | ".."));
+    let allowed = matches!(name, "database.sqlite3" | "config.toml")
+        || name
+            .strip_prefix("media/")
+            .is_some_and(|relative| !relative.is_empty());
+    if !safe_segments || !allowed {
+        return Err(OperationError::InvalidArchive(format!(
+            "invalid manifest entry: {name}"
+        )));
+    }
+    Ok(())
+}
+
+fn display_names(names: &[String]) -> String {
+    if names.is_empty() {
+        "none".into()
+    } else {
+        names.join(", ")
+    }
 }
 
 fn installation_exists(data_dir: &Path) -> bool {
@@ -200,5 +261,75 @@ struct DirectoryGuard(PathBuf);
 impl Drop for DirectoryGuard {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+
+    #[test]
+    fn archive_entry_names_use_forward_slashes_on_every_platform() {
+        let relative = Path::new("media").join("nested").join("asset.bin");
+        assert_eq!(
+            archive_entry_name(&relative).unwrap(),
+            "media/nested/asset.bin"
+        );
+    }
+
+    #[test]
+    fn manifest_entry_names_are_canonical_and_confined_to_backup_data() {
+        for valid in [
+            "database.sqlite3",
+            "config.toml",
+            "media/asset.bin",
+            "media/nested/asset.bin",
+        ] {
+            validate_manifest_entry_name(valid).unwrap();
+        }
+        for invalid in [
+            "manifest.json",
+            "../database.sqlite3",
+            "/database.sqlite3",
+            "media\\asset.bin",
+            "media//asset.bin",
+            "media/../asset.bin",
+            "unexpected.bin",
+        ] {
+            assert!(
+                validate_manifest_entry_name(invalid).is_err(),
+                "accepted unsafe manifest entry: {invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn manifest_mismatch_reports_the_unexpected_portable_name() {
+        let staging = tempfile::tempdir().unwrap();
+        let database = staging.path().join("database.sqlite3");
+        std::fs::write(&database, b"database").unwrap();
+        std::fs::create_dir(staging.path().join("media")).unwrap();
+        std::fs::write(staging.path().join("media/unexpected.bin"), b"unexpected").unwrap();
+        let mut entries = std::collections::BTreeMap::new();
+        entries.insert("database.sqlite3".into(), checksum_file(&database).unwrap());
+        let manifest = BackupManifest {
+            format_version: 1,
+            application_version: "test".into(),
+            created_at: Utc::now(),
+            entries,
+        };
+        std::fs::write(
+            staging.path().join("manifest.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let error = verify(staging.path()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected: media/unexpected.bin")
+        );
     }
 }

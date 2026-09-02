@@ -316,3 +316,59 @@ fn compiler_reuses_unchanged_objects_without_changing_clean_build_semantics() {
     assert_eq!(incremental.manifest, clean.manifest);
     assert!(incremental.objects.len() < clean.objects.len());
 }
+
+#[test]
+fn incremental_compiler_prunes_content_tag_and_redirect_routes_absent_from_the_snapshot() {
+    let now = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
+    let compiler = SiteCompiler::embedded().unwrap();
+    let original = content(
+        1,
+        "Original",
+        "original",
+        Publication::Public {
+            publish_at: now - Duration::hours(1),
+        },
+        1,
+    );
+    let base = compiler
+        .compile(
+            &snapshot(vec![original.clone()]),
+            "https://writing.example",
+            None,
+        )
+        .unwrap();
+
+    let mut hidden = original;
+    hidden.publication = Publication::Draft;
+    let mut next_snapshot = snapshot(vec![hidden]);
+    next_snapshot.public_revision = 18;
+    next_snapshot.redirects.clear();
+
+    let incremental = compiler
+        .compile(
+            &next_snapshot,
+            "https://writing.example",
+            Some(&base.manifest),
+        )
+        .unwrap();
+    let clean = compiler
+        .compile(&next_snapshot, "https://writing.example", None)
+        .unwrap();
+
+    assert_eq!(incremental.id, clean.id);
+    assert_eq!(incremental.manifest, clean.manifest);
+    assert!(incremental.objects.len() < clean.objects.len());
+    for removed in [
+        "/original",
+        "/original/",
+        "/tag/rust",
+        "/tag/rust/",
+        "/before",
+        "/before/",
+    ] {
+        assert!(
+            !incremental.manifest.routes.contains_key(removed),
+            "stale route survived incremental compilation: {removed}"
+        );
+    }
+}

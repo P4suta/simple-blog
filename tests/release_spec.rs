@@ -73,6 +73,8 @@ fn incremental_release_is_identical_to_a_clean_build_and_only_stages_new_objects
 
     let incremental = ReleaseBuilder::incremental(2, "https://writing.example", &base.manifest)
         .unwrap()
+        .asset("/", b"home v1".to_vec(), "text/html; charset=utf-8", None)
+        .unwrap()
         .asset(
             "/essay/",
             b"essay v2".to_vec(),
@@ -104,6 +106,34 @@ fn incremental_release_is_identical_to_a_clean_build_and_only_stages_new_objects
     assert_eq!(incremental.manifest, clean.manifest);
     assert_eq!(incremental.objects.len(), 1);
     assert_eq!(clean.objects.len(), 2);
+}
+
+#[test]
+fn incremental_release_does_not_retain_routes_omitted_by_the_new_snapshot() {
+    let base = ReleaseBuilder::clean(1, "https://writing.example")
+        .unwrap()
+        .asset("/", b"home".to_vec(), "text/html; charset=utf-8", None)
+        .unwrap()
+        .asset(
+            "/deleted/",
+            b"deleted".to_vec(),
+            "text/html; charset=utf-8",
+            Some(7),
+        )
+        .unwrap()
+        .finish()
+        .unwrap();
+
+    let next = ReleaseBuilder::incremental(2, "https://writing.example", &base.manifest)
+        .unwrap()
+        .asset("/", b"home".to_vec(), "text/html; charset=utf-8", None)
+        .unwrap()
+        .finish()
+        .unwrap();
+
+    assert!(next.manifest.routes.contains_key("/"));
+    assert!(!next.manifest.routes.contains_key("/deleted/"));
+    assert!(next.objects.is_empty());
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

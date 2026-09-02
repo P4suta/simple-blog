@@ -155,6 +155,50 @@ async fn search_route_migration_preserves_legacy_content_tags_revisions_and_navi
 }
 
 #[tokio::test]
+async fn legacy_schema_rejects_multiple_case_insensitive_search_slugs() {
+    let temp = tempfile::tempdir().unwrap();
+    let database = temp.path().join("legacy-search-uniqueness.sqlite3");
+    let pool = migration_fixture(&database, 6).await;
+    let at = "2026-09-02T00:00:00+00:00";
+
+    sqlx::query(
+        "INSERT INTO contents (
+           id, kind, title, slug, summary, body_markdown, body_html, status, publish_at,
+           version, created_at, updated_at
+         ) VALUES (1, 'post', 'Search', 'search', '', '', '', 'draft', NULL, 1, ?, ?)",
+    )
+    .bind(at)
+    .bind(at)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(
+        sqlx::query(
+            "INSERT INTO contents (
+               id, kind, title, slug, summary, body_markdown, body_html, status, publish_at,
+               version, created_at, updated_at
+             ) VALUES (2, 'post', 'Search variant', 'Search', '', '', '', 'draft', NULL, 1, ?, ?)",
+        )
+        .bind(at)
+        .bind(at)
+        .execute(&pool)
+        .await
+        .is_err()
+    );
+
+    sqlx::query("INSERT INTO tags (id, name, slug) VALUES (1, 'Search', 'search')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        sqlx::query("INSERT INTO tags (id, name, slug) VALUES (2, 'Search variant', 'Search')")
+            .execute(&pool)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
 async fn publication_state_migration_compares_sqlx_rfc3339_timestamps() {
     let temp = tempfile::tempdir().unwrap();
     let database = temp.path().join("publication-clock.sqlite3");

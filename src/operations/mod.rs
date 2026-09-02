@@ -29,7 +29,10 @@ pub enum OperationError {
     Io(#[from] std::io::Error),
     #[error("database operation failed: {0}")]
     Database(String),
-    #[error("database migration failed: {message}; pre-migration backup remains at {backup:?}")]
+    #[error(
+        "database migration failed: {message}; pre-migration backup remains at {}",
+        .backup.display()
+    )]
     Migration { message: String, backup: PathBuf },
     #[error("archive is invalid: {0}")]
     InvalidArchive(String),

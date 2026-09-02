@@ -151,9 +151,11 @@ export async function handleInternalPublicationRequest(
       code.startsWith("release_activation_failed_") ||
       code === "release_activation_response_invalid" ||
       code === "release_manifest_missing" ||
+      code === "release_manifest_metadata_invalid" ||
       code === "release_manifest_integrity_invalid" ||
       code === "release_head_unavailable" ||
       code.startsWith("release_object_missing:") ||
+      code === "release_object_metadata_invalid" ||
       code === "release_object_integrity_invalid"
     ) {
       return json({ error: code }, 502);

@@ -124,11 +124,19 @@ impl SiteCompiler {
         builder = self.add_static_assets(builder, snapshot, &origin, &media)?;
 
         let release = builder.finish()?;
+        let pruned_route_count = previous.map_or(0, |previous| {
+            previous
+                .routes
+                .keys()
+                .filter(|path| !release.manifest.routes.contains_key(*path))
+                .count()
+        });
         tracing::info!(
             event = "site.compile.completed",
             release_id = %release.id,
             route_count = release.manifest.routes.len(),
-            staged_object_count = release.objects.len()
+            staged_object_count = release.objects.len(),
+            pruned_route_count
         );
         Ok(release)
     }

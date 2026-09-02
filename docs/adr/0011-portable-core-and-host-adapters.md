@@ -17,6 +17,8 @@ Import first validates the whole package, rebuilds derived HTML and a public rel
 
 The canonical origin is retained in version 1. Moving the same custom domain between conforming hosts therefore preserves public URLs and the WebAuthn relying-party identity as well as content.
 
+Every compiler input is a complete public snapshot. Incremental compilation may reuse content-addressed objects from the previous manifest, but it reconstructs the route map from that snapshot and never inherits omitted routes. This guarantees that deleting, unpublishing, untagging, or removing a redirect withdraws the corresponding route in the next atomic release. The completion trace records how many previous routes were pruned.
+
 ## Consequences
 
 - Host migration is a CMS operation, not a source-control exercise.
