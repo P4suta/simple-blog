@@ -14,6 +14,7 @@ use crate::{
     config::Config,
     infrastructure::sqlite::{MIGRATOR, SqliteRepository},
     operations::{OperationError, checksum_file},
+    release::{FilesystemReleaseStore, ReleaseId, ReleaseReader, ReleaseStore},
 };
 
 #[derive(Debug, Serialize)]
@@ -70,9 +71,188 @@ impl Doctor {
         check_directory("filesystem.data", &config.data_dir, &mut report);
         check_directory("filesystem.media", &config.media_dir(), &mut report);
         check_directory("filesystem.backups", &config.backup_dir(), &mut report);
+        check_directory("filesystem.releases", &config.release_dir(), &mut report);
         check_media(config, repository, &mut report).await;
+        check_releases(config, &mut report).await;
         Ok(report)
     }
+}
+
+async fn check_releases(config: &Config, report: &mut DoctorReport) {
+    let root = config.release_dir();
+    let store = FilesystemReleaseStore::new(root.clone());
+    match store.active().await {
+        Ok(None) => report.ok(
+            "release.active",
+            "no active release; build or serve will create one",
+        ),
+        Ok(Some(active)) => match store.verify_active().await {
+            Ok(verification) => report.ok(
+                "release.active",
+                format!(
+                    "{}: {} object(s), {} byte(s) verified",
+                    verification.release_id, verification.object_count, verification.total_bytes
+                ),
+            ),
+            Err(error) => report.fail("release.active", format!("{}: {error}", active.id)),
+        },
+        Err(error) => report.fail("release.active", error.to_string()),
+    }
+    check_release_history(&root, &store, report).await;
+    check_release_temporaries(&root, report);
+}
+
+async fn check_release_history(
+    root: &Path,
+    store: &FilesystemReleaseStore,
+    report: &mut DoctorReport,
+) {
+    let mut issues = Vec::new();
+    let mut referenced_objects = BTreeSet::new();
+    let mut verified_objects = BTreeSet::new();
+    let mut manifest_count = 0_usize;
+    let mut total_bytes = 0_u64;
+    let manifests = root.join("manifests");
+    for path in regular_release_entries(&manifests, "manifest", &mut issues) {
+        let Some(filename) = path.file_name().and_then(|name| name.to_str()) else {
+            issues.push(format!("non-UTF-8 release manifest: {}", path.display()));
+            continue;
+        };
+        if is_release_temporary(filename) {
+            continue;
+        }
+        let Some(stem) = filename.strip_suffix(".json") else {
+            issues.push(format!("unexpected release manifest file: {filename}"));
+            continue;
+        };
+        let id = match ReleaseId::parse(stem.to_owned()) {
+            Ok(id) => id,
+            Err(error) => {
+                issues.push(format!("invalid release manifest name {filename}: {error}"));
+                continue;
+            }
+        };
+        match store.manifest(&id).await {
+            Ok(manifest) => {
+                manifest_count += 1;
+                for object_id in manifest
+                    .routes
+                    .values()
+                    .filter_map(|route| route.object_id())
+                {
+                    referenced_objects.insert(object_id.to_owned());
+                    if verified_objects.insert(object_id.to_owned()) {
+                        match store.object(object_id).await {
+                            Ok(bytes) => {
+                                total_bytes = total_bytes
+                                    .saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+                            }
+                            Err(error) => issues.push(error.to_string()),
+                        }
+                    }
+                }
+            }
+            Err(error) => issues.push(error.to_string()),
+        }
+    }
+
+    let objects = root.join("objects");
+    for path in regular_release_entries(&objects, "object", &mut issues) {
+        let Some(filename) = path.file_name().and_then(|name| name.to_str()) else {
+            issues.push(format!("non-UTF-8 release object: {}", path.display()));
+            continue;
+        };
+        if is_release_temporary(filename) {
+            continue;
+        }
+        match ReleaseId::parse(filename.to_owned()) {
+            Ok(_) if referenced_objects.contains(filename) => {}
+            Ok(_) => issues.push(format!("unreferenced release object: {filename}")),
+            Err(error) => issues.push(format!("invalid release object name {filename}: {error}")),
+        }
+    }
+
+    issues.sort();
+    issues.dedup();
+    if issues.is_empty() {
+        report.ok(
+            "release.history",
+            format!(
+                "{manifest_count} manifest(s), {} object(s), {total_bytes} byte(s) verified",
+                verified_objects.len()
+            ),
+        );
+    } else {
+        report.fail("release.history", issues.join("; "));
+    }
+}
+
+fn regular_release_entries(directory: &Path, kind: &str, issues: &mut Vec<String>) -> Vec<PathBuf> {
+    let entries = match std::fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(error) => {
+            issues.push(format!(
+                "could not enumerate release {kind}s at {}: {error}",
+                directory.display()
+            ));
+            return Vec::new();
+        }
+    };
+    let mut paths = Vec::new();
+    for entry in entries {
+        match entry {
+            Ok(entry) => match entry.file_type() {
+                Ok(file_type) if file_type.is_file() => paths.push(entry.path()),
+                Ok(_) => issues.push(format!(
+                    "release {kind} is not a regular file: {}",
+                    entry.path().display()
+                )),
+                Err(error) => issues.push(format!(
+                    "could not inspect release {kind} {}: {error}",
+                    entry.path().display()
+                )),
+            },
+            Err(error) => issues.push(format!("could not enumerate release {kind}: {error}")),
+        }
+    }
+    paths.sort();
+    paths
+}
+
+fn check_release_temporaries(root: &Path, report: &mut DoctorReport) {
+    let mut issues = Vec::new();
+    if root.is_dir() {
+        for entry in walkdir::WalkDir::new(root).follow_links(false) {
+            match entry {
+                Ok(entry) if entry.depth() > 0 => {
+                    let filename = entry.file_name().to_string_lossy();
+                    if is_release_temporary(&filename) {
+                        issues.push(format!(
+                            "interrupted release write: {}",
+                            entry.path().display()
+                        ));
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => issues.push(format!("could not inspect release tree: {error}")),
+            }
+        }
+    }
+    issues.sort();
+    if issues.is_empty() {
+        report.ok("release.temporary_files", "no interrupted release writes");
+    } else {
+        report.fail("release.temporary_files", issues.join("; "));
+    }
+}
+
+fn is_release_temporary(filename: &str) -> bool {
+    (filename.starts_with('.')
+        && Path::new(filename)
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("tmp")))
+        || filename.contains(".materializing-")
 }
 
 async fn check_quick_check(repository: &SqliteRepository, report: &mut DoctorReport) {

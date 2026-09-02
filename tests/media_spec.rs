@@ -2,7 +2,9 @@ use std::{io::Cursor, path::Path, sync::Arc};
 
 use async_trait::async_trait;
 use chrono::Utc;
-use image::{DynamicImage, ImageBuffer, ImageFormat, Rgb};
+use image::{
+    Delay, DynamicImage, Frame, ImageBuffer, ImageFormat, Rgb, RgbaImage, codecs::gif::GifEncoder,
+};
 use simple_blog::{
     application::ports::{MediaRepository, MediaRepositoryError},
     domain::media::{MediaAsset, MediaId},
@@ -26,6 +28,10 @@ impl MediaRepository for FailingMediaRepository {
 
     async fn list_media(&self) -> Result<Vec<MediaAsset>, MediaRepositoryError> {
         Ok(Vec::new())
+    }
+
+    async fn delete_media(&self, _id: &MediaId) -> Result<(), MediaRepositoryError> {
+        Ok(())
     }
 }
 
@@ -51,6 +57,46 @@ fn png(width: u32, height: u32) -> Vec<u8> {
     cursor.into_inner()
 }
 
+fn jpeg(width: u32, height: u32) -> Vec<u8> {
+    let image = DynamicImage::ImageRgb8(ImageBuffer::from_fn(width, height, |x, y| {
+        Rgb([(x % 255) as u8, (y % 255) as u8, 120])
+    }));
+    let mut cursor = Cursor::new(Vec::new());
+    image.write_to(&mut cursor, ImageFormat::Jpeg).unwrap();
+    cursor.into_inner()
+}
+
+fn webp(width: u32, height: u32) -> Vec<u8> {
+    let image = DynamicImage::ImageRgb8(ImageBuffer::from_fn(width, height, |x, y| {
+        Rgb([(x % 255) as u8, (y % 255) as u8, 120])
+    }));
+    let mut cursor = Cursor::new(Vec::new());
+    image.write_to(&mut cursor, ImageFormat::WebP).unwrap();
+    cursor.into_inner()
+}
+
+fn animated_gif(width: u32, height: u32, frames: u32) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    {
+        let mut encoder = GifEncoder::new(&mut bytes);
+        for index in 0..frames {
+            let shade = u8::try_from((index * 40) % 255).unwrap();
+            let buffer = RgbaImage::from_pixel(width, height, image::Rgba([shade, 0, 0, 255]));
+            let frame = Frame::from_parts(buffer, 0, 0, Delay::from_numer_denom_ms(100, 1));
+            encoder.encode_frame(frame).unwrap();
+        }
+    }
+    bytes
+}
+
+fn stored_bytes(temp: &tempfile::TempDir, filename: &str) -> Vec<u8> {
+    std::fs::read(temp.path().join("media").join(filename)).unwrap()
+}
+
+fn is_webp(bytes: &[u8]) -> bool {
+    bytes.get(..4) == Some(b"RIFF") && bytes.get(8..12) == Some(b"WEBP")
+}
+
 fn has_extension(filename: &str, expected: &str) -> bool {
     Path::new(filename)
         .extension()
@@ -73,17 +119,19 @@ async fn verified_image_is_content_addressed_and_gets_responsive_webp_variants()
         .await
         .unwrap();
 
-    assert_eq!(asset.mime_type, "image/png");
+    assert_eq!(asset.mime_type, "image/webp");
     assert_eq!((asset.width, asset.height), (1_200, 800));
-    assert_eq!(asset.byte_size, bytes.len() as u64);
     assert_eq!(asset.id.as_str().len(), 64);
-    assert!(has_extension(&asset.original_filename, "png"));
-    assert!(
-        temp.path()
-            .join("media")
-            .join(&asset.original_filename)
-            .is_file()
+    assert!(has_extension(&asset.original_filename, "webp"));
+    let original = stored_bytes(&temp, &asset.original_filename);
+    assert!(is_webp(&original));
+    // The stored (converted) bytes are the identity: filename hash and
+    // byte_size describe the file on disk, which is what the doctor verifies.
+    assert_eq!(
+        blake3::hash(&original).to_hex().to_string(),
+        *asset.id.as_str()
     );
+    assert_eq!(asset.byte_size, original.len() as u64);
     assert_eq!(
         asset.variants.iter().map(|v| v.width).collect::<Vec<_>>(),
         [480, 960, 1_200]
@@ -95,6 +143,89 @@ async fn verified_image_is_content_addressed_and_gets_responsive_webp_variants()
 
     let stored = repository.find_media(&asset.id).await.unwrap().unwrap();
     assert_eq!(stored, asset);
+}
+
+#[tokio::test]
+async fn jpeg_uploads_are_reencoded_as_lossy_webp() {
+    let (temp, _repository, media) = harness(25 * 1024 * 1024).await;
+    let asset = media
+        .store("photo.jpg", jpeg(600, 400), "photo", "", Utc::now())
+        .await
+        .unwrap();
+
+    assert_eq!(asset.mime_type, "image/webp");
+    let original = stored_bytes(&temp, &asset.original_filename);
+    // Lossy WebP carries the "VP8 " fourcc; lossless would be "VP8L".
+    assert_eq!(&original[12..16], b"VP8 ");
+    assert_eq!(
+        blake3::hash(&original).to_hex().to_string(),
+        *asset.id.as_str()
+    );
+}
+
+#[tokio::test]
+async fn webp_uploads_pass_through_without_reencoding() {
+    let (temp, _repository, media) = harness(25 * 1024 * 1024).await;
+    let bytes = webp(300, 200);
+    let asset = media
+        .store("already.webp", bytes.clone(), "", "", Utc::now())
+        .await
+        .unwrap();
+
+    assert_eq!(asset.mime_type, "image/webp");
+    assert_eq!(stored_bytes(&temp, &asset.original_filename), bytes);
+    assert_eq!(
+        blake3::hash(&bytes).to_hex().to_string(),
+        *asset.id.as_str()
+    );
+}
+
+#[tokio::test]
+async fn animated_gifs_become_animated_webp() {
+    let (temp, _repository, media) = harness(25 * 1024 * 1024).await;
+    let asset = media
+        .store("loop.gif", animated_gif(64, 48, 3), "", "", Utc::now())
+        .await
+        .unwrap();
+
+    assert!(asset.animated);
+    assert_eq!(asset.mime_type, "image/webp");
+    let original = stored_bytes(&temp, &asset.original_filename);
+    assert!(is_webp(&original));
+    assert!(webpkit::is_animated(&original).unwrap());
+    // Variants remain still images derived from the first frame.
+    assert!(asset.variants.iter().all(|variant| {
+        !webpkit::is_animated(&stored_bytes(&temp, &variant.filename)).unwrap()
+    }));
+}
+
+#[tokio::test]
+async fn reencoding_is_deterministic_so_duplicates_share_identity() {
+    let (_temp, repository, media) = harness(25 * 1024 * 1024).await;
+    let bytes = jpeg(120, 90);
+    let first = media
+        .store("a.jpg", bytes.clone(), "", "", Utc::now())
+        .await
+        .unwrap();
+    let second = media
+        .store("b.jpg", bytes, "", "", Utc::now())
+        .await
+        .unwrap();
+
+    assert_eq!(first.id, second.id);
+    assert_eq!(repository.list_media().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn images_wider_than_webp_allows_are_rejected() {
+    let (_temp, repository, media) = harness(64 * 1024 * 1024).await;
+    let error = media
+        .store("wide.png", png(17_000, 2), "", "", Utc::now())
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, MediaError::PixelLimit));
+    assert!(repository.list_media().await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -168,8 +299,10 @@ async fn compensation_never_removes_content_addressed_files_that_already_existed
     let temp = tempfile::tempdir().unwrap();
     let directory = temp.path().join("media");
     std::fs::create_dir_all(&directory).unwrap();
-    let bytes = png(32, 24);
-    let original = format!("{}.png", blake3::hash(&bytes).to_hex());
+    // A WebP upload passes through unchanged, so its stored name is the hash
+    // of the uploaded bytes and can be planted ahead of the failing store.
+    let bytes = webp(32, 24);
+    let original = format!("{}.webp", blake3::hash(&bytes).to_hex());
     std::fs::write(directory.join(&original), &bytes).unwrap();
     let media = LocalMediaService::new(
         directory.clone(),
@@ -178,7 +311,7 @@ async fn compensation_never_removes_content_addressed_files_that_already_existed
     );
 
     let error = media
-        .store("failure.png", bytes.clone(), "", "", Utc::now())
+        .store("failure.webp", bytes.clone(), "", "", Utc::now())
         .await
         .unwrap_err();
 

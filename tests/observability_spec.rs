@@ -120,9 +120,11 @@ async fn internal_failure_has_a_stable_error_code_and_the_same_request_id() {
     let response = router(state)
         .oneshot(
             Request::builder()
-                .uri("/")
+                .method("POST")
+                .uri("/likes/7")
                 .header(header::HOST, "localhost:8080")
-                .body(Body::empty())
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"op":"like"}"#))
                 .unwrap(),
         )
         .await

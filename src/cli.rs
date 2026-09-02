@@ -1,18 +1,22 @@
-use std::{io::Write, net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::Utc;
 use clap::{Parser, Subcommand};
 use tokio::net::TcpListener;
 use url::Url;
-use uuid::Uuid;
 
 use crate::{
     application::{auth::AuthService, ports::PasskeyRepository},
-    config::{Config, ConfigFile, Overrides},
+    config::{Config, Overrides},
     domain::auth::SetupPurpose,
     infrastructure::{entropy::SystemEntropy, sqlite::SqliteRepository},
-    operations::{BackupService, Doctor, Exporter, MigrationCoordinator, RestoreService},
+    materialize::ReleaseMaterializer,
+    operations::{
+        BackupService, Doctor, Exporter, MigrationCoordinator, PortableMigrationService,
+        RestoreService,
+    },
+    portable::PortableArchive,
     web::{AppState, router},
 };
 
@@ -32,6 +36,10 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     Init,
+    Build {
+        #[arg(long, value_name = "DIRECTORY")]
+        output: Option<PathBuf>,
+    },
     Serve,
     Backup {
         #[arg(long, value_name = "ARCHIVE")]
@@ -45,6 +53,10 @@ enum Command {
     Export {
         #[arg(long, value_name = "DIRECTORY")]
         output: Option<PathBuf>,
+    },
+    Migrate {
+        #[command(subcommand)]
+        command: MigrateCommand,
     },
     Doctor {
         #[arg(long)]
@@ -61,11 +73,25 @@ enum OwnerCommand {
     Recover,
 }
 
+#[derive(Debug, Subcommand)]
+enum MigrateCommand {
+    Export {
+        #[arg(long, value_name = "ARCHIVE")]
+        output: Option<PathBuf>,
+    },
+    Import {
+        archive: PathBuf,
+        #[arg(long)]
+        force: bool,
+    },
+}
+
 impl Cli {
     pub async fn run(self) -> Result<()> {
         let overrides = self.overrides();
         match self.command {
             Command::Init => init(overrides).await,
+            Command::Build { output } => build(overrides, output).await,
             Command::Serve => serve(overrides).await,
             Command::Backup { output } => backup(overrides, output).await,
             Command::Restore { archive, force } => {
@@ -77,6 +103,12 @@ impl Cli {
                 Ok(())
             }
             Command::Export { output } => export(overrides, output).await,
+            Command::Migrate { command } => match command {
+                MigrateCommand::Export { output } => migrate_export(overrides, output).await,
+                MigrateCommand::Import { archive, force } => {
+                    migrate_import(overrides, archive, force).await
+                }
+            },
             Command::Doctor { json } => doctor(overrides, json).await,
             Command::Owner { command } => match command {
                 OwnerCommand::Recover => owner_recover(overrides).await,
@@ -110,10 +142,12 @@ impl Command {
     const fn name(&self) -> &'static str {
         match self {
             Self::Init => "init",
+            Self::Build { .. } => "build",
             Self::Serve => "serve",
             Self::Backup { .. } => "backup",
             Self::Restore { .. } => "restore",
             Self::Export { .. } => "export",
+            Self::Migrate { .. } => "migrate",
             Self::Doctor { .. } => "doctor",
             Self::Owner { .. } => "owner",
         }
@@ -124,7 +158,8 @@ async fn init(overrides: Overrides) -> Result<()> {
     let config = Config::load(overrides).context("could not load configuration")?;
     std::fs::create_dir_all(config.media_dir()).context("could not create media directory")?;
     std::fs::create_dir_all(config.backup_dir()).context("could not create backup directory")?;
-    write_config(&config)?;
+    std::fs::create_dir_all(config.release_dir()).context("could not create release directory")?;
+    config.persist().context("could not write configuration")?;
     let repository = Arc::new(
         open_database(&config)
             .await
@@ -147,6 +182,51 @@ async fn init(overrides: Overrides) -> Result<()> {
     Ok(())
 }
 
+async fn build(overrides: Overrides, output: Option<PathBuf>) -> Result<()> {
+    let config = Config::load(overrides).context("could not load configuration")?;
+    ensure_initialized(&config)?;
+    let repository = Arc::new(
+        open_database(&config)
+            .await
+            .context("could not open SQLite")?,
+    );
+    let state = AppState::new(config, repository).context("could not build publication core")?;
+    let outcome = state
+        .publish_now()
+        .await
+        .context("could not build public release")?;
+    let verification = state
+        .release_store
+        .verify_active()
+        .await
+        .context("could not verify active public release")?;
+    let materialized = if let Some(output) = &output {
+        Some(
+            ReleaseMaterializer::new(state.release_store.clone())
+                .materialize(output)
+                .await
+                .with_context(|| format!("could not materialize {}", output.display()))?,
+        )
+    } else {
+        None
+    };
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "release_id": outcome.release_id.as_str(),
+            "public_revision": outcome.public_revision,
+            "disposition": outcome.disposition,
+            "routes": outcome.route_count,
+            "objects": verification.object_count,
+            "bytes": verification.total_bytes,
+            "materialized_to": output.as_ref().map(|path| path.display().to_string()),
+            "materialized_assets": materialized.as_ref().map(|report| report.asset_count),
+            "materialized_redirects": materialized.as_ref().map(|report| report.redirect_count),
+        }))?
+    );
+    Ok(())
+}
+
 async fn serve(overrides: Overrides) -> Result<()> {
     let config = Config::load(overrides).context("could not load configuration")?;
     let bind = config.bind;
@@ -155,18 +235,41 @@ async fn serve(overrides: Overrides) -> Result<()> {
             .await
             .context("could not open SQLite")?,
     );
-    let app = router(AppState::new(config, repository).context("could not build web application")?);
+    let state = AppState::new(config, repository).context("could not build web application")?;
+    let initial = state
+        .publish_now()
+        .await
+        .context("could not build initial public release")?;
+    tracing::info!(
+        event = "server.initial_release.ready",
+        release_id = %initial.release_id,
+        public_revision = initial.public_revision,
+        disposition = ?initial.disposition
+    );
+    let app = router(state.clone());
     let listener = TcpListener::bind(bind)
         .await
         .with_context(|| format!("could not bind {bind}"))?;
     tracing::info!(%bind, "simple-blog is listening");
-    axum::serve(
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let scheduler = tokio::spawn(async move {
+        state.run_publication_scheduler(shutdown_rx).await;
+    });
+    let signal_tx = shutdown_tx.clone();
+    let server = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal())
-    .await
-    .context("web server failed")
+    .with_graceful_shutdown(async move {
+        shutdown_signal().await;
+        let _sent = signal_tx.send(true);
+    })
+    .await;
+    let _sent = shutdown_tx.send(true);
+    scheduler
+        .await
+        .context("publication scheduler task failed")?;
+    server.context("web server failed")
 }
 
 async fn backup(overrides: Overrides, output: Option<PathBuf>) -> Result<()> {
@@ -198,6 +301,61 @@ async fn export(overrides: Overrides, output: Option<PathBuf>) -> Result<()> {
         .await
         .context("could not export content")?;
     println!("{}", output.display());
+    Ok(())
+}
+
+async fn migrate_export(overrides: Overrides, output: Option<PathBuf>) -> Result<()> {
+    let config = Config::load(overrides).context("could not load configuration")?;
+    ensure_initialized(&config)?;
+    let repository = open_database(&config)
+        .await
+        .context("could not open SQLite")?;
+    let output = output.unwrap_or_else(|| {
+        PathBuf::from(format!(
+            "simple-blog-{}.simple-blog",
+            Utc::now().format("%Y%m%d-%H%M%S")
+        ))
+    });
+    let report = PortableMigrationService::export(&config, &repository, &output, Utc::now())
+        .await
+        .with_context(|| format!("could not create portable archive {}", output.display()))?;
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "archive": output.display().to_string(),
+            "archive_id": report.archive_id,
+            "entries": report.entry_count,
+        }))?
+    );
+    Ok(())
+}
+
+async fn migrate_import(mut overrides: Overrides, archive: PathBuf, force: bool) -> Result<()> {
+    let package = PortableArchive::read(&archive)
+        .with_context(|| format!("could not read portable archive {}", archive.display()))?;
+    let origin_is_explicit =
+        overrides.public_url.is_some() || std::env::var_os("SIMPLE_BLOG_PUBLIC_URL").is_some();
+    let mut config =
+        Config::load(overrides.clone()).context("could not load destination configuration")?;
+    if !origin_is_explicit && !config.data_dir.join("config.toml").is_file() {
+        overrides.public_url = Some(package.site.canonical_origin.clone());
+        config = Config::load(overrides).context("could not load destination configuration")?;
+    }
+    let report = PortableMigrationService::import_package(&archive, package, &config, force)
+        .await
+        .with_context(|| format!("could not import portable archive {}", archive.display()))?;
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "data_dir": config.data_dir.display().to_string(),
+            "release_id": report.release_id,
+            "contents": report.content_count,
+            "media": report.media_count,
+            "previous_data_retained_at": report
+                .replaced_data_dir
+                .map(|path| path.display().to_string()),
+        }))?
+    );
     Ok(())
 }
 
@@ -285,38 +443,6 @@ fn ensure_initialized(config: &Config) -> Result<()> {
             "installation is not initialized; run `simple-blog init`"
         ))
     }
-}
-
-fn write_config(config: &Config) -> Result<()> {
-    let file = ConfigFile {
-        data_dir: None,
-        bind: Some(config.bind.to_string()),
-        public_url: Some(config.public_url.to_string()),
-        trusted_proxies: Some(config.trusted_proxies.clone()),
-        max_upload_bytes: Some(config.max_upload_bytes),
-    };
-    let contents = toml::to_string_pretty(&file).context("could not serialize configuration")?;
-    let path = config.data_dir.join("config.toml");
-    let temporary = config
-        .data_dir
-        .join(format!(".config-{}.toml", Uuid::new_v4()));
-    let result = (|| -> Result<()> {
-        let mut output = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)
-            .context("could not create configuration")?;
-        output
-            .write_all(contents.as_bytes())
-            .context("could not write configuration")?;
-        output.sync_all().context("could not sync configuration")?;
-        std::fs::rename(&temporary, &path).context("could not install configuration")?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temporary);
-    }
-    result
 }
 
 fn setup_url(origin: &Url, token: &str) -> Result<Url> {

@@ -4,12 +4,15 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use thiserror::Error;
 
+use crate::application::site_compiler::SiteSnapshotV1;
 use crate::domain::auth::{SecretHash, SessionRecord, SetupPurpose, StoredPasskey};
 use crate::domain::content::{
-    Content, ContentDraft, ContentId, ContentRevision, SaveIntent, Slug, Tag,
+    Content, ContentDraft, ContentId, ContentKind, ContentRevision, SaveIntent, Slug, Tag,
 };
 use crate::domain::media::{MediaAsset, MediaId};
+use crate::domain::search::SearchTerms;
 use crate::domain::theme::{NavigationItem, SiteSettings};
+use crate::portable::PortableSiteV1;
 use uuid::Uuid;
 
 pub trait Clock: Send + Sync {
@@ -111,6 +114,77 @@ pub trait ContentRepository: Send + Sync {
     async fn list_all_public(&self, now: DateTime<Utc>) -> Result<Vec<Content>, RepositoryError>;
 
     async fn list_all_content(&self) -> Result<Vec<Content>, RepositoryError>;
+
+    /// The chronologically adjacent public posts (older, newer) around one
+    /// post, for prev/next navigation. Pages take no part in the chain.
+    async fn neighbor_posts(
+        &self,
+        id: ContentId,
+        publish_at: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> Result<(Option<ContentLink>, Option<ContentLink>), RepositoryError>;
+}
+
+/// A minimal reference to another content item.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContentLink {
+    pub id: ContentId,
+    pub slug: Slug,
+    pub title: String,
+}
+
+/// One search result: normalized display text plus what the page needs.
+#[derive(Clone, Debug)]
+pub struct SearchHit {
+    pub slug: Slug,
+    pub title: String,
+    pub body: String,
+    pub kind: ContentKind,
+    pub publish_at: DateTime<Utc>,
+}
+
+/// Full-text search over publicly visible content.
+#[async_trait]
+pub trait SearchRepository: Send + Sync {
+    async fn search(
+        &self,
+        terms: &SearchTerms,
+        now: DateTime<Utc>,
+        limit: u32,
+    ) -> Result<Vec<SearchHit>, RepositoryError>;
+}
+
+/// Per-content engagement totals, shown only to the owner.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Engagement {
+    pub likes: u64,
+    pub views: u64,
+}
+
+#[async_trait]
+pub trait EngagementRepository: Send + Sync {
+    /// Records one page view; failures must never fail the page render.
+    async fn record_view(&self, id: ContentId) -> Result<(), RepositoryError>;
+
+    /// Likes and views per content id, for the dashboard.
+    async fn engagement_totals(
+        &self,
+    ) -> Result<std::collections::HashMap<ContentId, Engagement>, RepositoryError>;
+}
+
+/// Anonymous like counters for public content. Every operation is gated on the
+/// content being publicly visible at `now`, so drafts cannot be probed by id.
+#[async_trait]
+pub trait LikeRepository: Send + Sync {
+    /// Increments and returns the new count; `NotFound` if not publicly visible.
+    async fn add_like(&self, id: ContentId, now: DateTime<Utc>) -> Result<u64, RepositoryError>;
+
+    /// Decrements (never below zero) and returns the new count; `NotFound` if
+    /// not publicly visible.
+    async fn remove_like(&self, id: ContentId, now: DateTime<Utc>) -> Result<u64, RepositoryError>;
+
+    /// Returns the current count; `NotFound` if not publicly visible.
+    async fn like_count(&self, id: ContentId, now: DateTime<Utc>) -> Result<u64, RepositoryError>;
 }
 
 #[async_trait]
@@ -125,6 +199,51 @@ pub trait SiteRepository: Send + Sync {
     ) -> Result<(), RepositoryError>;
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PublicationState {
+    pub revision: u64,
+    pub next_publish_at: Option<DateTime<Utc>>,
+}
+
+/// One consistent source snapshot and its durable publication clock.
+#[async_trait]
+pub trait PublicSnapshotRepository: Send + Sync {
+    async fn publication_state(&self) -> Result<PublicationState, RepositoryError>;
+
+    /// Advances exactly once when one or more scheduled entries have become
+    /// visible, and recomputes the next durable boundary in the same transaction.
+    async fn advance_publication_clock(&self, now: DateTime<Utc>) -> Result<bool, RepositoryError>;
+
+    /// Reads settings, navigation, visible content, redirects, media and the
+    /// matching public revision from one database snapshot.
+    async fn public_snapshot(
+        &self,
+        effective_at: DateTime<Utc>,
+    ) -> Result<SiteSnapshotV1, RepositoryError>;
+}
+
+/// Complete, host-neutral durable state used to leave or enter a host.
+///
+/// Importers must rebuild every derived HTML field with the destination's
+/// renderer, invalidate ephemeral authentication capabilities, and commit the
+/// database replacement atomically.
+#[async_trait]
+pub trait PortableRepository: Send + Sync {
+    /// Reads every portable table from one consistent database snapshot.
+    async fn portable_site(
+        &self,
+        canonical_origin: &str,
+        exported_at: DateTime<Utc>,
+    ) -> Result<PortableSiteV1, RepositoryError>;
+
+    /// Replaces all portable tables in one transaction.
+    async fn replace_portable_site(
+        &self,
+        site: &PortableSiteV1,
+        markdown: &dyn MarkdownRenderer,
+    ) -> Result<(), RepositoryError>;
+}
+
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum MediaRepositoryError {
     #[error("media storage failure: {0}")]
@@ -136,6 +255,7 @@ pub trait MediaRepository: Send + Sync {
     async fn save_media(&self, media: &MediaAsset) -> Result<MediaAsset, MediaRepositoryError>;
     async fn find_media(&self, id: &MediaId) -> Result<Option<MediaAsset>, MediaRepositoryError>;
     async fn list_media(&self) -> Result<Vec<MediaAsset>, MediaRepositoryError>;
+    async fn delete_media(&self, id: &MediaId) -> Result<(), MediaRepositoryError>;
 }
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]

@@ -11,7 +11,7 @@ use simple_blog::{
     application::{
         auth::AuthService,
         content::{ContentService, SaveIntent},
-        ports::SiteRepository,
+        ports::{MediaRepository as _, SiteRepository},
         site::SiteService,
     },
     config::{Config, ConfigSources, Overrides},
@@ -129,6 +129,7 @@ async fn cover_harness() -> CoverHarness {
 }
 
 async fn get(state: &AppState, path: &str) -> axum::response::Response {
+    state.publish_now().await.unwrap();
     router(state.clone())
         .oneshot(
             Request::builder()
@@ -155,18 +156,18 @@ async fn registered_media_is_served_immutably_and_cover_uses_srcset() {
     let home = get(&harness.state, "/").await;
     let home = String::from_utf8(response_body(home).await).unwrap();
     assert!(home.contains(&format!(
-        "rel=\"icon\" href=\"/media/{}\"",
+        "rel=\"icon\" href=\"&#x2f;media&#x2f;{}\"",
         asset.original_filename
     )));
     assert!(home.contains(&format!(
-        "class=\"site-logo\" src=\"/media/{}\"",
+        "class=\"site-logo\" src=\"&#x2f;media&#x2f;{}\"",
         asset.original_filename
     )));
 
     let media_path = format!("/media/{}", asset.original_filename);
     let media_response = get(&harness.state, &media_path).await;
     assert_eq!(media_response.status(), StatusCode::OK);
-    assert_eq!(media_response.headers()[header::CONTENT_TYPE], "image/png");
+    assert_eq!(media_response.headers()[header::CONTENT_TYPE], "image/webp");
     assert!(
         media_response.headers()[header::CACHE_CONTROL]
             .to_str()
@@ -295,5 +296,140 @@ async fn transport_rejects_a_body_beyond_the_configured_upload_envelope() {
     assert_eq!(
         response.headers()[header::X_CONTENT_TYPE_OPTIONS],
         "nosniff"
+    );
+}
+
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "walks one story end-to-end: two uploads, a reference edit, and both outcomes"
+)]
+async fn media_loses_its_last_reference_and_is_deleted_immediately() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = Config::resolve(ConfigSources {
+        cli: Overrides {
+            data_dir: Some(temp.path().to_path_buf()),
+            public_url: Some("http://localhost:8080".into()),
+            ..Overrides::default()
+        },
+        ..ConfigSources::default()
+    })
+    .unwrap();
+    let repository = Arc::new(
+        SqliteRepository::connect(&config.database_path())
+            .await
+            .unwrap(),
+    );
+    let media = LocalMediaService::new(
+        config.media_dir(),
+        repository.clone(),
+        config.max_upload_bytes,
+    );
+    let body_asset = media
+        .store("inline.png", png(), "Inline", "", Utc::now())
+        .await
+        .unwrap();
+    let logo_image = DynamicImage::ImageRgb8(ImageBuffer::from_pixel(320, 180, Rgb([200, 40, 40])));
+    let mut cursor = Cursor::new(Vec::new());
+    logo_image.write_to(&mut cursor, ImageFormat::Png).unwrap();
+    let logo_asset = media
+        .store("logo.png", cursor.into_inner(), "Logo", "", Utc::now())
+        .await
+        .unwrap();
+
+    let site = SiteService::new(repository.clone());
+    let mut settings = repository.site_settings().await.unwrap();
+    settings.logo_media_id = Some(logo_asset.id.to_string());
+    site.update(settings, Vec::new(), Utc::now()).await.unwrap();
+
+    let content = ContentService::new(
+        repository.clone(),
+        Arc::new(ComrakMarkdownRenderer::default()),
+    )
+    .create(
+        ContentDraft {
+            kind: ContentKind::Post,
+            title: "Referencing".into(),
+            slug: Slug::parse("referencing").unwrap(),
+            summary: String::new(),
+            body_markdown: format!("![Inline](/media/{})", body_asset.original_filename),
+            tags: vec![],
+            cover_media_id: None,
+            seo_title: None,
+            seo_description: None,
+            publication: Publication::Draft,
+        },
+        SaveIntent::Explicit,
+        Utc::now(),
+    )
+    .await
+    .unwrap();
+
+    let auth = AuthService::new(repository.clone(), Arc::new(SystemEntropy));
+    let session = auth.create_session(Utc::now()).await.unwrap();
+    let cookie = format!(
+        "sb_session={}; sb_csrf={}",
+        session.session.expose(),
+        session.csrf.expose()
+    );
+    let form = serde_urlencoded::to_string([
+        ("csrf", session.csrf.expose()),
+        ("kind", "post"),
+        ("title", "Referencing"),
+        ("slug", "referencing"),
+        ("body_markdown", "no more image"),
+        ("status", "draft"),
+        ("intent", "autosave"),
+        ("version", &content.version.to_string()),
+    ])
+    .unwrap();
+    let state = AppState::new(config.clone(), repository.clone()).unwrap();
+    let saved = router(state.clone())
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/admin/content/{}/", content.id.as_i64()))
+                .header(header::HOST, "localhost:8080")
+                .header(header::COOKIE, &cookie)
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(form))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(saved.status(), StatusCode::OK);
+
+    assert!(
+        repository
+            .find_media(&body_asset.id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        !config
+            .media_dir()
+            .join(&body_asset.original_filename)
+            .exists()
+    );
+    for variant in &body_asset.variants {
+        assert!(!config.media_dir().join(&variant.filename).exists());
+    }
+    let gone = get(&state, &format!("/media/{}", body_asset.original_filename)).await;
+    assert_eq!(gone.status(), StatusCode::NOT_FOUND);
+
+    // The logo keeps its settings reference and survives the sweep.
+    assert!(
+        repository
+            .find_media(&logo_asset.id)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        config
+            .media_dir()
+            .join(&logo_asset.original_filename)
+            .exists()
     );
 }

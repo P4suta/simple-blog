@@ -1,7 +1,8 @@
 {% extends "admin/base.html" %}
 {% block content %}
-<header class="admin-page-head"><div><p class="kicker">Dashboard</p><h1>文章</h1></div><a class="primary-button" href="/admin/content/new/">新しい文章</a></header>
+<header class="admin-page-head"><h1>{{ t["dashboard.heading"] }}</h1><a class="primary-button" href="/admin/content/new/">{{ t["dashboard.new"] }}</a></header>
 <div class="content-table" role="list">
-{% for item in contents %}<a role="listitem" href="/admin/content/{{ item.id }}/edit/"><span><strong>{{ item.title }}</strong><small>/{{ item.slug }}/</small></span><span class="status">{{ item.status }}</span></a>{% else %}<p>まだ文章がありません。最初の一篇を書きましょう。</p>{% endfor %}
+{% for item in contents %}<a role="listitem" href="/admin/content/{{ item.id }}/edit/"><span><strong>{{ item.title }}</strong><small>/{{ item.slug }}/</small></span><span class="engagement"><span class="metric">{{ item.views }} {{ t["dashboard.views"] }}</span><span class="metric">{{ item.likes }} {{ t["dashboard.likes"] }}</span></span><span class="status status-{{ item.status }}">{{ t["status." ~ item.status] }}</span></a>{% else %}<p>{{ t["dashboard.empty"] }}</p>{% endfor %}
 </div>
+<p class="dashboard-links"><a href="/" target="_blank" rel="noopener">{{ t["dashboard.view_site"] }}</a><a href="/admin/settings/">{{ t["dashboard.settings"] }}</a></p>
 {% endblock %}

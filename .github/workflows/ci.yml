@@ -27,6 +27,7 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
+          persist-credentials: false
           fetch-depth: 0
       - name: Install pinned repository tools
         run: |
@@ -36,44 +37,33 @@ jobs:
       - name: Validate workflows
         run: |
           "$RUNNER_TEMP/repository-tools/actionlint"
-      - name: Require immutable action references
-        run: |
-          if rg --pcre2 '^\s*-\s+uses:\s+[^@\s]+@(?![0-9a-f]{40}(?:\s|#|$))' .github/workflows; then
-            echo 'GitHub Actions must be pinned to a full commit SHA.' >&2
-            exit 1
-          fi
-      - name: Enforce lint expectation policy
-        run: |
-          if rg --pcre2 --multiline '#\s*\[\s*allow\b' --glob '*.rs' src tests build.rs; then
-            echo 'allow attributes are forbidden.' >&2
-            exit 1
-          fi
-          if rg --pcre2 --multiline '#\s*\[\s*expect\s*\((?:(?!reason\s*=)[\s\S])*?\)\s*\]' --glob '*.rs' src tests build.rs; then
-            echo 'expect attributes require an explicit reason.' >&2
-            exit 1
-          fi
+      - name: Validate public repository governance
+        run: bash tests/repository_policy.sh
       - name: Scan the repository for secrets
         run: |
+          "$RUNNER_TEMP/repository-tools/gitleaks" git --no-banner --redact .
           "$RUNNER_TEMP/repository-tools/gitleaks" dir --no-banner --redact .
 
   msrv:
-    name: MSRV contract
+    name: MSRV 1.96 contract
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
       - name: Install MSRV
-        run: rustup toolchain install 1.88.0 --profile minimal --component clippy,rustfmt
+        run: rustup toolchain install 1.96.0 --profile minimal --component clippy,rustfmt
       - name: Record toolchain
-        run: rustc +1.88.0 --version --verbose
+        run: rustc +1.96.0 --version --verbose
       - name: Format
-        run: cargo +1.88.0 fmt --all -- --check
+        run: cargo +1.96.0 fmt --all -- --check
       - name: Lint
-        run: cargo +1.88.0 clippy --locked --all-targets --all-features -- -D warnings
+        run: cargo +1.96.0 clippy --locked --all-targets --all-features -- -D warnings
       - name: Test
         env:
           PROPTEST_CASES: 1024
-        run: cargo +1.88.0 test --locked --all-targets --all-features
+        run: cargo +1.96.0 test --locked --all-targets --all-features
 
   stable:
     name: Stable compatibility (${{ matrix.os }})
@@ -82,9 +72,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
       - name: Install current stable Rust
         run: rustup toolchain install stable --profile minimal --component clippy
       - name: Lint with current stable Rust
@@ -101,19 +93,29 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
-          cache: npm
-      - run: npm ci
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.0
+      - run: bun install --frozen-lockfile
       - name: Type-check and syntax-check
-        run: npm run check:admin
+        run: |
+          bun run check:admin
+          bun run check:cloudflare
+      - name: Contract and browser-runtime tests
+        run: |
+          bun run test:frontend
+          bun run test:cloudflare
       - name: Rebuild embedded asset
-        run: npm run build:admin
+        run: bun run build:admin
       - name: Reject stale generated asset
         run: git diff --exit-code -- static/admin.js
       - name: Audit development dependency graph
-        run: npm audit --audit-level=high
+        run: bun audit --audit-level=high
 
   supply-chain:
     name: Dependency policy
@@ -121,6 +123,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
       - name: Install current stable Rust
         run: rustup toolchain install stable --profile minimal
       - name: Install cargo-deny
@@ -134,6 +138,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
       - name: Install current stable Rust
         run: rustup toolchain install stable --profile minimal --component llvm-tools-preview
       - name: Install cargo-llvm-cov
@@ -154,10 +160,12 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
       - name: Install MSRV
-        run: rustup toolchain install 1.88.0 --profile minimal
+        run: rustup toolchain install 1.96.0 --profile minimal
       - name: Build without development-time Node.js
-        run: cargo +1.88.0 build --release --locked
+        run: cargo +1.96.0 build --release --locked
       - name: Enforce binary size budget
         run: test "$(stat --format=%s target/release/simple-blog)" -le 41943040
       - name: Initialize and diagnose using only the binary

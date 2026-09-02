@@ -1,3 +1,5 @@
+//! Embedded templates shared by the native and hosted adapters.
+
 use std::{path::Path, sync::Arc};
 
 use minijinja::{AutoEscape, Environment};
@@ -55,6 +57,10 @@ impl Templates {
                 include_str!("../../templates/public/not_found.html"),
             ),
             (
+                "public/search.html",
+                include_str!("../../templates/public/search.html"),
+            ),
+            (
                 "admin/base.html",
                 include_str!("../../templates/admin/base.html"),
             ),
@@ -73,10 +79,6 @@ impl Templates {
             (
                 "admin/settings.html",
                 include_str!("../../templates/admin/settings.html"),
-            ),
-            (
-                "admin/security.html",
-                include_str!("../../templates/admin/security.html"),
             ),
             (
                 "admin/recovery_codes.html",

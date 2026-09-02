@@ -9,5 +9,6 @@
     <title>{{ entry.title }}</title><id>{{ entry.url }}</id><link href="{{ entry.url }}"/>
     <published>{{ entry.published }}</published><updated>{{ entry.updated }}</updated>
     <summary>{{ entry.summary }}</summary>
+    <content type="html">{{ entry.content_html }}</content>
   </entry>{% endfor %}
 </feed>

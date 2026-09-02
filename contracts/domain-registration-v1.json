@@ -1,0 +1,61 @@
+{
+  "format_version": 1,
+  "cases": [
+    {
+      "name": "ownership pending",
+      "owner_registered": false,
+      "hostname": "pending",
+      "certificate": "pending",
+      "dns_routed": false,
+      "expected": "pending_ownership"
+    },
+    {
+      "name": "certificate pending",
+      "owner_registered": false,
+      "hostname": "active",
+      "certificate": "pending",
+      "dns_routed": false,
+      "expected": "pending_certificate"
+    },
+    {
+      "name": "traffic DNS pending",
+      "owner_registered": false,
+      "hostname": "active",
+      "certificate": "active",
+      "dns_routed": false,
+      "expected": "pending_dns"
+    },
+    {
+      "name": "ready for first owner",
+      "owner_registered": false,
+      "hostname": "active",
+      "certificate": "active",
+      "dns_routed": true,
+      "expected": "ready_for_owner"
+    },
+    {
+      "name": "active owner remains active",
+      "owner_registered": true,
+      "hostname": "active",
+      "certificate": "active",
+      "dns_routed": true,
+      "expected": "active"
+    },
+    {
+      "name": "provider failure requires action",
+      "owner_registered": false,
+      "hostname": "failed",
+      "certificate": "pending",
+      "dns_routed": false,
+      "expected": "action_required"
+    },
+    {
+      "name": "active owner losing DNS retains account but requires action",
+      "owner_registered": true,
+      "hostname": "active",
+      "certificate": "active",
+      "dns_routed": false,
+      "expected": "action_required"
+    }
+  ]
+}
