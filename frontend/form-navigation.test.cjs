@@ -4,26 +4,40 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const { postFormAsNavigation } = require("./form-navigation.ts");
+const documentStreamCall =
+  /document\s*(?:\.|\?\.)\s*(?:open|write|writeln)\s*(?:\?\.)?\s*\(/;
 
-test("native conflict navigation preserves every submitted field without evaluating HTML", () => {
+test("native conflict navigation survives a named submit control", (context) => {
   const forms = [];
   const appended = [];
   let submissions = 0;
+  class FakeHTMLFormElement {
+    constructor() {
+      this.action = "";
+      this.method = "";
+      this.hidden = false;
+      this.children = [];
+    }
+
+    append(child) {
+      this.children.push(child);
+      if (child.name === "submit") this.submit = child;
+    }
+
+    submit() {
+      submissions += 1;
+    }
+  }
+  const previousHTMLFormElement = globalThis.HTMLFormElement;
+  globalThis.HTMLFormElement = FakeHTMLFormElement;
+  context.after(() => {
+    if (previousHTMLFormElement === undefined) delete globalThis.HTMLFormElement;
+    else globalThis.HTMLFormElement = previousHTMLFormElement;
+  });
   const document = {
     createElement(tag) {
       if (tag === "form") {
-        const form = {
-          action: "",
-          method: "",
-          hidden: false,
-          children: [],
-          append(child) {
-            this.children.push(child);
-          },
-          submit() {
-            submissions += 1;
-          },
-        };
+        const form = new FakeHTMLFormElement();
         forms.push(form);
         return form;
       }
@@ -43,6 +57,7 @@ test("native conflict navigation preserves every submitted field without evaluat
     ["tags", "rust"],
     ["tags", "cms"],
     ["intent", "autosave"],
+    ["submit", "future-field"],
   ]);
 
   postFormAsNavigation(document, "/admin/content/7/", parameters);
@@ -61,14 +76,28 @@ test("native conflict navigation preserves every submitted field without evaluat
       ["hidden", "tags", "rust"],
       ["hidden", "tags", "cms"],
       ["hidden", "intent", "autosave"],
+      ["hidden", "submit", "future-field"],
     ],
   );
+  assert.equal(typeof forms[0].submit, "object");
   assert.equal(submissions, 1);
 });
 
 test("editor conflict handling uses native navigation instead of an HTML string sink", () => {
   const source = fs.readFileSync(path.join(__dirname, "admin.ts"), "utf8");
 
-  assert.doesNotMatch(source, /document\.(?:open|write|writeln)\s*\(/);
+  assert.doesNotMatch(source, documentStreamCall);
   assert.match(source, /postFormAsNavigation\(document, editor\.action, parameters\)/);
+});
+
+test("document stream guard recognizes direct and optional calls", () => {
+  for (const source of [
+    'document.write("unsafe")',
+    'document?.write("unsafe")',
+    'document.write?.("unsafe")',
+    'document?.write?.("unsafe")',
+    'document . writeln ?. ("unsafe")',
+  ]) {
+    assert.match(source, documentStreamCall);
+  }
 });

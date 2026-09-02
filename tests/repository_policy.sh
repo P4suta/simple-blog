@@ -296,9 +296,17 @@ while IFS= read -r path; do
   frontend_sources+=("$path")
 done < <(find frontend -type f -name '*.ts' -print)
 
-if grep -En \
-  'document[[:space:]]*\.[[:space:]]*(open|write|writeln)[[:space:]]*\(' \
-  "${frontend_sources[@]}"; then
+document_stream_call_pattern='document[[:space:]]*([.]|[?][.])[[:space:]]*(open|write|writeln)[[:space:]]*([?][.])?[[:space:]]*[(]'
+for prohibited_call in \
+  'document.write(' \
+  'document?.write(' \
+  'document.write?.(' \
+  'document?.write?.('; do
+  printf '%s\n' "$prohibited_call" | grep -Eq "$document_stream_call_pattern" \
+    || fail "document stream policy does not recognize: $prohibited_call"
+done
+
+if grep -En "$document_stream_call_pattern" "${frontend_sources[@]}"; then
   fail 'document stream mutation is forbidden in frontend sources'
 fi
 

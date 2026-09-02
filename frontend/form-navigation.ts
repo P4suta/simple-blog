@@ -20,5 +20,8 @@ export function postFormAsNavigation(
     form.append(input);
   }
   targetDocument.body.append(form);
-  form.submit();
+  // A successful control named "submit" shadows form.submit through the
+  // platform's named-property lookup. Calling the prototype remains reliable
+  // even if a future editor field uses that name.
+  HTMLFormElement.prototype.submit.call(form);
 }
