@@ -183,8 +183,11 @@ async fn sqlite_portable_round_trip_preserves_all_durable_state_and_rebuilds_htm
         .unwrap();
 
     assert_eq!(actual, expected);
-    for table in ["sessions", "setup_tokens"] {
-        let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
+    for (table, sql) in [
+        ("sessions", "SELECT COUNT(*) FROM sessions"),
+        ("setup_tokens", "SELECT COUNT(*) FROM setup_tokens"),
+    ] {
+        let count: i64 = sqlx::query_scalar(sql)
             .fetch_one(repository.pool())
             .await
             .unwrap();
