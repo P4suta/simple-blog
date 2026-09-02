@@ -11,7 +11,7 @@ fail() {
 }
 
 ((BASH_VERSINFO[0] >= 3)) || fail 'Bash 3 or newer is required'
-for command in awk find grep jq sort; do
+for command in awk cargo find grep jq sort; do
   command -v "$command" >/dev/null || fail "required command is unavailable: $command"
 done
 
@@ -46,21 +46,22 @@ for ecosystem in cargo bun github-actions; do
     || fail "Dependabot does not cover $ecosystem"
 done
 
-windows_openssl="$({
-  awk '
-    BEGIN {
-      quote = sprintf("%c", 39)
-      windows_section = "[target." quote "cfg(windows)" quote ".dependencies]"
-    }
-    $0 == windows_section {
-      in_windows_dependencies = 1
-      next
-    }
-    in_windows_dependencies && /^\[/ { exit }
-    in_windows_dependencies && /^openssl[[:space:]]*=/ { print; exit }
-  ' Cargo.toml
-})"
-[[ "$windows_openssl" == *'features = ["vendored"]'* ]] \
+cargo_metadata="$(cargo metadata --locked --no-deps --format-version 1)" \
+  || fail 'Cargo metadata could not be evaluated'
+jq -e '
+  [
+    .packages[]
+    | select(.name == "simple-blog")
+    | .dependencies[]
+    | select(
+        .name == "openssl"
+        and .kind == null
+        and .target == "cfg(windows)"
+        and (.features | contains(["vendored"]))
+      )
+  ]
+  | length == 1
+' <<<"$cargo_metadata" >/dev/null \
   || fail 'Windows builds must vendor OpenSSL instead of depending on runner-global libraries'
 
 if grep -Eq \

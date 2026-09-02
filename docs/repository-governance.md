@@ -44,7 +44,9 @@ Release. Releases are a separate, explicit maintainer action.
 - Stable Rust tests run on Linux, macOS, and Windows; all three named jobs are
   protected checks. Checkout credentials are disabled before repository code
   or build scripts execute. Windows vendors WebAuthn's OpenSSL dependency so
-  this contract is independent of machine-global libraries.
+  this contract is independent of machine-global libraries. The repository
+  policy verifies Cargo's parsed dependency metadata rather than depending on
+  a particular valid TOML layout.
 - CodeQL advanced setup uses the `security-and-quality` query suite for
   TypeScript, workflow, and Rust analysis. All three use no-build analysis;
   CodeQL's Rust extractor currently rejects manual and autobuild modes. The
