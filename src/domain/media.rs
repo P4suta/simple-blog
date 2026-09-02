@@ -53,6 +53,7 @@ impl TryFrom<String> for MediaId {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MediaVariant {
     pub width: u32,
     pub height: u32,
@@ -61,6 +62,7 @@ pub struct MediaVariant {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MediaAsset {
     pub id: MediaId,
     pub original_name: String,

@@ -1,5 +1,5 @@
 {% extends "admin/base.html" %}
 {% block content %}
-<div class="auth-card"><p class="kicker">One-time display</p><h1>Recovery codes</h1><p>一度だけ表示されます。安全な場所へ保存してください。</p><pre>{% for code in recovery_codes %}{{ code }}{% if not loop.last %}
-{% endif %}{% endfor %}</pre><a class="primary-button" href="/admin/security/">完了</a></div>
+<div class="auth-card"><p class="kicker">{{ t["recovery.kicker"] }}</p><h1>{{ t["recovery.heading"] }}</h1><p>{{ t["recovery.note"] }}</p><pre>{% for code in recovery_codes %}{{ code }}{% if not loop.last %}
+{% endif %}{% endfor %}</pre><a class="primary-button" href="/admin/settings/">{{ t["recovery.done"] }}</a></div>
 {% endblock %}

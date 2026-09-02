@@ -1,8 +1,8 @@
 use std::{collections::BTreeMap, path::Path, time::Duration};
 
 use sqlx::{
-    Row, SqlitePool,
-    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
+    Connection, Row, SqlitePool,
+    sqlite::{SqliteConnectOptions, SqliteConnection, SqlitePoolOptions},
 };
 
 use crate::{application::ports::RepositoryError, infrastructure::sqlite::MIGRATOR};
@@ -10,6 +10,32 @@ use crate::{application::ports::RepositoryError, infrastructure::sqlite::MIGRATO
 pub struct SqliteMaintenance;
 
 impl SqliteMaintenance {
+    /// Runs SQLite's integrity check without migrating or otherwise writing to
+    /// the database. Restore validation must preserve the archived bytes and
+    /// schema until the database has been installed successfully.
+    pub async fn quick_check_read_only(path: &Path) -> Result<String, RepositoryError> {
+        let options = SqliteConnectOptions::new()
+            .filename(path)
+            .create_if_missing(false)
+            .read_only(true)
+            .busy_timeout(Duration::from_secs(5));
+        let mut connection = SqliteConnection::connect_with(&options)
+            .await
+            .map_err(storage)?;
+        let result = sqlx::query_scalar("PRAGMA quick_check")
+            .fetch_one(&mut connection)
+            .await
+            .map_err(storage);
+        let close_result = connection.close().await.map_err(storage);
+        match result {
+            Ok(check) => {
+                close_result?;
+                Ok(check)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     pub async fn safety_backup_required(path: &Path) -> Result<bool, RepositoryError> {
         if !path.is_file() {
             return Ok(false);

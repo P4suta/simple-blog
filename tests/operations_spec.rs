@@ -14,6 +14,7 @@ use simple_blog::{
     operations::{
         BackupService, Doctor, Exporter, MigrationCoordinator, OperationError, RestoreService,
     },
+    release::{FilesystemReleaseStore, ReleaseBuilder, ReleasePublisher},
 };
 use sqlx::{
     Connection, Executor,
@@ -40,8 +41,26 @@ fn gif() -> Vec<u8> {
     .unwrap()
 }
 
+#[test]
+fn migration_errors_display_the_recoverable_backup_path_without_debug_escaping() {
+    let backup = std::path::PathBuf::from(r"C:\simple blog\backup.tar.zst");
+    let error = OperationError::Migration {
+        message: "schema rejected".into(),
+        backup: backup.clone(),
+    };
+
+    assert!(error.to_string().contains(&backup.display().to_string()));
+}
+
 async fn seeded(temp: &tempfile::TempDir) -> (Config, Arc<SqliteRepository>) {
     let config = config(temp.path());
+    for directory in [
+        config.media_dir(),
+        config.backup_dir(),
+        config.release_dir(),
+    ] {
+        std::fs::create_dir_all(directory).unwrap();
+    }
     let repository = Arc::new(
         SqliteRepository::connect(&config.database_path())
             .await
@@ -236,6 +255,75 @@ async fn doctor_distinguishes_corrupt_orphaned_and_interrupted_media_files() {
 }
 
 #[tokio::test]
+async fn doctor_verifies_active_release_history_orphans_and_interrupted_writes() {
+    let source = tempfile::tempdir().unwrap();
+    let (config, repository) = seeded(&source).await;
+    for directory in [
+        config.media_dir(),
+        config.backup_dir(),
+        config.release_dir(),
+    ] {
+        std::fs::create_dir_all(directory).unwrap();
+    }
+    let store = Arc::new(FilesystemReleaseStore::new(config.release_dir()));
+    let release = ReleaseBuilder::clean(1, config.public_url.as_str())
+        .unwrap()
+        .asset("/", b"healthy".to_vec(), "text/html; charset=utf-8", None)
+        .unwrap()
+        .finish()
+        .unwrap();
+    let object_id = release.manifest.routes["/"].object_id().unwrap().to_owned();
+    ReleasePublisher::new(store)
+        .publish(&release, None)
+        .await
+        .unwrap();
+
+    let healthy = Doctor::inspect(&config, repository.as_ref()).await.unwrap();
+    for name in [
+        "filesystem.releases",
+        "release.active",
+        "release.history",
+        "release.temporary_files",
+    ] {
+        let check = healthy
+            .checks
+            .iter()
+            .find(|check| check.name == name)
+            .unwrap();
+        assert_eq!(check.status, "ok", "{}: {}", check.name, check.detail);
+    }
+
+    std::fs::write(
+        config.release_dir().join("objects").join(&object_id),
+        b"corrupt",
+    )
+    .unwrap();
+    std::fs::write(
+        config.release_dir().join("objects").join("f".repeat(64)),
+        b"orphan",
+    )
+    .unwrap();
+    std::fs::write(
+        config.release_dir().join("manifests/.interrupted.tmp"),
+        b"partial",
+    )
+    .unwrap();
+
+    let broken = Doctor::inspect(&config, repository.as_ref()).await.unwrap();
+    assert!(!broken.is_healthy());
+    let details = broken
+        .checks
+        .iter()
+        .filter(|check| check.name.starts_with("release."))
+        .map(|check| check.detail.as_str())
+        .collect::<Vec<_>>()
+        .join("; ");
+    assert!(details.contains(&object_id));
+    assert!(details.contains("unreferenced release object"));
+    assert!(details.contains("interrupted release write"));
+}
+
+#[tokio::test]
 async fn pending_migrations_create_a_schema_independent_safety_backup_first() {
     let source = tempfile::tempdir().unwrap();
     let config = config(source.path());
@@ -287,6 +375,24 @@ async fn pending_migrations_create_a_schema_independent_safety_backup_first() {
         std::fs::read(restored.path().join("media/legacy.bin")).unwrap(),
         b"legacy-media"
     );
+    let restored_database = restored.path().join("simple-blog.sqlite3");
+    let restored_options = SqliteConnectOptions::new()
+        .filename(&restored_database)
+        .create_if_missing(false);
+    let mut restored_legacy = SqliteConnection::connect_with(&restored_options)
+        .await
+        .unwrap();
+    let migration_table_exists: i64 = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_sqlx_migrations')",
+    )
+    .fetch_one(&mut restored_legacy)
+    .await
+    .unwrap();
+    assert_eq!(
+        migration_table_exists, 0,
+        "restore validation must not migrate or otherwise rewrite the archived database"
+    );
+    restored_legacy.close().await.unwrap();
     let repository = SqliteRepository::connect(&restored.path().join("simple-blog.sqlite3"))
         .await
         .unwrap();

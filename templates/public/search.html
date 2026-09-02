@@ -1,0 +1,29 @@
+{% extends "public/base.html" %}
+{% block content %}
+<header class="page-header"><h1>{{ t["public.search"] }}</h1></header>
+<form class="search-form" action="/search/" method="get" role="search"{% if page.static_search %} data-static-search{% endif %}>
+  <input type="search" name="q" value="{{ page.query }}" placeholder="{{ t["public.search_placeholder"] }}" aria-label="{{ t["public.search"] }}" maxlength="120" autofocus>
+  <button type="submit">{{ t["public.search"] }}</button>
+</form>
+{% if page.static_search %}
+<p class="empty" data-search-status data-empty="{{ t["public.search_empty"] }}" data-loading="{{ t["public.search_loading"] }}" data-failed="{{ t["public.search_failed"] }}"></p>
+<section class="post-list search-results" data-search-results aria-label="{{ t["public.search"] }}" hidden></section>
+<script src="/assets/search.js?v={{ page.search_js_version }}" defer></script>
+{% else %}
+{% if page.searched %}
+{% if page.results %}
+<section class="post-list search-results" aria-label="{{ t["public.search"] }}">
+{% for result in page.results %}
+<article>
+  <time>{{ result.date }}</time>
+  <h2><a href="/{{ result.slug }}/">{{ result.title_html|safe }}</a></h2>
+  <p>{{ result.snippet_html|safe }}</p>
+</article>
+{% endfor %}
+</section>
+{% else %}
+<p class="empty">{{ t["public.search_empty"] }}</p>
+{% endif %}
+{% endif %}
+{% endif %}
+{% endblock %}

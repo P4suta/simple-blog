@@ -1,0 +1,59 @@
+{
+  "format_version": 1,
+  "active_release": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "manifest": {
+    "format_version": 1,
+    "compiler_version": "contract-v1",
+    "public_revision": 17,
+    "canonical_origin": "https://writing.example.com",
+    "routes": {
+      "/404/": {
+        "kind": "asset",
+        "object_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "content_type": "text/html; charset=utf-8",
+        "cache_control": "public, max-age=0, must-revalidate",
+        "status": 404
+      },
+      "/essay": {
+        "kind": "redirect",
+        "status": 308,
+        "location": "/essay/"
+      },
+      "/essay/": {
+        "kind": "asset",
+        "object_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "content_type": "text/html; charset=utf-8",
+        "cache_control": "public, max-age=0, must-revalidate",
+        "status": 200,
+        "last_modified": "2026-09-02T01:02:03Z",
+        "content_id": 42
+      }
+    }
+  },
+  "objects": {
+    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": "bWlzc2luZw==",
+    "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc": "ZXNzYXk="
+  },
+  "cases": [
+    {
+      "path": "/essay/",
+      "kind": "asset",
+      "status": 200,
+      "object_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "fallback": false
+    },
+    {
+      "path": "/essay",
+      "kind": "redirect",
+      "status": 308,
+      "location": "/essay/"
+    },
+    {
+      "path": "/unknown/",
+      "kind": "asset",
+      "status": 404,
+      "object_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "fallback": true
+    }
+  ]
+}

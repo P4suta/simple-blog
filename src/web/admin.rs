@@ -16,9 +16,9 @@ use webauthn_rs::prelude::{PublicKeyCredential, RegisterPublicKeyCredential};
 use crate::{
     application::{content::SaveIntent, ports::RepositoryError},
     domain::{
-        auth::{SessionIdentity, SessionSecrets, StoredPasskey},
+        auth::{SessionIdentity, SessionSecrets, SetupPurpose, StoredPasskey},
         content::{Content, ContentDraft, ContentId, ContentKind, Publication, Slug},
-        theme::{ColorScheme, FontPreset, Locale, NavigationItem, SiteSettings},
+        theme::{Locale, NavigationItem, SiteSettings},
     },
     web::{AppState, WebError},
 };
@@ -36,6 +36,8 @@ struct DashboardItem {
     title: String,
     slug: String,
     status: &'static str,
+    views: u64,
+    likes: u64,
 }
 
 #[derive(Serialize)]
@@ -46,6 +48,7 @@ struct EditorContext {
     content_id: Option<i64>,
     version: Option<i64>,
     content: EditorContent,
+    cover_url: Option<String>,
     revisions: Vec<RevisionItem>,
 }
 
@@ -65,7 +68,6 @@ struct EditorContent {
     body_markdown: String,
     tags: String,
     status: &'static str,
-    publish_at: String,
     seo_title: String,
     seo_description: String,
     cover_media_id: String,
@@ -92,13 +94,10 @@ struct SettingsContext {
     csrf: String,
     settings: SiteSettings,
     navigation: String,
-}
-
-#[derive(Serialize)]
-struct SecurityContext {
-    title: &'static str,
-    csrf: String,
+    logo_url: Option<String>,
+    favicon_url: Option<String>,
     passkeys: Vec<PasskeyView>,
+    reauth_ok: bool,
 }
 
 #[derive(Serialize)]
@@ -143,9 +142,8 @@ pub struct ContentForm {
     body_markdown: String,
     #[serde(default)]
     tags: String,
-    status: String,
     #[serde(default)]
-    publish_at: String,
+    status: String,
     #[serde(default)]
     seo_title: String,
     #[serde(default)]
@@ -168,10 +166,6 @@ pub struct SiteSettingsForm {
     logo_media_id: String,
     #[serde(default)]
     favicon_media_id: String,
-    accent_color: String,
-    font_preset: String,
-    content_width: u16,
-    color_scheme: String,
     #[serde(default)]
     custom_css: String,
     #[serde(default)]
@@ -259,23 +253,31 @@ pub async fn dashboard(
         Err(response) => return Ok(response),
     };
     let contents = state.content.list_all_content().await?;
+    let totals = state.engagement.engagement_totals().await?;
     let contents = contents
         .into_iter()
-        .map(|content| DashboardItem {
-            id: content.id.as_i64(),
-            title: content.title,
-            slug: content.slug.to_string(),
-            status: publication_status(&content.publication, state.clock.now()),
+        .map(|content| {
+            let engagement = totals.get(&content.id).copied().unwrap_or_default();
+            DashboardItem {
+                id: content.id.as_i64(),
+                title: content.title,
+                slug: content.slug.to_string(),
+                status: publication_status(&content.publication),
+                views: engagement.views,
+                likes: engagement.likes,
+            }
         })
         .collect();
-    state.render_html(
-        "admin/dashboard.html",
-        DashboardContext {
-            title: "Dashboard",
-            csrf: identity.csrf,
-            contents,
-        },
-    )
+    state
+        .render_admin(
+            "admin/dashboard.html",
+            DashboardContext {
+                title: "Dashboard",
+                csrf: identity.csrf,
+                contents,
+            },
+        )
+        .await
 }
 
 pub async fn new_content(
@@ -286,18 +288,21 @@ pub async fn new_content(
         Ok(identity) => identity,
         Err(response) => return Ok(response),
     };
-    state.render_html(
-        "admin/editor.html",
-        EditorContext {
-            title: "新しい文章".into(),
-            csrf: identity.csrf,
-            action: "/admin/content/".into(),
-            content_id: None,
-            version: None,
-            content: EditorContent::empty(),
-            revisions: Vec::new(),
-        },
-    )
+    state
+        .render_admin(
+            "admin/editor.html",
+            EditorContext {
+                title: "New".into(),
+                csrf: identity.csrf,
+                action: "/admin/content/".into(),
+                content_id: None,
+                version: None,
+                content: EditorContent::empty(state.clock.now()),
+                cover_url: None,
+                revisions: Vec::new(),
+            },
+        )
+        .await
 }
 
 pub async fn settings_page(
@@ -317,15 +322,39 @@ pub async fn settings_page(
         .map(|item| format!("{} | {}", item.label, item.destination))
         .collect::<Vec<_>>()
         .join("\n");
-    state.render_html(
-        "admin/settings.html",
-        SettingsContext {
-            title: "Settings",
-            csrf: identity.csrf,
-            settings,
-            navigation,
-        },
-    )
+    let logo_url = state
+        .theme_media_url(settings.logo_media_id.as_deref())
+        .await?;
+    let favicon_url = state
+        .theme_media_url(settings.favicon_media_id.as_deref())
+        .await?;
+    let passkeys = state
+        .accounts
+        .passkeys()
+        .await
+        .map_err(WebError::auth)?
+        .into_iter()
+        .map(|passkey| PasskeyView {
+            name: passkey.name,
+            credential_id: URL_SAFE_NO_PAD.encode(passkey.credential_id),
+        })
+        .collect();
+    let reauth_ok = recently_reauthenticated(&identity, state.clock.now());
+    state
+        .render_admin(
+            "admin/settings.html",
+            SettingsContext {
+                title: "Settings",
+                csrf: identity.csrf,
+                settings,
+                navigation,
+                logo_url,
+                favicon_url,
+                passkeys,
+                reauth_ok,
+            },
+        )
+        .await
 }
 
 pub async fn update_settings(
@@ -345,7 +374,15 @@ pub async fn update_settings(
         .update(settings, navigation, state.clock.now())
         .await
     {
-        Ok(()) => Ok(redirect(StatusCode::SEE_OTHER, "/admin/settings/")),
+        Ok(()) => {
+            state.publish_now().await?;
+            run_media_gc(&state).await;
+            if wants_json(&headers) {
+                Ok(Json(json!({ "ok": true })).into_response())
+            } else {
+                Ok(redirect(StatusCode::SEE_OTHER, "/admin/settings/"))
+            }
+        }
         Err(error) => application_error(error),
     }
 }
@@ -379,18 +416,24 @@ pub async fn edit_content(
                 .to_rfc3339_opts(SecondsFormat::Secs, true),
         })
         .collect();
-    state.render_html(
-        "admin/editor.html",
-        EditorContext {
-            title: content.title.clone(),
-            csrf: identity.csrf,
-            action: format!("/admin/content/{raw_id}/"),
-            content_id: Some(raw_id),
-            version: Some(content.version),
-            content: EditorContent::from_content(&content, state.clock.now()),
-            revisions,
-        },
-    )
+    let cover_url = state
+        .theme_media_url(content.cover_media_id.as_deref())
+        .await?;
+    state
+        .render_admin(
+            "admin/editor.html",
+            EditorContext {
+                title: content.title.clone(),
+                csrf: identity.csrf,
+                action: format!("/admin/content/{raw_id}/"),
+                content_id: Some(raw_id),
+                version: Some(content.version),
+                content: EditorContent::from_content(&content),
+                cover_url,
+                revisions,
+            },
+        )
+        .await
 }
 
 pub async fn revision_page(
@@ -409,26 +452,28 @@ pub async fn revision_page(
     let Some(revision) = state.content.find_revision(id, revision_id).await? else {
         return Ok(StatusCode::NOT_FOUND.into_response());
     };
-    state.render_html(
-        "admin/revision.html",
-        RevisionContext {
-            title: "Revision",
-            csrf: identity.csrf,
-            content_id: raw_id,
-            revision_id,
-            expected_version: current.version,
-            current: RevisionVersion {
-                title: current.title,
-                body_markdown: current.body_markdown,
-                version: current.version,
+    state
+        .render_admin(
+            "admin/revision.html",
+            RevisionContext {
+                title: "Revision",
+                csrf: identity.csrf,
+                content_id: raw_id,
+                revision_id,
+                expected_version: current.version,
+                current: RevisionVersion {
+                    title: current.title,
+                    body_markdown: current.body_markdown,
+                    version: current.version,
+                },
+                revision: RevisionVersion {
+                    title: revision.snapshot.title,
+                    body_markdown: revision.snapshot.body_markdown,
+                    version: revision.snapshot.version,
+                },
             },
-            revision: RevisionVersion {
-                title: revision.snapshot.title,
-                body_markdown: revision.snapshot.body_markdown,
-                version: revision.snapshot.version,
-            },
-        },
-    )
+        )
+        .await
 }
 
 pub async fn restore_revision(
@@ -450,10 +495,14 @@ pub async fn restore_revision(
         )
         .await
     {
-        Ok(_) => Ok(redirect(
-            StatusCode::SEE_OTHER,
-            &format!("/admin/content/{raw_id}/edit/"),
-        )),
+        Ok(_) => {
+            state.publish_now().await?;
+            run_media_gc(&state).await;
+            Ok(redirect(
+                StatusCode::SEE_OTHER,
+                &format!("/admin/content/{raw_id}/edit/"),
+            ))
+        }
         Err(RepositoryError::Conflict { .. }) => Ok((
             StatusCode::CONFLICT,
             "content changed after this restore page was opened",
@@ -489,21 +538,74 @@ pub async fn create_content(
         return Ok(response);
     }
     let now = state.clock.now();
-    let (draft, intent) = match form.to_draft(now) {
+    let (draft, intent) = match form.to_draft(now, None) {
         Ok(value) => value,
         Err(error) => return Ok((StatusCode::UNPROCESSABLE_ENTITY, error).into_response()),
     };
-    match state.content_service.create(draft, intent, now).await {
-        Ok(content) if intent == SaveIntent::Autosave => Ok((
-            StatusCode::CREATED,
-            Json(json!({ "id": content.id.as_i64(), "version": content.version })),
-        )
-            .into_response()),
-        Ok(content) => Ok(redirect(
-            StatusCode::SEE_OTHER,
-            &format!("/admin/content/{}/edit/", content.id),
-        )),
+    let mut result = state
+        .content_service
+        .create(draft.clone(), intent, now)
+        .await;
+    // A generated slug can collide when two pieces are created within the same
+    // minute; retry once at second resolution before surfacing the conflict.
+    if matches!(result, Err(RepositoryError::SlugTaken(_))) && draft.slug.is_timestamped() {
+        let retry = ContentDraft {
+            slug: Slug::timestamped_precise(now),
+            ..draft
+        };
+        result = state.content_service.create(retry, intent, now).await;
+    }
+    match result {
+        Ok(content) => {
+            state.publish_now().await?;
+            run_media_gc(&state).await;
+            if intent == SaveIntent::Autosave || wants_json(&headers) {
+                Ok((
+                    StatusCode::CREATED,
+                    Json(json!({
+                        "id": content.id.as_i64(),
+                        "version": content.version,
+                        "slug": content.slug.as_str(),
+                    })),
+                )
+                    .into_response())
+            } else {
+                Ok(redirect(
+                    StatusCode::SEE_OTHER,
+                    &format!("/admin/content/{}/edit/", content.id),
+                ))
+            }
+        }
         Err(error) => application_error(error),
+    }
+}
+
+/// Runs after any successful save: media that nothing current references is
+/// removed immediately. Failure never fails the save that triggered it.
+async fn run_media_gc(state: &AppState) {
+    let result = async {
+        let contents = state
+            .content
+            .list_all_content()
+            .await
+            .map_err(|error| error.to_string())?;
+        let settings = state
+            .site
+            .site_settings()
+            .await
+            .map_err(|error| error.to_string())?;
+        let referenced = crate::application::media_gc::referenced_media_ids(&contents, &settings);
+        state
+            .media_service
+            .collect_garbage(&referenced)
+            .await
+            .map_err(|error| error.to_string())
+    }
+    .await;
+    match result {
+        Ok(0) => {}
+        Ok(removed) => tracing::info!(event = "media.gc.removed", removed),
+        Err(error) => tracing::warn!(event = "media.gc.failed", error),
     }
 }
 
@@ -521,47 +623,61 @@ pub async fn update_content(
         return Ok((StatusCode::BAD_REQUEST, "missing content version").into_response());
     };
     let now = state.clock.now();
-    let (draft, intent) = match form.to_draft(now) {
+    let id = ContentId::from_i64(raw_id);
+    let Some(existing) = state.content.find_by_id(id).await? else {
+        return Ok(StatusCode::NOT_FOUND.into_response());
+    };
+    let (draft, intent) = match form.to_draft(now, Some(&existing)) {
         Ok(value) => value,
         Err(error) => return Ok((StatusCode::UNPROCESSABLE_ENTITY, error).into_response()),
     };
     let submitted_title = draft.title.clone();
     let submitted_body = draft.body_markdown.clone();
-    let id = ContentId::from_i64(raw_id);
     match state
         .content_service
         .update(id, expected_version, draft, intent, now)
         .await
     {
-        Ok(content) if intent == SaveIntent::Autosave => Ok(Json(
-            json!({ "id": content.id.as_i64(), "version": content.version }),
-        )
-        .into_response()),
-        Ok(_) => Ok(redirect(
-            StatusCode::SEE_OTHER,
-            &format!("/admin/content/{raw_id}/edit/"),
-        )),
+        Ok(content) => {
+            state.publish_now().await?;
+            run_media_gc(&state).await;
+            if intent == SaveIntent::Autosave || wants_json(&headers) {
+                Ok(Json(json!({
+                    "id": content.id.as_i64(),
+                    "version": content.version,
+                    "slug": content.slug.as_str(),
+                }))
+                .into_response())
+            } else {
+                Ok(redirect(
+                    StatusCode::SEE_OTHER,
+                    &format!("/admin/content/{raw_id}/edit/"),
+                ))
+            }
+        }
         Err(RepositoryError::Conflict { .. }) => {
             let Some(current) = state.content.find_by_id(id).await? else {
                 return Ok(StatusCode::NOT_FOUND.into_response());
             };
-            let html = state.templates.render(
-                "admin/conflict.html",
-                ConflictContext {
-                    title: "Save conflict",
-                    csrf: identity.csrf,
-                    current: ConflictVersion {
-                        id: current.id.as_i64(),
-                        title: current.title,
-                        body_markdown: current.body_markdown,
+            let html = state
+                .render_admin_string(
+                    "admin/conflict.html",
+                    ConflictContext {
+                        title: "Save conflict",
+                        csrf: identity.csrf,
+                        current: ConflictVersion {
+                            id: current.id.as_i64(),
+                            title: current.title,
+                            body_markdown: current.body_markdown,
+                        },
+                        submitted: ConflictVersion {
+                            id: raw_id,
+                            title: submitted_title,
+                            body_markdown: submitted_body,
+                        },
                     },
-                    submitted: ConflictVersion {
-                        id: raw_id,
-                        title: submitted_title,
-                        body_markdown: submitted_body,
-                    },
-                },
-            )?;
+                )
+                .await?;
             Ok((StatusCode::CONFLICT, axum::response::Html(html)).into_response())
         }
         Err(error) => application_error(error),
@@ -569,36 +685,7 @@ pub async fn update_content(
 }
 
 pub async fn login_page(State(state): State<AppState>) -> Result<Response, WebError> {
-    state.render_html("admin/login.html", json!({}))
-}
-
-pub async fn security_page(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<Response, WebError> {
-    let identity = match authenticate(&state, &headers, None).await? {
-        Ok(identity) => identity,
-        Err(response) => return Ok(response),
-    };
-    let passkeys = state
-        .accounts
-        .passkeys()
-        .await
-        .map_err(WebError::auth)?
-        .into_iter()
-        .map(|passkey| PasskeyView {
-            name: passkey.name,
-            credential_id: URL_SAFE_NO_PAD.encode(passkey.credential_id),
-        })
-        .collect();
-    state.render_html(
-        "admin/security.html",
-        SecurityContext {
-            title: "Security",
-            csrf: identity.csrf,
-            passkeys,
-        },
-    )
+    state.render_admin("admin/login.html", json!({})).await
 }
 
 pub async fn setup_page(
@@ -614,7 +701,9 @@ pub async fn setup_page(
     {
         return Ok((StatusCode::GONE, "This setup link is invalid or expired.").into_response());
     }
-    state.render_html("admin/setup.html", json!({ "token": query.token }))
+    state
+        .render_admin("admin/setup.html", json!({ "token": query.token }))
+        .await
 }
 
 pub async fn setup_start(
@@ -656,7 +745,11 @@ pub async fn setup_finish(
         .webauthn
         .finish_registration(request.flow_id, &request.credential, state.clock.now())
         .map_err(WebError::passkey)?;
-    if registered.user_handle != context.user_handle {
+    // Recovery must register under the persisted owner handle. Initial setup has
+    // no owner yet: the authoritative handle is the one minted at setup start and
+    // carried in the server-side ceremony state (setup_context mints a fresh
+    // handle per call, so comparing against it here would always fail).
+    if context.purpose == SetupPurpose::Recovery && registered.user_handle != context.user_handle {
         return Ok(json_error(
             StatusCode::UNAUTHORIZED,
             "registration mismatch",
@@ -748,7 +841,7 @@ pub async fn recovery_login(
     else {
         return Ok((StatusCode::UNAUTHORIZED, "invalid recovery code").into_response());
     };
-    let mut response = redirect(StatusCode::SEE_OTHER, "/admin/security/");
+    let mut response = redirect(StatusCode::SEE_OTHER, "/admin/settings/");
     set_auth_cookies(&mut response, &session, state.secure_cookies())?;
     Ok(response)
 }
@@ -856,14 +949,16 @@ pub async fn regenerate_recovery_codes(
         .iter()
         .map(crate::domain::auth::SecretToken::expose)
         .collect();
-    state.render_html(
-        "admin/recovery_codes.html",
-        RecoveryCodesContext {
-            title: "Recovery codes",
-            csrf: identity.csrf,
-            recovery_codes,
-        },
-    )
+    state
+        .render_admin(
+            "admin/recovery_codes.html",
+            RecoveryCodesContext {
+                title: "Recovery codes",
+                csrf: identity.csrf,
+                recovery_codes,
+            },
+        )
+        .await
 }
 
 pub async fn remove_passkey(
@@ -887,7 +982,7 @@ pub async fn remove_passkey(
         .await
         .map_err(WebError::auth)?
     {
-        Ok(redirect(StatusCode::SEE_OTHER, "/admin/security/"))
+        Ok(redirect(StatusCode::SEE_OTHER, "/admin/settings/"))
     } else {
         Ok((StatusCode::CONFLICT, "the last Passkey cannot be removed").into_response())
     }
@@ -1001,21 +1096,27 @@ pub async fn admin_js() -> Response {
 }
 
 impl ContentForm {
-    fn to_draft(&self, now: DateTime<Utc>) -> Result<(ContentDraft, SaveIntent), String> {
+    fn to_draft(
+        &self,
+        now: DateTime<Utc>,
+        current: Option<&Content>,
+    ) -> Result<(ContentDraft, SaveIntent), String> {
         let kind = ContentKind::from_str(&self.kind).map_err(str::to_owned)?;
-        let slug = Slug::parse(&self.slug).map_err(|error| error.to_string())?;
+        let slug = if self.slug.trim().is_empty() {
+            current.map_or_else(|| Slug::timestamped(now), |content| content.slug.clone())
+        } else {
+            Slug::parse(&self.slug).map_err(|error| error.to_string())?
+        };
+        // An absent status means "keep what the content already is": saves that
+        // are not an explicit Publish/Unpublish must never change publication,
+        // and a re-save of public content must keep its original publish_at.
         let publication = match self.status.as_str() {
+            "" => current.map_or(Publication::Draft, |content| content.publication.clone()),
             "draft" => Publication::Draft,
-            "public" => {
-                let publish_at = if self.publish_at.trim().is_empty() {
-                    now
-                } else {
-                    DateTime::parse_from_rfc3339(self.publish_at.trim())
-                        .map_err(|_| "publish_at must be RFC 3339".to_owned())?
-                        .with_timezone(&Utc)
-                };
-                Publication::Public { publish_at }
-            }
+            "public" => match current.map(|content| &content.publication) {
+                Some(&Publication::Public { publish_at }) => Publication::Public { publish_at },
+                _ => Publication::Public { publish_at: now },
+            },
             _ => return Err("unknown publication status".into()),
         };
         let intent = if self.intent == "autosave" {
@@ -1044,20 +1145,10 @@ impl ContentForm {
 impl SiteSettingsForm {
     fn into_configuration(self) -> Result<(SiteSettings, Vec<NavigationItem>), String> {
         let locale = match self.locale.as_str() {
-            "ja" => Locale::Ja,
             "en" => Locale::En,
+            "ja" => Locale::Ja,
+            "zh" => Locale::Zh,
             _ => return Err("unknown locale".into()),
-        };
-        let font_preset = match self.font_preset.as_str() {
-            "sans" => FontPreset::Sans,
-            "serif" => FontPreset::Serif,
-            _ => return Err("unknown font preset".into()),
-        };
-        let color_scheme = match self.color_scheme.as_str() {
-            "system" => ColorScheme::System,
-            "light" => ColorScheme::Light,
-            "dark" => ColorScheme::Dark,
-            _ => return Err("unknown color scheme".into()),
         };
         let navigation = self
             .navigation
@@ -1087,10 +1178,6 @@ impl SiteSettingsForm {
                 locale,
                 logo_media_id: optional_text(&self.logo_media_id),
                 favicon_media_id: optional_text(&self.favicon_media_id),
-                accent_color: self.accent_color,
-                font_preset,
-                content_width: self.content_width,
-                color_scheme,
                 custom_css: self.custom_css,
             },
             navigation,
@@ -1104,25 +1191,22 @@ fn optional_text(value: &str) -> Option<String> {
 }
 
 impl EditorContent {
-    const fn empty() -> Self {
+    fn empty(now: DateTime<Utc>) -> Self {
         Self {
             kind: "post",
             title: String::new(),
-            slug: String::new(),
+            slug: Slug::timestamped(now).into(),
             summary: String::new(),
             body_markdown: String::new(),
             tags: String::new(),
             status: "draft",
-            publish_at: String::new(),
             seo_title: String::new(),
             seo_description: String::new(),
             cover_media_id: String::new(),
         }
     }
-}
 
-impl EditorContent {
-    fn from_content(content: &Content, now: DateTime<Utc>) -> Self {
+    fn from_content(content: &Content) -> Self {
         Self {
             kind: content.kind.as_str(),
             title: content.title.clone(),
@@ -1135,13 +1219,7 @@ impl EditorContent {
                 .map(|tag| tag.name.as_str())
                 .collect::<Vec<_>>()
                 .join(", "),
-            status: publication_status(&content.publication, now),
-            publish_at: content
-                .publication
-                .publish_at()
-                .map_or_else(String::new, |date| {
-                    date.to_rfc3339_opts(SecondsFormat::Secs, true)
-                }),
+            status: publication_status(&content.publication),
             seo_title: content.seo_title.clone().unwrap_or_default(),
             seo_description: content.seo_description.clone().unwrap_or_default(),
             cover_media_id: content.cover_media_id.clone().unwrap_or_default(),
@@ -1185,6 +1263,13 @@ fn recently_reauthenticated(identity: &AdminIdentity, now: DateTime<Utc>) -> boo
         .was_reauthenticated_within(now, Duration::minutes(5))
 }
 
+fn wants_json(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|accept| accept.contains("application/json"))
+}
+
 fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     headers
         .get(header::COOKIE)?
@@ -1195,10 +1280,9 @@ fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
         .find_map(|(key, value)| (key == name).then_some(value))
 }
 
-fn publication_status(publication: &Publication, now: DateTime<Utc>) -> &'static str {
+const fn publication_status(publication: &Publication) -> &'static str {
     match publication {
         Publication::Draft => "draft",
-        Publication::Public { publish_at } if *publish_at > now => "scheduled",
         Publication::Public { .. } => "public",
     }
 }

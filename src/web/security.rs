@@ -13,20 +13,29 @@ pub(super) async fn auth_rate_limit(
     request: Request,
     next: Next,
 ) -> Response {
-    if request.method() != Method::POST || !request.uri().path().starts_with("/admin/auth/") {
+    let limited = if request.method() != Method::POST {
+        None
+    } else if request.uri().path().starts_with("/admin/auth/") {
+        Some((&state.auth_rate_limiter, "Too many authentication requests"))
+    } else if request.uri().path().starts_with("/likes/") {
+        Some((&state.like_rate_limiter, "Too many requests"))
+    } else {
+        None
+    };
+    let Some((limiter, message)) = limited else {
         return next.run(request).await;
-    }
+    };
     let key =
         client_ip(&state.config, &request).map_or_else(|| "unknown".into(), |ip| ip.to_string());
-    match state.auth_rate_limiter.check(&key, state.clock.now()) {
+    match limiter.check(&key, state.clock.now()) {
         RateLimitDecision::Allowed => next.run(request).await,
         RateLimitDecision::Limited { retry_after } => {
-            tracing::warn!(retry_after, "authentication rate limit exceeded");
-            let mut response = (
-                StatusCode::TOO_MANY_REQUESTS,
-                "Too many authentication requests",
-            )
-                .into_response();
+            tracing::warn!(
+                retry_after,
+                path = request.uri().path(),
+                "rate limit exceeded"
+            );
+            let mut response = (StatusCode::TOO_MANY_REQUESTS, message).into_response();
             if let Ok(value) = HeaderValue::from_str(&retry_after.to_string()) {
                 response.headers_mut().insert(header::RETRY_AFTER, value);
             }

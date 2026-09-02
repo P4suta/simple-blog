@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="{{ site.locale }}" data-scheme="{{ site.color_scheme }}" data-font="{{ site.font_preset }}">
+<html lang="{{ site.locale }}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -8,27 +8,51 @@
   <meta property="og:title" content="{{ meta.title }}">
   <meta property="og:description" content="{{ meta.description }}">
   <meta property="og:type" content="{{ meta.og_type }}">
-  <meta property="og:url" content="{{ meta.canonical_url|safe }}">
-  {% if meta.image_url %}<meta property="og:image" content="{{ meta.image_url|safe }}">{% endif %}
+  <meta property="og:url" content="{{ meta.canonical_url }}">
+  {% if meta.image_url %}<meta property="og:image" content="{{ meta.image_url }}">{% endif %}
   <meta name="twitter:card" content="summary_large_image">
-  <link rel="canonical" href="{{ meta.canonical_url|safe }}">
+  <link rel="canonical" href="{{ meta.canonical_url }}">
   <link rel="alternate" type="application/atom+xml" title="{{ site.site_title }}" href="/feed.xml">
-  <link rel="stylesheet" href="/assets/theme.css">
-  {% if assets.favicon_url %}<link rel="icon" href="{{ assets.favicon_url|safe }}">{% endif %}
-  <style>:root{--accent:{{ site.accent_color }};--measure:{{ site.content_width }}px}</style>
-  {% if site.custom_css %}<style>{{ site.custom_css|safe }}</style>{% endif %}
+  <link rel="stylesheet" href="/assets/site.css?v={{ assets.css_version }}">
+  {# Synchronous on purpose: a saved reader preference (measure, text size,
+     scheme) must apply before first paint. Tiny and immutable-cached. #}
+  <script src="/assets/prefs.js?v={{ assets.prefs_js_version }}"></script>
+  {% if assets.favicon_url %}<link rel="icon" href="{{ assets.favicon_url }}">{% endif %}
 </head>
 <body>
-  <a class="skip-link" href="#main">Skip to content</a>
+  <a class="skip-link" href="#main">{{ t["public.skip"] }}</a>
   <header class="site-header">
-    <a class="brand" href="/">{% if assets.logo_url %}<img class="site-logo" src="{{ assets.logo_url|safe }}" alt=""><span>{{ site.site_title }}</span>{% else %}{{ site.site_title }}{% endif %}</a>
+    <a class="brand" href="/">{% if assets.logo_url %}<img class="site-logo" src="{{ assets.logo_url }}" alt=""><span>{{ site.site_title }}</span>{% else %}{{ site.site_title }}{% endif %}</a>
     {% if navigation %}
-    <nav aria-label="Primary"><ul>{% for item in navigation %}<li><a href="{{ item.destination|safe }}"{% if item.is_external %} rel="noopener noreferrer"{% endif %}>{{ item.label }}</a></li>{% endfor %}</ul></nav>
+    <nav aria-label="Primary"><ul>{% for item in navigation %}<li><a href="{{ item.destination }}"{% if item.is_external %} rel="noopener noreferrer"{% endif %}>{{ item.label }}</a></li>{% endfor %}</ul></nav>
     {% endif %}
   </header>
   <main id="main" class="site-main" itemscope itemtype="https://schema.org/WebPage">
     {% block content %}{% endblock %}
   </main>
-  <footer class="site-footer"><span>{{ site.site_title }}</span><a href="/archive/">Archive</a><a href="/feed.xml">Feed</a></footer>
+  <footer class="site-footer"><span>{{ site.site_title }}</span><nav><ul><li><a href="/archive/">{{ t["public.archive"] }}</a></li><li><a href="/search/">{{ t["public.search"] }}</a></li><li><a href="/feed.xml">{{ t["public.feed"] }}</a></li></ul></nav></footer>
+  {# Reader display preferences: per-visitor, stored in their browser.
+     Hidden until prefs.js reveals it; without JavaScript defaults hold. #}
+  <details class="prefs" hidden>
+    <summary>{{ t["public.prefs"] }}</summary>
+    <fieldset>
+      <legend>{{ t["public.prefs_measure"] }}</legend>
+      <label><input type="radio" name="measure" value="narrow">{{ t["public.prefs_narrow"] }}</label>
+      <label><input type="radio" name="measure" value="default" checked>{{ t["public.prefs_default"] }}</label>
+      <label><input type="radio" name="measure" value="wide">{{ t["public.prefs_wide"] }}</label>
+    </fieldset>
+    <fieldset>
+      <legend>{{ t["public.prefs_text"] }}</legend>
+      <label><input type="radio" name="text" value="small">{{ t["public.prefs_small"] }}</label>
+      <label><input type="radio" name="text" value="default" checked>{{ t["public.prefs_default"] }}</label>
+      <label><input type="radio" name="text" value="large">{{ t["public.prefs_large"] }}</label>
+    </fieldset>
+    <fieldset>
+      <legend>{{ t["public.prefs_scheme"] }}</legend>
+      <label><input type="radio" name="scheme" value="default" checked>{{ t["public.prefs_auto"] }}</label>
+      <label><input type="radio" name="scheme" value="light">{{ t["public.prefs_light"] }}</label>
+      <label><input type="radio" name="scheme" value="dark">{{ t["public.prefs_dark"] }}</label>
+    </fieldset>
+  </details>
 </body>
 </html>

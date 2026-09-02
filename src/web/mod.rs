@@ -2,9 +2,8 @@ mod admin;
 mod observability;
 mod public;
 mod security;
-mod templates;
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use axum::{
     Router,
@@ -16,6 +15,7 @@ use axum::{
 };
 use serde::Serialize;
 use thiserror::Error;
+use tokio::sync::{Mutex, Notify, watch};
 use tower_http::{
     catch_panic::CatchPanicLayer, compression::CompressionLayer, limit::RequestBodyLimitLayer,
 };
@@ -25,16 +25,19 @@ use crate::{
         auth::{AuthRateLimiter, AuthService, PasskeyAccountService},
         content::ContentService,
         ports::{
-            AuthError, Clock, ContentRepository, MediaRepository, MediaRepositoryError,
-            RepositoryError, SiteRepository,
+            AuthError, Clock, ContentRepository, EngagementRepository, LikeRepository,
+            MediaRepository, MediaRepositoryError, RepositoryError, SiteRepository,
+        },
+        publication::{
+            PublicationOutcome, PublicationService, PublicationServiceError, publication_delay,
         },
         site::SiteService,
+        site_compiler::{SiteCompiler, SiteCompilerError},
+        templates::{TemplateError, Templates},
     },
     config::Config,
-    domain::{
-        media::MediaId,
-        theme::{ThemeAssets, ThemeContext},
-    },
+    domain::media::MediaId,
+    i18n::{TranslationError, Translations},
     infrastructure::{
         clock::SystemClock,
         entropy::SystemEntropy,
@@ -43,10 +46,7 @@ use crate::{
         sqlite::SqliteRepository,
         webauthn::{PasskeyCeremony, PasskeyError},
     },
-    web::{
-        public::meta,
-        templates::{TemplateError, Templates},
-    },
+    release::{FilesystemReleaseStore, ReleaseError},
 };
 
 #[derive(Clone)]
@@ -63,7 +63,15 @@ pub struct AppState {
     pub(crate) webauthn: Arc<PasskeyCeremony>,
     pub(crate) media_repository: Arc<dyn MediaRepository>,
     pub(crate) media_service: LocalMediaService,
+    pub(crate) translations: Arc<Translations>,
     pub(crate) clock: Arc<dyn Clock>,
+    pub(crate) likes: Arc<dyn LikeRepository>,
+    pub(crate) like_rate_limiter: AuthRateLimiter,
+    pub(crate) engagement: Arc<dyn EngagementRepository>,
+    pub(crate) release_store: Arc<FilesystemReleaseStore>,
+    publication: Arc<PublicationService<SqliteRepository, FilesystemReleaseStore>>,
+    publication_lock: Arc<Mutex<()>>,
+    publication_wakeup: Arc<Notify>,
 }
 
 impl AppState {
@@ -88,6 +96,15 @@ impl AppState {
         let content: Arc<dyn ContentRepository> = repository.clone();
         let site: Arc<dyn SiteRepository> = repository.clone();
         let media_repository: Arc<dyn MediaRepository> = repository.clone();
+        let likes: Arc<dyn LikeRepository> = repository.clone();
+        let engagement: Arc<dyn EngagementRepository> = repository.clone();
+        let release_store = Arc::new(FilesystemReleaseStore::new(config.release_dir()));
+        let publication = Arc::new(PublicationService::new(
+            repository.clone(),
+            release_store.clone(),
+            SiteCompiler::embedded()?,
+            config.public_url.as_str(),
+        )?);
         let media_service =
             LocalMediaService::new(config.media_dir(), repository, config.max_upload_bytes);
         Ok(Self {
@@ -103,56 +120,97 @@ impl AppState {
             webauthn,
             media_repository,
             media_service,
+            translations: Arc::new(Translations::embedded()?),
             clock,
+            likes,
+            like_rate_limiter: AuthRateLimiter::new(30, chrono::Duration::minutes(1)),
+            engagement,
+            release_store,
+            publication,
+            publication_lock: Arc::new(Mutex::new(())),
+            publication_wakeup: Arc::new(Notify::new()),
         })
     }
 
-    async fn theme_context<T: Serialize>(
+    pub async fn publish_now(&self) -> Result<PublicationOutcome, PublicationServiceError> {
+        let _guard = self.publication_lock.lock().await;
+        let outcome = self.publication.publish(self.clock.now()).await;
+        self.publication_wakeup.notify_waiters();
+        outcome
+    }
+
+    pub async fn run_publication_scheduler(&self, mut shutdown: watch::Receiver<bool>) {
+        const MAXIMUM_IDLE: Duration = Duration::from_secs(60);
+        const FAILURE_RETRY: Duration = Duration::from_secs(5);
+
+        tracing::info!(event = "publication.scheduler.started");
+        loop {
+            if *shutdown.borrow() {
+                break;
+            }
+            let now = self.clock.now();
+            let delay = match self.publication.publication_state().await {
+                Ok(state) => publication_delay(state, now, MAXIMUM_IDLE),
+                Err(error) => {
+                    tracing::error!(
+                        event = "publication.scheduler.state_failed",
+                        error_code = "publication_scheduler_state_failed",
+                        retry_ms = FAILURE_RETRY.as_millis(),
+                        error = %error
+                    );
+                    FAILURE_RETRY
+                }
+            };
+            if delay.is_zero() {
+                if let Err(error) = self.publish_now().await {
+                    tracing::error!(
+                        event = "publication.scheduler.publish_failed",
+                        error_code = "publication_scheduler_publish_failed",
+                        retry_ms = FAILURE_RETRY.as_millis(),
+                        error = %error
+                    );
+                    if scheduler_wait(FAILURE_RETRY, &self.publication_wakeup, &mut shutdown).await
+                    {
+                        break;
+                    }
+                }
+                continue;
+            }
+            tracing::debug!(
+                event = "publication.scheduler.waiting",
+                delay_ms = delay.as_millis()
+            );
+            if scheduler_wait(delay, &self.publication_wakeup, &mut shutdown).await {
+                break;
+            }
+        }
+        tracing::info!(event = "publication.scheduler.stopped");
+    }
+
+    /// Renders an admin template with the translation map for the site's
+    /// locale injected as `t`.
+    async fn render_admin_string(
         &self,
-        path: &str,
-        title: MetaTitle,
-        description: Option<String>,
-        og_type: &str,
-        page: T,
-    ) -> Result<ThemeContext<T>, WebError> {
-        let site = self.site.site_settings().await?;
-        let navigation = self.site.navigation().await?;
-        let logo_url = self.theme_media_url(site.logo_media_id.as_deref()).await?;
-        let favicon_url = if site.favicon_media_id == site.logo_media_id {
-            logo_url.clone()
-        } else {
-            self.theme_media_url(site.favicon_media_id.as_deref())
-                .await?
-        };
-        let canonical_url = self.absolute_url(path)?;
-        let title = match title {
-            MetaTitle::Site => None,
-            MetaTitle::Page(title) => Some(format!("{title} — {}", site.site_title)),
-            MetaTitle::Override(title) => Some(title),
-        };
-        let meta = meta(&site, canonical_url, title, description, og_type);
-        Ok(ThemeContext {
-            site,
-            assets: ThemeAssets {
-                logo_url,
-                favicon_url,
+        template: &str,
+        context: impl Serialize,
+    ) -> Result<String, WebError> {
+        let locale = self.site.site_settings().await?.locale;
+        Ok(self.templates.render(
+            template,
+            WithTranslations {
+                t: self.translations.for_locale(locale),
+                lang: locale.as_str(),
+                context,
             },
-            navigation,
-            meta,
-            page,
-        })
+        )?)
     }
 
-    fn render_html(&self, template: &str, context: impl Serialize) -> Result<Response, WebError> {
-        Ok(Html(self.templates.render(template, context)?).into_response())
-    }
-
-    fn absolute_url(&self, path: &str) -> Result<String, WebError> {
-        self.config
-            .public_url
-            .join(path.trim_start_matches('/'))
-            .map(|url| url.to_string())
-            .map_err(|error| WebError::Internal(error.to_string()))
+    async fn render_admin(
+        &self,
+        template: &str,
+        context: impl Serialize,
+    ) -> Result<Response, WebError> {
+        Ok(Html(self.render_admin_string(template, context).await?).into_response())
     }
 
     fn secure_cookies(&self) -> bool {
@@ -173,10 +231,24 @@ impl AppState {
     }
 }
 
-pub(crate) enum MetaTitle {
-    Site,
-    Page(String),
-    Override(String),
+async fn scheduler_wait(
+    delay: Duration,
+    wakeup: &Notify,
+    shutdown: &mut watch::Receiver<bool>,
+) -> bool {
+    tokio::select! {
+        () = tokio::time::sleep(delay) => false,
+        () = wakeup.notified() => false,
+        changed = shutdown.changed() => changed.is_err() || *shutdown.borrow(),
+    }
+}
+
+#[derive(Serialize)]
+struct WithTranslations<'a, C> {
+    t: &'a std::collections::HashMap<String, String>,
+    lang: &'static str,
+    #[serde(flatten)]
+    context: C,
 }
 
 const MULTIPART_ENVELOPE_BYTES: usize = 64 * 1024;
@@ -187,16 +259,8 @@ pub fn router(state: AppState) -> Router {
         .max_upload_bytes
         .saturating_add(MULTIPART_ENVELOPE_BYTES);
     Router::new()
-        .route("/", get(public::home))
-        .route("/archive", get(public::canonical_archive))
-        .route("/archive/", get(public::archive))
-        .route("/tag/{slug}", get(public::canonical_tag))
-        .route("/tag/{slug}/", get(public::tag))
-        .route("/feed.xml", get(public::feed))
-        .route("/sitemap.xml", get(public::sitemap))
-        .route("/robots.txt", get(public::robots))
         .route("/healthz", get(public::health))
-        .route("/assets/theme.css", get(public::theme_css))
+        .route("/likes/{id}", post(public::like_toggle))
         .route("/media/{filename}", get(public::media_file))
         .route(
             "/admin",
@@ -210,13 +274,12 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/", get(admin::dashboard))
         .route("/admin/login/", get(admin::login_page))
         .route("/admin/setup/", get(admin::setup_page))
-        .route("/admin/security/", get(admin::security_page))
         .route(
-            "/admin/security/recovery-codes/",
+            "/admin/settings/recovery-codes/",
             post(admin::regenerate_recovery_codes),
         )
         .route(
-            "/admin/security/passkeys/remove/",
+            "/admin/settings/passkeys/remove/",
             post(admin::remove_passkey),
         )
         .route("/admin/content/new/", get(admin::new_content))
@@ -252,9 +315,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/admin/assets/admin.css", get(admin::admin_css))
         .route("/admin/assets/admin.js", get(admin::admin_js))
-        .route("/{slug}", get(public::canonical_content))
-        .route("/{slug}/", get(public::content))
-        .fallback(public::not_found)
+        .fallback(public::release_site)
         .with_state(state.clone())
         .layer(CompressionLayer::new())
         .layer(RequestBodyLimitLayer::new(upload_envelope))
@@ -336,6 +397,12 @@ pub enum AppBuildError {
     Template(#[from] TemplateError),
     #[error(transparent)]
     Passkey(#[from] PasskeyError),
+    #[error(transparent)]
+    Translation(#[from] TranslationError),
+    #[error(transparent)]
+    Compiler(#[from] SiteCompilerError),
+    #[error(transparent)]
+    Publication(#[from] PublicationServiceError),
 }
 
 #[derive(Debug, Error)]
@@ -352,6 +419,10 @@ pub enum WebError {
     Media(#[from] MediaError),
     #[error(transparent)]
     MediaRepository(#[from] MediaRepositoryError),
+    #[error(transparent)]
+    Publication(#[from] PublicationServiceError),
+    #[error(transparent)]
+    Release(#[from] ReleaseError),
     #[error("internal web error: {0}")]
     Internal(String),
 }
@@ -389,6 +460,10 @@ impl WebError {
             Self::Passkey(_) => "auth.passkey",
             Self::Media(_) => "media.processing",
             Self::MediaRepository(_) => "media.storage",
+            Self::Publication(_) => "publication.build",
+            Self::Release(ReleaseError::Integrity { .. }) => "release.integrity",
+            Self::Release(ReleaseError::NotFound { .. }) => "release.not_found",
+            Self::Release(_) => "release.read",
             Self::Internal(_) => "web.internal",
         }
     }
@@ -396,12 +471,31 @@ impl WebError {
 
 impl IntoResponse for WebError {
     fn into_response(self) -> Response {
+        let active_release_missing = matches!(
+            &self,
+            Self::Release(ReleaseError::NotFound {
+                kind: "active release",
+                ..
+            })
+        );
         tracing::error!(
             event = "http.request.failed",
             error_code = self.diagnostic_code(),
             error = %self,
             "request failed"
         );
-        (StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error").into_response()
+        if active_release_missing {
+            let mut response =
+                (StatusCode::SERVICE_UNAVAILABLE, "Service Unavailable").into_response();
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from_static("5"));
+            response
+                .headers_mut()
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            response
+        } else {
+            (StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error").into_response()
+        }
     }
 }
