@@ -88,4 +88,15 @@ fn embedded_styles_preserve_font_names_and_apply_hairline_color_last() {
         .rfind("border-color: color-mix(in srgb, currentcolor")
         .unwrap();
     assert!(hairline_color > post_nav_border);
+    assert!(theme.contains("@media print"));
+    assert!(theme.contains(".toc {"));
+    assert!(theme.contains(".article-meta {"));
+    assert!(theme.contains(".tag-list td:last-child"));
+}
+
+#[test]
+fn locale_maps_to_open_graph_locale() {
+    assert_eq!(Locale::En.og_locale(), "en_US");
+    assert_eq!(Locale::Ja.og_locale(), "ja_JP");
+    assert_eq!(Locale::Zh.og_locale(), "zh_CN");
 }

@@ -1,9 +1,29 @@
 import { EditorView, basicSetup, minimalSetup } from "codemirror";
 import { keymap } from "@codemirror/view";
-import { EditorSelection, type EditorState } from "@codemirror/state";
+import { EditorSelection, EditorState } from "@codemirror/state";
 import { markdown } from "@codemirror/lang-markdown";
 import { css } from "@codemirror/lang-css";
-import { postFormAsNavigation } from "./form-navigation";
+import {
+  countText,
+  failureKey,
+  formatLocalDateTime,
+  formatLocalTime,
+  isoToLocalDateTime,
+  localDateTimeToIso,
+} from "./editor-helpers";
+
+// Server stamps are UTC; readers of the dashboard live in their own zone.
+for (const time of document.querySelectorAll<HTMLTimeElement>("time[data-local-time]")) {
+  const date = new Date(time.dateTime);
+  if (!Number.isNaN(date.getTime())) {
+    time.textContent = formatLocalDateTime(date, document.documentElement.lang);
+  }
+}
+import {
+  conflictNavigationParameters,
+  isConflictPage,
+  postFormAsNavigation,
+} from "./form-navigation";
 
 // Word-wise cursor movement that actually understands 日本語. CodeMirror's
 // default group motion sees an unbroken CJK run as one giant word;
@@ -132,6 +152,16 @@ function credentialJSON(credential: PublicKeyCredential): Record<string, unknown
   };
 }
 
+/** A server answer the UI can explain: the status decides the sentence, the detail fills it in. */
+class RequestFailure extends Error {
+  constructor(
+    readonly status: number,
+    readonly detail: string,
+  ) {
+    super(detail || `HTTP ${status}`);
+  }
+}
+
 async function post(url: string, data: unknown): Promise<any> {
   const response = await fetch(url, {
     method: "POST",
@@ -143,7 +173,7 @@ async function post(url: string, data: unknown): Promise<any> {
     ? await response.json()
     : { error: await response.text() };
   if (!response.ok) {
-    throw new Error(payload.error || "Request failed");
+    throw new RequestFailure(response.status, payload.error || "");
   }
   return payload;
 }
@@ -152,24 +182,64 @@ function errorMessage(reason: unknown): string {
   return reason instanceof Error ? reason.message : "Request failed";
 }
 
-async function uploadMedia(csrf: string, file: File): Promise<any> {
+/**
+ * Turns a failed request into the localized sentence for its cause. Messages
+ * come from the page's data attributes; `{detail}` carries the server's own
+ * words when it gave any (a validation reason, for instance).
+ */
+function describeFailure(reason: unknown, messages: Record<string, string | undefined>): string {
+  const status = reason instanceof RequestFailure ? reason.status : 0;
+  const detail =
+    reason instanceof RequestFailure
+      ? reason.detail
+      : reason instanceof Error && !(reason instanceof TypeError)
+        ? reason.message
+        : "";
+  const template = messages[failureKey(status)] ?? messages.error_server ?? "Request failed";
+  return template.replace("{detail}", detail.trim()).replace(/[:：]\s*$/, "");
+}
+
+function failureMessages(source: DOMStringMap): Record<string, string | undefined> {
+  return {
+    error_session: source.msgErrorSession,
+    error_invalid: source.msgErrorInvalid,
+    error_too_large: source.msgErrorTooLarge,
+    error_rate_limited: source.msgErrorRateLimited,
+    error_server: source.msgErrorServer,
+    error_offline: source.msgErrorOffline,
+    conflict: source.msgErrorServer,
+  };
+}
+
+async function uploadMedia(csrf: string, file: File, altText = ""): Promise<any> {
   const data = new FormData();
   data.set("csrf", csrf);
-  data.set("alt_text", file.name);
+  data.set("alt_text", altText.trim() || file.name);
   data.set("file", file);
   const response = await fetch("/admin/media/", { method: "POST", body: data });
-  if (!response.ok) throw new Error(await response.text());
+  if (!response.ok) throw new RequestFailure(response.status, await response.text());
   return response.json();
 }
 
 function wireDropZone(zone: HTMLElement, onFile: (file: File) => Promise<void>): void {
+  const hint = zone.querySelector<HTMLElement>("small");
+  const originalHint = hint?.textContent ?? "";
+  const messages = failureMessages(document.querySelector<HTMLElement>("[data-editor], [data-settings]")?.dataset ?? {});
+  const uploadFailed = document.querySelector<HTMLElement>("[data-editor], [data-settings]")?.dataset.msgUploadFailed;
   const handle = async (file: File | undefined): Promise<void> => {
     if (!file) return;
     try {
       await onFile(file);
+      if (hint) {
+        hint.textContent = originalHint;
+        delete hint.dataset.error;
+      }
     } catch (reason) {
-      const hint = zone.querySelector<HTMLElement>("small");
-      if (hint) hint.textContent = errorMessage(reason);
+      if (hint) {
+        const detail = describeFailure(reason, messages);
+        hint.textContent = uploadFailed ? uploadFailed.replace("{detail}", detail) : detail;
+        hint.dataset.error = "true";
+      }
     }
   };
   zone.addEventListener("dragover", (event) => {
@@ -215,21 +285,57 @@ document.querySelectorAll<HTMLElement>("[data-media-target]").forEach((zone) => 
   const input = zone.querySelector<HTMLInputElement>("input[type=hidden]")!;
   const thumb = zone.querySelector<HTMLImageElement>("[data-media-thumb]")!;
   const clear = zone.querySelector<HTMLButtonElement>("[data-media-clear]")!;
+  const altInput = zone.querySelector<HTMLInputElement>("[data-cover-alt]");
+  const altSave = zone.querySelector<HTMLButtonElement>("[data-cover-alt-save]");
+  const altForm = document.querySelector<HTMLFormElement>("[data-cover-alt-form]");
+  const showAlt = (visible: boolean): void => {
+    if (altInput) altInput.closest("label")!.hidden = !visible;
+    if (altSave) altSave.hidden = !visible;
+  };
   clear.addEventListener("click", () => {
     input.value = "";
     thumb.hidden = true;
     thumb.removeAttribute("src");
     clear.hidden = true;
+    showAlt(false);
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
   wireDropZone(zone, async (file) => {
-    const media = await uploadMedia(csrfMeta, file);
+    const media = await uploadMedia(csrfMeta, file, altInput?.value ?? "");
     input.value = media.id;
     thumb.src = media.url;
     thumb.hidden = false;
     clear.hidden = false;
+    if (altInput) altInput.value = media.alt_text ?? "";
+    if (altForm) altForm.action = `/admin/media/${media.id}/`;
+    showAlt(true);
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
+  // Alt text saves on its own, a moment after typing stops; the button
+  // remains for keyboards and for browsers without scripting.
+  if (altInput && altForm) {
+    let timer: number | undefined;
+    const saveAlt = async (): Promise<void> => {
+      if (!input.value) return;
+      const body = new URLSearchParams(new FormData(altForm) as unknown as Record<string, string>);
+      body.set("alt_text", altInput.value);
+      const response = await fetch(altForm.action, {
+        method: "POST",
+        headers: { Accept: "application/json" },
+        body,
+      });
+      altInput.dataset.error = response.ok ? "" : "true";
+    };
+    altInput.addEventListener("input", () => {
+      clearTimeout(timer);
+      timer = window.setTimeout(() => void saveAlt(), 1_200);
+    });
+    altForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      clearTimeout(timer);
+      void saveAlt();
+    });
+  }
 });
 
 function showRecoveryCodes(codes: string[], labels: DOMStringMap): void {
@@ -285,7 +391,9 @@ login?.querySelector<HTMLButtonElement>("[data-passkey-action]")?.addEventListen
       flow_id: start.flow_id,
       credential: credentialJSON(credential),
     });
-    location.href = "/admin/";
+    // The server has already reduced `next` to a same-site admin path.
+    const next = login.dataset.next ?? "";
+    location.href = next.startsWith("/admin/") && !next.startsWith("//") ? next : "/admin/";
   } catch (reason) {
     error.textContent = errorMessage(reason);
   }
@@ -347,13 +455,15 @@ if (settingsForm) {
         headers: { Accept: "application/json" },
         body: parameters,
       });
-      if (!response.ok) throw new Error(await response.text());
+      if (!response.ok) throw new RequestFailure(response.status, await response.text());
       if (!saveAgain) {
         dirty = false;
+        delete saveState.dataset.error;
         saveState.textContent = msg.saved;
       }
     } catch (reason) {
-      saveState.textContent = errorMessage(reason);
+      saveState.dataset.error = "true";
+      saveState.textContent = describeFailure(reason, failureMessages(settingsForm.dataset));
     } finally {
       saving = false;
       if (saveAgain) {
@@ -421,26 +531,91 @@ if (editor) {
   const previewSection = editor.querySelector<HTMLElement>("[data-preview]")!;
   const previewToggle = editor.querySelector<HTMLButtonElement>("[data-preview-toggle]")!;
   const documentSection = editor.querySelector<HTMLElement>('[data-media-drop="body"]')!;
-  const drawer = editor.querySelector<HTMLElement>("[data-drawer]")!;
+  const drawer = editor.querySelector<HTMLDialogElement>("[data-drawer]")!;
   const drawerToggle = editor.querySelector<HTMLButtonElement>("[data-drawer-toggle]")!;
-  const drawerBackdrop = editor.querySelector<HTMLElement>("[data-drawer-backdrop]")!;
   const saveState = editor.querySelector<HTMLElement>("[data-save-state]")!;
   const statusLabel = editor.querySelector<HTMLElement>("[data-status-label]")!;
-  const publishButton = editor.querySelector<HTMLButtonElement>("[data-publish]")!;
-  const unpublishButton = editor.querySelector<HTMLButtonElement>("[data-unpublish]")!;
+  const statusTime = editor.querySelector<HTMLElement>("[data-status-time]")!;
+  // Publish/Unpublish are absent while the piece sits in the trash.
+  const publishButton = editor.querySelector<HTMLButtonElement>("[data-publish]");
+  // Unpublish is a two-step <details>: opening it is the confirmation.
+  const unpublishButton = editor.querySelector<HTMLDetailsElement>("[data-unpublish]");
+  const publishAt = editor.querySelector<HTMLInputElement>("[data-publish-at]")!;
+  const publishAtHint = editor.querySelector<HTMLElement>("[data-publish-at-hint]");
+  const counter = editor.querySelector<HTMLElement>("[data-count]");
+  const shortcuts = editor.querySelector<HTMLElement>("[data-shortcuts]");
+  const trashed = editor.dataset.trashed === "true";
+  const language = document.documentElement.lang;
+  const failures = failureMessages(editor.dataset);
   const msg = {
     saved: editor.dataset.msgSaved ?? "Saved",
+    savedAt: editor.dataset.msgSavedAt ?? "Saved {time}",
     saving: editor.dataset.msgSaving ?? "Saving…",
     unsaved: editor.dataset.msgUnsaved ?? "Unsaved",
     needTitle: editor.dataset.msgNeedTitle ?? "Add a title to start saving",
     statusDraft: editor.dataset.msgStatusDraft ?? "Draft",
+    statusScheduled: editor.dataset.msgStatusScheduled ?? "Scheduled",
     statusPublic: editor.dataset.msgStatusPublic ?? "Public",
+    publish: editor.dataset.msgPublish ?? "Publish",
+    schedule: editor.dataset.msgSchedule ?? "Schedule",
+    publishAtHint: editor.dataset.msgPublishAtHint ?? "",
+    count: editor.dataset.msgCount ?? "{chars} characters · {words} words",
+    shortcuts: editor.dataset.msgShortcuts ?? "",
+    slugInvalid: editor.dataset.msgSlugInvalid ?? "The slug may only use lowercase letters, digits, and hyphens.",
   };
   let autosaveTimer: number | undefined;
   let saving = false;
   let saveAgain = false;
   let dirty = false;
   let pendingStatus: "public" | "draft" | undefined;
+
+  // The server stores UTC; the control shows the writer's own zone.
+  if (publishAt.dataset.publishAtUtc) {
+    publishAt.value = isoToLocalDateTime(publishAt.dataset.publishAtUtc);
+  }
+  publishAt.dataset.initial = publishAt.value;
+  if (publishAtHint && msg.publishAtHint) {
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+    publishAtHint.textContent = msg.publishAtHint.replace("{zone}", zone);
+  }
+  const chosenInstantIsFuture = (): boolean => {
+    const iso = localDateTimeToIso(publishAt.value);
+    return iso !== null && new Date(iso).getTime() > Date.now();
+  };
+  const refreshPublishLabel = (): void => {
+    if (!publishButton || publishButton.hidden) return;
+    publishButton.textContent = chosenInstantIsFuture() ? msg.schedule : msg.publish;
+  };
+  publishAt.addEventListener("input", refreshPublishLabel);
+
+  // Mirrors the server's answer: the status chip, the scheduled instant, and
+  // which of Publish/Unpublish is on offer.
+  const applyStatus = (status: string, publishAtUtc: string | null | undefined): void => {
+    const labels: Record<string, string> = {
+      draft: msg.statusDraft,
+      scheduled: msg.statusScheduled,
+      public: msg.statusPublic,
+    };
+    statusLabel.textContent = labels[status] ?? status;
+    statusTime.hidden = status !== "scheduled";
+    if (publishAtUtc) {
+      statusTime.setAttribute("datetime", publishAtUtc);
+      statusTime.textContent = new Date(publishAtUtc).toLocaleString(language || undefined);
+      publishAt.value = isoToLocalDateTime(publishAtUtc);
+      publishAt.dataset.publishAtUtc = publishAtUtc;
+    } else {
+      publishAt.dataset.publishAtUtc = "";
+    }
+    publishAt.dataset.initial = publishAt.value;
+    if (publishButton) publishButton.hidden = status === "public";
+    if (unpublishButton) unpublishButton.hidden = status === "draft";
+    refreshPublishLabel();
+  };
+  if (statusTime.getAttribute("datetime")) {
+    statusTime.textContent = new Date(statusTime.getAttribute("datetime")!).toLocaleString(
+      language || undefined,
+    );
+  }
 
   // Mod-K wraps the selection as a markdown link, or drops in a template.
   const insertLink = (view: EditorView): boolean => {
@@ -466,15 +641,27 @@ if (editor) {
   const codeEditor = new EditorView({
     doc: textarea.value,
     extensions: [
-      keymap.of([{ key: "Mod-k", run: insertLink }]),
+      keymap.of([
+        { key: "Mod-k", run: insertLink },
+        {
+          key: "Mod-Shift-p",
+          run: () => {
+            previewToggle.click();
+            return true;
+          },
+        },
+      ]),
       segmentKeymap,
       minimalSetup,
       markdown(),
       EditorView.lineWrapping,
+      EditorState.readOnly.of(trashed),
+      EditorView.editable.of(!trashed),
       EditorView.updateListener.of((update) => {
         if (update.docChanged) {
           textarea.value = update.state.doc.toString();
           textarea.dispatchEvent(new Event("input", { bubbles: true }));
+          scheduleCount();
         }
       }),
     ],
@@ -482,6 +669,29 @@ if (editor) {
   textarea.before(codeEditor.dom);
   textarea.hidden = true;
   textarea.required = false;
+
+  // Characters and words, refreshed at most once per frame.
+  let countFrame = 0;
+  const refreshCount = (): void => {
+    countFrame = 0;
+    if (!counter) return;
+    const { chars, words } = countText(codeEditor.state.doc.toString(), wordSegmenter);
+    counter.textContent = msg.count
+      .replace("{chars}", String(chars))
+      .replace("{words}", String(words));
+    counter.hidden = false;
+  };
+  const scheduleCount = (): void => {
+    if (countFrame === 0) countFrame = requestAnimationFrame(refreshCount);
+  };
+  refreshCount();
+
+  if (shortcuts && msg.shortcuts) {
+    const platform = navigator.platform || navigator.userAgent;
+    const mod = /Mac|iPhone|iPad/.test(platform) ? "⌘" : "Ctrl";
+    shortcuts.textContent = msg.shortcuts.replaceAll("{mod}", mod);
+    shortcuts.hidden = false;
+  }
 
   // The title looks like the first line of the document: it grows with its
   // content, and Enter or ArrowDown continues into the body.
@@ -504,6 +714,14 @@ if (editor) {
       if (typeof value === "string") parameters.append(name, value);
     }
     parameters.set("intent", "autosave");
+    // The control holds a local time; the server takes an instant. It is
+    // sent only when the writer changed it or is publishing, so an untouched
+    // date never re-dates a piece.
+    if (publishAt.value !== publishAt.dataset.initial || pendingStatus) {
+      parameters.set("publish_at", localDateTimeToIso(publishAt.value) ?? "");
+    } else {
+      parameters.delete("publish_at");
+    }
     return parameters;
   };
 
@@ -519,7 +737,14 @@ if (editor) {
       saveState.textContent = msg.needTitle;
       return;
     }
+    if (!slugField.checkValidity()) {
+      pendingStatus = undefined;
+      saveState.dataset.error = "true";
+      saveState.textContent = msg.slugInvalid;
+      return;
+    }
     saving = true;
+    delete saveState.dataset.error;
     saveState.textContent = msg.saving;
     const statusToSend = pendingStatus;
     try {
@@ -533,18 +758,23 @@ if (editor) {
         headers: { Accept: "application/json" },
         body: parameters,
       });
-      if (response.status === 409) {
+      if (isConflictPage(response.status, response.headers.get("content-type"))) {
         // Let the browser render the server's full conflict page as a normal
         // navigation. This preserves every submitted field without evaluating
-        // response text through document.write.
+        // response text through document.write. Other 409s (a taken slug)
+        // fall through to the ordinary error path and keep the editor intact.
         dirty = false;
         saving = false;
         saveAgain = false;
         pendingStatus = undefined;
-        postFormAsNavigation(document, editor.action, parameters);
+        postFormAsNavigation(
+          document,
+          editor.action,
+          conflictNavigationParameters(parameters),
+        );
         return;
       }
-      if (!response.ok) throw new Error(await response.text());
+      if (!response.ok) throw new RequestFailure(response.status, await response.text());
       const result = await response.json();
       let version = editor.querySelector<HTMLInputElement>("[name=version]");
       if (!version) {
@@ -556,22 +786,25 @@ if (editor) {
         history.replaceState(null, "", `/admin/content/${result.id}/edit/`);
       }
       version.value = String(result.version);
+      const trashVersion = document.querySelector<HTMLInputElement>("[data-trash-version]");
+      if (trashVersion) trashVersion.value = String(result.version);
       if (result.slug && slugField.value.trim() === "") {
         slugField.value = result.slug;
       }
-      if (statusToSend) {
-        pendingStatus = undefined;
-        const isPublic = statusToSend === "public";
-        publishButton.hidden = isPublic;
-        unpublishButton.hidden = !isPublic;
-        statusLabel.textContent = isPublic ? msg.statusPublic : msg.statusDraft;
+      if (statusToSend) pendingStatus = undefined;
+      if (typeof result.status === "string") {
+        applyStatus(result.status, result.publish_at);
       }
       if (!saveAgain) {
         dirty = false;
-        saveState.textContent = msg.saved;
+        saveState.textContent = msg.savedAt.replace(
+          "{time}",
+          formatLocalTime(new Date(), language),
+        );
       }
     } catch (reason) {
-      saveState.textContent = errorMessage(reason);
+      saveState.dataset.error = "true";
+      saveState.textContent = describeFailure(reason, failures);
     } finally {
       saving = false;
       // Re-run for a queued follow-up, or for a publish/unpublish that was
@@ -589,33 +822,44 @@ if (editor) {
     void autosave();
   };
 
-  editor.addEventListener("input", () => {
-    dirty = true;
-    saveState.textContent = msg.unsaved;
-    clearTimeout(autosaveTimer);
-    autosaveTimer = window.setTimeout(() => void autosave(), 1_200);
-  });
-  editor.addEventListener("submit", (event) => {
-    event.preventDefault();
-    const submitter = (event as SubmitEvent).submitter;
-    if (
-      submitter instanceof HTMLButtonElement &&
-      submitter.name === "status" &&
-      (submitter.value === "public" || submitter.value === "draft")
-    ) {
-      pendingStatus = submitter.value;
-    }
-    saveNow();
-  });
-  document.addEventListener("keydown", (event) => {
-    if ((event.ctrlKey || event.metaKey) && event.key === "s") {
+  // A trashed piece is read-only: nothing autosaves and nothing publishes
+  // until it is restored through its own form.
+  if (!trashed) {
+    editor.addEventListener("input", () => {
+      dirty = true;
+      saveState.textContent = msg.unsaved;
+      clearTimeout(autosaveTimer);
+      autosaveTimer = window.setTimeout(() => void autosave(), 1_200);
+    });
+    editor.addEventListener("submit", (event) => {
       event.preventDefault();
+      // The browser's own constraint messages point at the offending field.
+      if (!editor.reportValidity()) return;
+      const submitter = (event as SubmitEvent).submitter;
+      if (
+        submitter instanceof HTMLButtonElement &&
+        submitter.name === "status" &&
+        (submitter.value === "public" || submitter.value === "draft")
+      ) {
+        pendingStatus = submitter.value;
+        if (unpublishButton) unpublishButton.open = false;
+      }
       saveNow();
-    }
-  });
-  window.addEventListener("beforeunload", (event) => {
-    if (dirty || saving) event.preventDefault();
-  });
+    });
+    document.addEventListener("keydown", (event) => {
+      if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key === "s") {
+        event.preventDefault();
+        saveNow();
+      }
+      if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "p") {
+        event.preventDefault();
+        previewToggle.click();
+      }
+    });
+    window.addEventListener("beforeunload", (event) => {
+      if (dirty || saving) event.preventDefault();
+    });
+  }
 
   previewToggle.addEventListener("click", async () => {
     const showing = !previewSection.hidden;
@@ -629,7 +873,7 @@ if (editor) {
       const result = await post("/admin/preview/", { csrf, markdown: textarea.value });
       preview.innerHTML = result.html;
     } catch (reason) {
-      preview.textContent = errorMessage(reason);
+      preview.textContent = describeFailure(reason, failures);
     }
     documentSection.hidden = true;
     previewSection.hidden = false;
@@ -637,18 +881,26 @@ if (editor) {
   });
 
   const setDrawer = (open: boolean): void => {
-    drawer.hidden = !open;
-    drawerBackdrop.hidden = !open;
+    if (open && !drawer.open) drawer.showModal();
+    else if (!open && drawer.open) drawer.close();
     drawerToggle.setAttribute("aria-expanded", String(open));
   };
-  drawerToggle.addEventListener("click", () => setDrawer(drawer.hidden !== false));
-  drawerBackdrop.addEventListener("click", () => setDrawer(false));
-  document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && !drawer.hidden) setDrawer(false);
+  drawerToggle.addEventListener("click", () => setDrawer(!drawer.open));
+  drawer.addEventListener("close", () => drawerToggle.setAttribute("aria-expanded", "false"));
+  // A click on the backdrop lands on the dialog itself, outside its box.
+  drawer.addEventListener("click", (event) => {
+    if (event.target !== drawer) return;
+    const box = drawer.getBoundingClientRect();
+    const inside =
+      event.clientX >= box.left &&
+      event.clientX <= box.right &&
+      event.clientY >= box.top &&
+      event.clientY <= box.bottom;
+    if (!inside) setDrawer(false);
   });
 
   // Dropping into the document body uploads and inserts markdown in place.
-  wireDropZone(documentSection, async (file) => {
+  if (!trashed) wireDropZone(documentSection, async (file) => {
     const media = await uploadMedia(csrf, file);
     const selection = codeEditor.state.selection.main;
     const insertion = `![${media.alt_text || file.name}](${media.url})`;

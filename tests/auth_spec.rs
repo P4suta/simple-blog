@@ -450,3 +450,27 @@ fn authentication_rate_limit_is_bounded_and_time_injectable() {
         RateLimitDecision::Allowed
     );
 }
+#[tokio::test]
+async fn revoking_a_session_makes_it_unauthenticatable() {
+    let (_temp, auth) = auth_harness().await;
+    let now = Utc::now();
+    let session = auth.create_session(now).await.unwrap();
+    assert!(
+        auth.authenticate(session.session.expose(), now)
+            .await
+            .unwrap()
+            .is_some()
+    );
+
+    assert!(auth.logout(session.session.expose()).await.unwrap());
+    assert!(
+        auth.authenticate(session.session.expose(), now)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        !auth.logout(session.session.expose()).await.unwrap(),
+        "a replayed logout is a visible no-op"
+    );
+}

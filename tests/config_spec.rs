@@ -63,7 +63,7 @@ fn environment_safety_limits_and_proxy_lists_are_parsed_deterministically() {
         env: BTreeMap::from([
             (
                 "SIMPLE_BLOG_TRUSTED_PROXIES".into(),
-                "127.0.0.1, invalid, ::1".into(),
+                "127.0.0.1, ::1, ".into(),
             ),
             ("SIMPLE_BLOG_MAX_UPLOAD_BYTES".into(), "4096".into()),
         ]),
@@ -73,6 +73,16 @@ fn environment_safety_limits_and_proxy_lists_are_parsed_deterministically() {
 
     assert_eq!(config.trusted_proxies.len(), 2);
     assert_eq!(config.max_upload_bytes, 4096);
+
+    // A typo in the proxy list must not silently weaken rate limiting.
+    let mistyped = Config::resolve(ConfigSources {
+        env: BTreeMap::from([(
+            "SIMPLE_BLOG_TRUSTED_PROXIES".into(),
+            "127.0.0.1, invalid, ::1".into(),
+        )]),
+        ..ConfigSources::default()
+    });
+    assert!(matches!(mistyped, Err(ConfigError::TrustedProxy(item)) if item == "invalid"));
 
     let zero = Config::resolve(ConfigSources {
         cli: Overrides {

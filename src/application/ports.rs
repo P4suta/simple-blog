@@ -113,6 +113,10 @@ pub trait ContentRepository: Send + Sync {
 
     async fn list_all_public(&self, now: DateTime<Utc>) -> Result<Vec<Content>, RepositoryError>;
 
+    /// Every piece, trashed ones included: the trash is still durable state
+    /// (media it references must survive garbage collection, and the
+    /// dashboard lists it). Callers that need only live content filter on
+    /// [`Content::is_trashed`].
     async fn list_all_content(&self) -> Result<Vec<Content>, RepositoryError>;
 
     /// The chronologically adjacent public posts (older, newer) around one
@@ -123,6 +127,31 @@ pub trait ContentRepository: Send + Sync {
         publish_at: DateTime<Utc>,
         now: DateTime<Utc>,
     ) -> Result<(Option<ContentLink>, Option<ContentLink>), RepositoryError>;
+
+    /// Moves content to the trash: it leaves every public query and the
+    /// publication clock, but keeps its slug reserved and its media
+    /// referenced. `expected_version` guards against a concurrent editor tab.
+    /// Already trashed content is returned unchanged.
+    async fn move_to_trash(
+        &self,
+        id: ContentId,
+        expected_version: i64,
+        now: DateTime<Utc>,
+    ) -> Result<Content, RepositoryError>;
+
+    /// Returns trashed content to exactly the publication state it had
+    /// before. Live content is returned unchanged.
+    async fn restore_from_trash(
+        &self,
+        id: ContentId,
+        now: DateTime<Utc>,
+    ) -> Result<Content, RepositoryError>;
+
+    /// Hard-deletes content that is already in the trash; revisions, tags,
+    /// redirects, engagement and the search row go with it. Live or absent
+    /// content answers `NotFound`, so a stale page can never destroy
+    /// restored work.
+    async fn delete_permanently(&self, id: ContentId) -> Result<(), RepositoryError>;
 }
 
 /// A minimal reference to another content item.
@@ -256,6 +285,25 @@ pub trait MediaRepository: Send + Sync {
     async fn find_media(&self, id: &MediaId) -> Result<Option<MediaAsset>, MediaRepositoryError>;
     async fn list_media(&self) -> Result<Vec<MediaAsset>, MediaRepositoryError>;
     async fn delete_media(&self, id: &MediaId) -> Result<(), MediaRepositoryError>;
+
+    /// Replaces the alternative text of one asset; `false` when it does not
+    /// exist. Alternative text is rendered into released pages, so the
+    /// implementation advances the public revision in the same transaction.
+    async fn update_media_alt_text(
+        &self,
+        id: &MediaId,
+        alt_text: &str,
+        now: DateTime<Utc>,
+    ) -> Result<bool, MediaRepositoryError>;
+
+    /// The MIME type of one publicly servable file name — an original
+    /// (`{id}.{extension}`) or a generated variant — without listing the
+    /// whole media table on every image request. `None` means the file is
+    /// not referenced by any media record and must not be served.
+    async fn mime_type_for_filename(
+        &self,
+        filename: &str,
+    ) -> Result<Option<String>, MediaRepositoryError>;
 }
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
@@ -296,6 +344,9 @@ pub trait AuthRepository: Send + Sync {
         replacement: &SessionRecord,
         now: DateTime<Utc>,
     ) -> Result<bool, AuthError>;
+
+    /// Ends one session immediately; `false` when no such session existed.
+    async fn revoke_session(&self, token_hash: SecretHash) -> Result<bool, AuthError>;
 
     async fn replace_recovery_codes(
         &self,

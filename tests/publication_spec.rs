@@ -235,3 +235,125 @@ async fn site_configuration_advances_the_public_revision_in_its_transaction() {
         "Changed title"
     );
 }
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "visible, scheduled, and renamed pieces in one clock scenario"
+)]
+async fn trash_and_restore_move_the_publication_clock_only_when_visibility_changes() {
+    use simple_blog::application::ports::ContentRepository;
+
+    let (_temp, repository, service) = harness().await;
+    let now = Utc.with_ymd_and_hms(2026, 9, 3, 12, 0, 0).unwrap();
+
+    let visible = service
+        .create(
+            draft("Visible", Publication::Public { publish_at: now }),
+            SaveIntent::Explicit,
+            now,
+        )
+        .await
+        .unwrap();
+    assert_eq!(repository.publication_state().await.unwrap().revision, 1);
+
+    let trashed = repository
+        .move_to_trash(visible.id, visible.version, now)
+        .await
+        .unwrap();
+    assert_eq!(repository.publication_state().await.unwrap().revision, 2);
+    assert!(
+        repository
+            .public_snapshot(now)
+            .await
+            .unwrap()
+            .contents
+            .is_empty()
+    );
+
+    repository
+        .restore_from_trash(visible.id, now)
+        .await
+        .unwrap();
+    assert_eq!(repository.publication_state().await.unwrap().revision, 3);
+    assert_eq!(
+        repository
+            .public_snapshot(now)
+            .await
+            .unwrap()
+            .contents
+            .len(),
+        1
+    );
+    assert_eq!(trashed.publication, Publication::Public { publish_at: now });
+
+    let due = now + Duration::hours(1);
+    let scheduled = service
+        .create(
+            draft("Scheduled", Publication::Public { publish_at: due }),
+            SaveIntent::Explicit,
+            now,
+        )
+        .await
+        .unwrap();
+    let state = repository.publication_state().await.unwrap();
+    assert_eq!(state.revision, 3);
+    assert_eq!(state.next_publish_at, Some(due));
+
+    repository
+        .move_to_trash(scheduled.id, scheduled.version, now)
+        .await
+        .unwrap();
+    let state = repository.publication_state().await.unwrap();
+    assert_eq!(
+        state.revision, 3,
+        "an invisible piece leaving changes nothing public"
+    );
+    assert_eq!(
+        state.next_publish_at, None,
+        "a trashed entry must not hold the clock"
+    );
+
+    repository
+        .restore_from_trash(scheduled.id, now)
+        .await
+        .unwrap();
+    let state = repository.publication_state().await.unwrap();
+    assert_eq!(state.revision, 3);
+    assert_eq!(state.next_publish_at, Some(due));
+
+    // A renamed, then trashed piece withdraws its historical redirect too.
+    let mut renamed = visible.to_draft();
+    renamed.slug = Slug::parse("visible-renamed").unwrap();
+    let current = repository.find_by_id(visible.id).await.unwrap().unwrap();
+    let renamed = service
+        .update(
+            visible.id,
+            current.version,
+            renamed,
+            SaveIntent::Explicit,
+            now,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        repository
+            .public_snapshot(now)
+            .await
+            .unwrap()
+            .redirects
+            .len(),
+        1
+    );
+    repository
+        .move_to_trash(visible.id, renamed.version, now)
+        .await
+        .unwrap();
+    assert!(
+        repository
+            .public_snapshot(now)
+            .await
+            .unwrap()
+            .redirects
+            .is_empty()
+    );
+}

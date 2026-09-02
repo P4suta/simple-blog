@@ -49,13 +49,16 @@ fn site() -> PortableSiteV1 {
             created_at: updated_at,
         }],
         media: Vec::new(),
-        engagement: BTreeMap::from([(
-            id.as_i64(),
-            PortableEngagement {
-                likes: 17,
-                views: 230,
-            },
-        )]),
+        engagement: BTreeMap::from([
+            (
+                id.as_i64(),
+                PortableEngagement {
+                    likes: 17,
+                    views: 230,
+                },
+            ),
+            (42, PortableEngagement { likes: 0, views: 0 }),
+        ]),
         owner: Some(portable_owner(created_at, updated_at)),
         publication: PortablePublicationState {
             public_revision: 88,
@@ -85,6 +88,7 @@ fn portable_contents(
         version: 1,
         created_at,
         updated_at: created_at,
+        deleted_at: None,
     };
     let current = Content {
         id,
@@ -107,17 +111,46 @@ fn portable_contents(
         version: 2,
         created_at,
         updated_at,
+        deleted_at: None,
     };
-    vec![PortableContent {
-        current,
-        revisions: vec![ContentRevision {
-            id: 73,
-            content_id: id,
-            intent: SaveIntent::Explicit,
-            snapshot: historical,
-            created_at,
-        }],
-    }]
+    // A scheduled piece sitting in the trash: durable, exported, and never
+    // counted by the publication clock (ADR 0014).
+    let trashed = Content {
+        id: ContentId::from_i64(42),
+        kind: ContentKind::Post,
+        title: "Shelved".into(),
+        slug: Slug::parse("shelved").unwrap(),
+        summary: String::new(),
+        body_markdown: "# Shelved".into(),
+        body_html: String::new(),
+        tags: Vec::new(),
+        cover_media_id: None,
+        seo_title: None,
+        seo_description: None,
+        publication: Publication::Public {
+            publish_at: updated_at + chrono::Duration::hours(1),
+        },
+        version: 1,
+        created_at,
+        updated_at,
+        deleted_at: Some(updated_at),
+    };
+    vec![
+        PortableContent {
+            current,
+            revisions: vec![ContentRevision {
+                id: 73,
+                content_id: id,
+                intent: SaveIntent::Explicit,
+                snapshot: historical,
+                created_at,
+            }],
+        },
+        PortableContent {
+            current: trashed,
+            revisions: Vec::new(),
+        },
+    ]
 }
 
 fn portable_owner(

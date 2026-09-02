@@ -566,3 +566,46 @@ async fn reader_preferences_are_offered_on_every_public_page() {
             .contains("immutable")
     );
 }
+#[tokio::test]
+async fn home_pages_and_tag_index_resolve_through_the_release() {
+    let harness = Harness::new().await;
+    let now = Utc::now();
+    for index in 1..=21 {
+        harness
+            .service
+            .create(
+                draft(
+                    &format!("Story {index}"),
+                    &format!("story-{index}"),
+                    Publication::Public {
+                        publish_at: now - Duration::minutes(index),
+                    },
+                ),
+                SaveIntent::Explicit,
+                now,
+            )
+            .await
+            .unwrap();
+    }
+
+    let second = harness.request("/page/2/").await;
+    assert_eq!(second.status(), StatusCode::OK);
+    assert!(body_text(second).await.contains("Story 21"));
+
+    let first = harness.request("/page/1/").await;
+    assert_eq!(first.status(), StatusCode::PERMANENT_REDIRECT);
+    assert_eq!(first.headers()[header::LOCATION], "/");
+
+    let tags = harness.request("/tag/").await;
+    assert_eq!(tags.status(), StatusCode::OK);
+    let tags = body_text(tags).await;
+    assert!(tags.contains("href=\"/tag/rust/\""));
+    assert!(tags.contains("<td>21</td>"));
+
+    let tag_feed = harness.request("/tag/rust/feed.xml").await;
+    assert_eq!(tag_feed.status(), StatusCode::OK);
+    assert_eq!(
+        tag_feed.headers()[header::CONTENT_TYPE],
+        "application/atom+xml; charset=utf-8"
+    );
+}

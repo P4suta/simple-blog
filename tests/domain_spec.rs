@@ -19,7 +19,16 @@ fn slug_accepts_a_stable_url_segment() {
 
 #[test]
 fn slug_rejects_reserved_or_unsafe_segments() {
-    for invalid in ["", "Admin", "two words", "../escape", "archive", "feed.xml"] {
+    for invalid in [
+        "",
+        "Admin",
+        "two words",
+        "../escape",
+        "archive",
+        "feed.xml",
+        "page",
+        "tag",
+    ] {
         assert!(
             Slug::parse(invalid).is_err(),
             "{invalid:?} must be rejected"
@@ -223,4 +232,149 @@ fn ruby_notation_stays_literal_in_code_and_without_a_base() {
     let output = renderer.render("これ《これ》");
     assert!(!output.html.contains("<ruby>"));
     assert!(output.html.contains("これ《これ》"));
+}
+#[test]
+fn is_scheduled_at_is_true_only_for_future_public_entries() {
+    let now = Utc.with_ymd_and_hms(2026, 9, 3, 12, 0, 0).unwrap();
+    let scheduled = Publication::Public {
+        publish_at: now + Duration::minutes(1),
+    };
+
+    assert!(scheduled.is_scheduled_at(now));
+    assert!(!scheduled.is_scheduled_at(now + Duration::minutes(1)));
+    assert!(!Publication::Public { publish_at: now }.is_scheduled_at(now));
+    assert!(!Publication::Draft.is_scheduled_at(now));
+}
+
+#[test]
+fn revision_snapshots_predating_the_trash_column_deserialize_and_live_content_omits_it() {
+    use simple_blog::domain::content::Content;
+
+    let legacy = serde_json::json!({
+        "id": 5,
+        "kind": "post",
+        "title": "Before the trash existed",
+        "slug": "legacy",
+        "summary": "",
+        "body_markdown": "# Legacy",
+        "body_html": "<h1>Legacy</h1>",
+        "tags": [],
+        "cover_media_id": null,
+        "seo_title": null,
+        "seo_description": null,
+        "publication": { "state": "draft" },
+        "version": 1,
+        "created_at": "2026-09-01T00:00:00Z",
+        "updated_at": "2026-09-01T00:00:00Z"
+    });
+    let content: Content = serde_json::from_value(legacy).expect("older snapshot still reads");
+    assert_eq!(content.deleted_at, None);
+    assert!(!content.is_trashed());
+
+    let live = serde_json::to_value(&content).unwrap();
+    assert!(
+        live.get("deleted_at").is_none(),
+        "live content must serialize exactly as before"
+    );
+
+    let trashed = Content {
+        deleted_at: Some(Utc.with_ymd_and_hms(2026, 9, 3, 0, 0, 0).unwrap()),
+        ..content
+    };
+    let json = serde_json::to_value(&trashed).unwrap();
+    assert_eq!(json["deleted_at"], "2026-09-03T00:00:00Z");
+    let round_trip: Content = serde_json::from_value(json).unwrap();
+    assert!(round_trip.is_trashed());
+}
+#[test]
+fn reading_time_counts_cjk_characters_and_latin_words() {
+    use simple_blog::domain::reading::reading_minutes;
+
+    assert_eq!(reading_minutes(""), 0);
+    assert_eq!(reading_minutes("   \n "), 0);
+    assert_eq!(reading_minutes("one short line"), 1);
+    assert_eq!(reading_minutes(&"日".repeat(1_000)), 2);
+    assert_eq!(reading_minutes(&"word ".repeat(400)), 2);
+    assert_eq!(
+        reading_minutes(&format!("{} {}", "文".repeat(500), "word ".repeat(200))),
+        2
+    );
+    assert_eq!(reading_minutes(&"word ".repeat(450)), 3);
+    assert_eq!(reading_minutes("今日は、良い天気です。"), 1);
+}
+
+#[test]
+fn outline_nests_h3_under_the_preceding_h2_and_keeps_prefixed_ids() {
+    use simple_blog::domain::reading::{OutlineEntry, outline};
+
+    let html = ComrakMarkdownRenderer::default()
+        .render("## Intro\n\n### Detail *one*\n\n## Second\n\n# Ignored h1\n\n#### Ignored h4\n\n### Trailing")
+        .html;
+    let entries = outline(&html);
+
+    assert_eq!(
+        entries,
+        vec![
+            OutlineEntry {
+                id: "user-content-intro".into(),
+                text: "Intro".into(),
+                children: vec![OutlineEntry {
+                    id: "user-content-detail-one".into(),
+                    text: "Detail one".into(),
+                    children: Vec::new(),
+                }],
+            },
+            OutlineEntry {
+                id: "user-content-second".into(),
+                text: "Second".into(),
+                children: vec![OutlineEntry {
+                    id: "user-content-trailing".into(),
+                    text: "Trailing".into(),
+                    children: Vec::new(),
+                }],
+            },
+        ]
+    );
+    assert_eq!(entries.iter().map(OutlineEntry::size).sum::<usize>(), 4);
+
+    let orphan = outline("<h3 id=\"user-content-alone\">Alone</h3><h2>No id</h2>");
+    assert_eq!(orphan.len(), 1);
+    assert_eq!(orphan[0].text, "Alone");
+    assert!(outline("<p>no headings</p>").is_empty());
+}
+#[test]
+fn line_diff_marks_only_what_a_restore_would_change() {
+    use simple_blog::domain::diff::{DiffKind, diff_lines};
+
+    let before = "# Title\n\nkept\nremoved line\nalso kept\n";
+    let after = "# Title\n\nkept\nadded line\nalso kept\ntrailing\n";
+    let lines = diff_lines(before, after);
+    let shape: Vec<(DiffKind, &str)> = lines
+        .iter()
+        .map(|line| (line.kind, line.text.as_str()))
+        .collect();
+
+    assert_eq!(
+        shape,
+        vec![
+            (DiffKind::Same, "# Title"),
+            (DiffKind::Same, ""),
+            (DiffKind::Same, "kept"),
+            (DiffKind::Removed, "removed line"),
+            (DiffKind::Added, "added line"),
+            (DiffKind::Same, "also kept"),
+            (DiffKind::Added, "trailing"),
+        ]
+    );
+    assert!(diff_lines("", "").is_empty());
+    assert!(
+        diff_lines("same\n", "same\n")
+            .iter()
+            .all(|line| line.kind == DiffKind::Same)
+    );
+    let huge = "x\n".repeat(2_500);
+    let fallback = diff_lines(&huge, "y\n");
+    assert_eq!(fallback.len(), 2_501);
+    assert_eq!(fallback[0].kind, DiffKind::Removed);
+    assert_eq!(fallback[2_500].kind, DiffKind::Added);
 }

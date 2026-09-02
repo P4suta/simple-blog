@@ -181,25 +181,12 @@ pub async fn media_file(
     {
         return Ok(StatusCode::NOT_FOUND.into_response());
     }
-    let media = state
+    let Some(mime) = state
         .media_repository
-        .list_media()
+        .mime_type_for_filename(&filename)
         .await
-        .map_err(WebError::media_repository)?;
-    let mime = media.iter().find_map(|asset| {
-        if asset.original_filename == filename {
-            Some(asset.mime_type.as_str())
-        } else if asset
-            .variants
-            .iter()
-            .any(|variant| variant.filename == filename)
-        {
-            Some("image/webp")
-        } else {
-            None
-        }
-    });
-    let Some(mime) = mime else {
+        .map_err(WebError::media_repository)?
+    else {
         return Ok(StatusCode::NOT_FOUND.into_response());
     };
     let etag = format!("\"media-{filename}\"");
@@ -222,7 +209,7 @@ pub async fn media_file(
     let mut response = bytes.into_response();
     response.headers_mut().insert(
         header::CONTENT_TYPE,
-        HeaderValue::from_str(mime).map_err(WebError::header)?,
+        HeaderValue::from_str(&mime).map_err(WebError::header)?,
     );
     response.headers_mut().insert(
         header::CACHE_CONTROL,

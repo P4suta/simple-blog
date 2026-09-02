@@ -158,6 +158,15 @@ impl AuthRepository for SqliteRepository {
         Ok(true)
     }
 
+    async fn revoke_session(&self, token_hash: SecretHash) -> Result<bool, AuthError> {
+        let result = sqlx::query("DELETE FROM sessions WHERE token_hash = ?")
+            .bind(token_hash.as_bytes().as_slice())
+            .execute(&self.pool)
+            .await
+            .map_err(auth_storage)?;
+        Ok(result.rows_affected() == 1)
+    }
+
     async fn replace_recovery_codes(
         &self,
         code_hashes: &[SecretHash],
@@ -450,6 +459,7 @@ struct ContentRow {
     version: i64,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+    deleted_at: Option<DateTime<Utc>>,
 }
 
 impl SqliteRepository {
@@ -553,12 +563,25 @@ impl SqliteRepository {
         row.into_content(tags)
     }
 
+    /// Hydrates a list with one tag query instead of one per row: the whole
+    /// `content_tags` join is small (at most twenty tags per piece) and reading
+    /// it once keeps a save from costing as many pool acquisitions as there
+    /// are pieces on the site.
     async fn hydrate_many(&self, rows: Vec<ContentRow>) -> Result<Vec<Content>, RepositoryError> {
-        let mut contents = Vec::with_capacity(rows.len());
-        for row in rows {
-            contents.push(self.hydrate(row).await?);
+        if rows.len() <= 1 {
+            let mut contents = Vec::with_capacity(rows.len());
+            for row in rows {
+                contents.push(self.hydrate(row).await?);
+            }
+            return Ok(contents);
         }
-        Ok(contents)
+        let mut tags_by_content = load_all_tags(&self.pool).await?;
+        rows.into_iter()
+            .map(|row| {
+                let tags = tags_by_content.remove(&row.id).unwrap_or_default();
+                row.into_content(tags)
+            })
+            .collect()
     }
 }
 
@@ -619,28 +642,11 @@ impl ContentRepository for SqliteRepository {
         now: DateTime<Utc>,
     ) -> Result<Content, RepositoryError> {
         let mut transaction = self.pool.begin().await.map_err(storage)?;
-        let current = sqlx::query(
-            "SELECT slug, version, created_at, status, publish_at FROM contents WHERE id = ?",
-        )
-        .bind(id.as_i64())
-        .fetch_optional(&mut *transaction)
-        .await
-        .map_err(storage)?
-        .ok_or(RepositoryError::NotFound)?;
-        let old_slug: String = current.try_get("slug").map_err(storage)?;
-        let actual_version: i64 = current.try_get("version").map_err(storage)?;
-        let created_at: DateTime<Utc> = current.try_get("created_at").map_err(storage)?;
-        let current_status: String = current.try_get("status").map_err(storage)?;
-        let current_publish_at: Option<DateTime<Utc>> =
-            current.try_get("publish_at").map_err(storage)?;
-        let was_visible = current_status == "public"
-            && current_publish_at.is_some_and(|publish_at| publish_at <= now);
-        if actual_version != expected_version {
-            return Err(RepositoryError::Conflict {
-                expected: expected_version,
-                actual: Some(actual_version),
-            });
-        }
+        let UpdateTarget {
+            old_slug,
+            created_at,
+            was_visible,
+        } = load_update_target(&mut transaction, id, expected_version, now).await?;
         if old_slug != prepared.draft.slug.as_str() {
             ensure_slug_available(&mut transaction, &prepared.draft.slug, Some(id)).await?;
             sqlx::query("DELETE FROM redirects WHERE old_slug = ? AND content_id = ?")
@@ -737,7 +743,7 @@ impl ContentRepository for SqliteRepository {
     ) -> Result<Option<Content>, RepositoryError> {
         let row = sqlx::query_as::<_, ContentRow>(
             "SELECT * FROM contents
-             WHERE slug = ? AND status = 'public' AND publish_at <= ?",
+             WHERE slug = ? AND status = 'public' AND publish_at <= ? AND deleted_at IS NULL",
         )
         .bind(slug.as_str())
         .bind(now)
@@ -754,7 +760,7 @@ impl ContentRepository for SqliteRepository {
         let target: Option<String> = sqlx::query_scalar(
             "SELECT contents.slug FROM redirects
              JOIN contents ON contents.id = redirects.content_id
-             WHERE redirects.old_slug = ?",
+             WHERE redirects.old_slug = ? AND contents.deleted_at IS NULL",
         )
         .bind(old_slug.as_str())
         .fetch_optional(&self.pool)
@@ -832,6 +838,7 @@ impl ContentRepository for SqliteRepository {
         let rows = sqlx::query_as::<_, ContentRow>(
             "SELECT * FROM contents
              WHERE kind = 'post' AND status = 'public' AND publish_at <= ?
+               AND deleted_at IS NULL
              ORDER BY publish_at DESC, id DESC LIMIT ? OFFSET ?",
         )
         .bind(now)
@@ -853,6 +860,7 @@ impl ContentRepository for SqliteRepository {
              JOIN content_tags ON content_tags.content_id = contents.id
              JOIN tags ON tags.id = content_tags.tag_id
              WHERE tags.slug = ? AND contents.status = 'public' AND contents.publish_at <= ?
+               AND contents.deleted_at IS NULL
              ORDER BY contents.publish_at DESC, contents.id DESC",
         )
         .bind(tag.as_str())
@@ -866,7 +874,7 @@ impl ContentRepository for SqliteRepository {
     async fn list_all_public(&self, now: DateTime<Utc>) -> Result<Vec<Content>, RepositoryError> {
         let rows = sqlx::query_as::<_, ContentRow>(
             "SELECT * FROM contents
-             WHERE status = 'public' AND publish_at <= ?
+             WHERE status = 'public' AND publish_at <= ? AND deleted_at IS NULL
              ORDER BY publish_at DESC, id DESC",
         )
         .bind(now)
@@ -898,6 +906,7 @@ impl ContentRepository for SqliteRepository {
             .neighbor(
                 "SELECT id, slug, title FROM contents
                  WHERE kind = 'post' AND status = 'public' AND publish_at <= ?
+                   AND deleted_at IS NULL
                    AND (publish_at < ? OR (publish_at = ? AND id < ?))
                  ORDER BY publish_at DESC, id DESC LIMIT 1",
                 id,
@@ -909,6 +918,7 @@ impl ContentRepository for SqliteRepository {
             .neighbor(
                 "SELECT id, slug, title FROM contents
                  WHERE kind = 'post' AND status = 'public' AND publish_at <= ?
+                   AND deleted_at IS NULL
                    AND (publish_at > ? OR (publish_at = ? AND id > ?))
                  ORDER BY publish_at ASC, id ASC LIMIT 1",
                 id,
@@ -918,6 +928,172 @@ impl ContentRepository for SqliteRepository {
             .await?;
         Ok((older, newer))
     }
+
+    async fn move_to_trash(
+        &self,
+        id: ContentId,
+        expected_version: i64,
+        now: DateTime<Utc>,
+    ) -> Result<Content, RepositoryError> {
+        let mut transaction = self.pool.begin().await.map_err(storage)?;
+        let current = load_content_in(&mut transaction, id)
+            .await?
+            .ok_or(RepositoryError::NotFound)?;
+        if current.is_trashed() {
+            transaction.commit().await.map_err(storage)?;
+            return Ok(current);
+        }
+        if current.version != expected_version {
+            return Err(RepositoryError::Conflict {
+                expected: expected_version,
+                actual: Some(current.version),
+            });
+        }
+        let was_visible = current.publication.is_visible_at(now);
+        let result = sqlx::query(
+            "UPDATE contents SET deleted_at = ?, updated_at = ?, version = version + 1
+             WHERE id = ? AND version = ? AND deleted_at IS NULL",
+        )
+        .bind(now)
+        .bind(now)
+        .bind(id.as_i64())
+        .bind(expected_version)
+        .execute(&mut *transaction)
+        .await
+        .map_err(storage)?;
+        if result.rows_affected() != 1 {
+            return Err(RepositoryError::Conflict {
+                expected: expected_version,
+                actual: None,
+            });
+        }
+        refresh_publication_state(&mut transaction, now, was_visible).await?;
+        let trashed = load_content_in(&mut transaction, id)
+            .await?
+            .ok_or(RepositoryError::NotFound)?;
+        transaction.commit().await.map_err(storage)?;
+        tracing::info!(event = "content.trashed", content_id = %id, was_visible);
+        Ok(trashed)
+    }
+
+    async fn restore_from_trash(
+        &self,
+        id: ContentId,
+        now: DateTime<Utc>,
+    ) -> Result<Content, RepositoryError> {
+        let mut transaction = self.pool.begin().await.map_err(storage)?;
+        let current = load_content_in(&mut transaction, id)
+            .await?
+            .ok_or(RepositoryError::NotFound)?;
+        if !current.is_trashed() {
+            transaction.commit().await.map_err(storage)?;
+            return Ok(current);
+        }
+        sqlx::query(
+            "UPDATE contents SET deleted_at = NULL, updated_at = ?, version = version + 1
+             WHERE id = ?",
+        )
+        .bind(now)
+        .bind(id.as_i64())
+        .execute(&mut *transaction)
+        .await
+        .map_err(storage)?;
+        let visible_again = current.publication.is_visible_at(now);
+        refresh_publication_state(&mut transaction, now, visible_again).await?;
+        let restored = load_content_in(&mut transaction, id)
+            .await?
+            .ok_or(RepositoryError::NotFound)?;
+        transaction.commit().await.map_err(storage)?;
+        tracing::info!(event = "content.restored", content_id = %id, visible_again);
+        Ok(restored)
+    }
+
+    async fn delete_permanently(&self, id: ContentId) -> Result<(), RepositoryError> {
+        let mut transaction = self.pool.begin().await.map_err(storage)?;
+        let result = sqlx::query("DELETE FROM contents WHERE id = ? AND deleted_at IS NOT NULL")
+            .bind(id.as_i64())
+            .execute(&mut *transaction)
+            .await
+            .map_err(storage)?;
+        if result.rows_affected() != 1 {
+            return Err(RepositoryError::NotFound);
+        }
+        // The FTS table has no foreign key; everything else cascades.
+        sqlx::query("DELETE FROM search_index WHERE rowid = ?")
+            .bind(id.as_i64())
+            .execute(&mut *transaction)
+            .await
+            .map_err(storage)?;
+        transaction.commit().await.map_err(storage)?;
+        tracing::info!(event = "content.deleted_permanently", content_id = %id);
+        Ok(())
+    }
+}
+
+/// What an update needs to know about the row it is about to replace.
+struct UpdateTarget {
+    old_slug: String,
+    created_at: DateTime<Utc>,
+    was_visible: bool,
+}
+
+/// Reads the current row and applies the guards every edit shares: the piece
+/// must exist, must not sit in the trash, and must still be at the version
+/// the editor last saw.
+async fn load_update_target(
+    transaction: &mut Transaction<'_, Sqlite>,
+    id: ContentId,
+    expected_version: i64,
+    now: DateTime<Utc>,
+) -> Result<UpdateTarget, RepositoryError> {
+    let current = sqlx::query(
+        "SELECT slug, version, created_at, status, publish_at, deleted_at
+         FROM contents WHERE id = ?",
+    )
+    .bind(id.as_i64())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(storage)?
+    .ok_or(RepositoryError::NotFound)?;
+    let deleted_at: Option<DateTime<Utc>> = current.try_get("deleted_at").map_err(storage)?;
+    if deleted_at.is_some() {
+        return Err(RepositoryError::Validation(
+            "content is in the trash; restore it before editing".into(),
+        ));
+    }
+    let actual_version: i64 = current.try_get("version").map_err(storage)?;
+    if actual_version != expected_version {
+        return Err(RepositoryError::Conflict {
+            expected: expected_version,
+            actual: Some(actual_version),
+        });
+    }
+    let current_status: String = current.try_get("status").map_err(storage)?;
+    let current_publish_at: Option<DateTime<Utc>> =
+        current.try_get("publish_at").map_err(storage)?;
+    Ok(UpdateTarget {
+        old_slug: current.try_get("slug").map_err(storage)?,
+        created_at: current.try_get("created_at").map_err(storage)?,
+        was_visible: current_status == "public"
+            && current_publish_at.is_some_and(|publish_at| publish_at <= now),
+    })
+}
+
+/// One piece with its tags, read inside the caller's transaction.
+async fn load_content_in(
+    transaction: &mut Transaction<'_, Sqlite>,
+    id: ContentId,
+) -> Result<Option<Content>, RepositoryError> {
+    let row = sqlx::query_as::<_, ContentRow>("SELECT * FROM contents WHERE id = ?")
+        .bind(id.as_i64())
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(storage)?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let tags = snapshot_tags(transaction, id).await?;
+    row.into_content(tags).map(Some)
 }
 
 /// Rewrites the search index row for one content, inside the same transaction
@@ -962,7 +1138,7 @@ fn build_search_sql(terms: &SearchTerms) -> AssertSqlSafe<String> {
     let mut sql = String::from(
         "SELECT c.slug, search_index.title, search_index.body, c.kind, c.publish_at
          FROM search_index JOIN contents c ON c.id = search_index.rowid
-         WHERE c.status = 'public' AND c.publish_at <= ?",
+         WHERE c.status = 'public' AND c.publish_at <= ? AND c.deleted_at IS NULL",
     );
     if !terms.fts.is_empty() {
         sql.push_str(" AND search_index MATCH ?");
@@ -1133,7 +1309,8 @@ impl SqliteRepository {
     ) -> Result<bool, RepositoryError> {
         let visible: i64 = sqlx::query_scalar(
             "SELECT EXISTS (
-                SELECT 1 FROM contents WHERE id = ? AND status = 'public' AND publish_at <= ?
+                SELECT 1 FROM contents
+                WHERE id = ? AND status = 'public' AND publish_at <= ? AND deleted_at IS NULL
              )",
         )
         .bind(id.as_i64())
@@ -1152,7 +1329,8 @@ impl LikeRepository for SqliteRepository {
         // invisible id inserts nothing and RETURNING stays empty.
         let count: Option<i64> = sqlx::query_scalar(
             "INSERT INTO content_likes (content_id, like_count)
-             SELECT id, 1 FROM contents WHERE id = ? AND status = 'public' AND publish_at <= ?
+             SELECT id, 1 FROM contents
+             WHERE id = ? AND status = 'public' AND publish_at <= ? AND deleted_at IS NULL
              ON CONFLICT(content_id) DO UPDATE SET like_count = like_count + 1
              RETURNING like_count",
         )
@@ -1761,8 +1939,9 @@ async fn insert_portable_contents(
         sqlx::query(
             "INSERT INTO contents (
                 id, kind, title, slug, summary, body_markdown, body_html, status, publish_at,
-                cover_media_id, seo_title, seo_description, version, created_at, updated_at
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                cover_media_id, seo_title, seo_description, version, created_at, updated_at,
+                deleted_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(content.id.as_i64())
         .bind(content.kind.as_str())
@@ -1779,6 +1958,7 @@ async fn insert_portable_contents(
         .bind(content.version)
         .bind(content.created_at)
         .bind(content.updated_at)
+        .bind(content.deleted_at)
         .execute(&mut **transaction)
         .await
         .map_err(storage)?;
@@ -2008,6 +2188,51 @@ impl MediaRepository for SqliteRepository {
         transaction.commit().await.map_err(media_storage)
     }
 
+    async fn update_media_alt_text(
+        &self,
+        id: &MediaId,
+        alt_text: &str,
+        now: DateTime<Utc>,
+    ) -> Result<bool, MediaRepositoryError> {
+        let mut transaction = self.pool.begin().await.map_err(media_storage)?;
+        let result = sqlx::query("UPDATE media SET alt_text = ? WHERE id = ?")
+            .bind(alt_text)
+            .bind(id.as_str())
+            .execute(&mut *transaction)
+            .await
+            .map_err(media_storage)?;
+        if result.rows_affected() == 0 {
+            return Ok(false);
+        }
+        refresh_publication_state(&mut transaction, now, true)
+            .await
+            .map_err(media_storage)?;
+        transaction.commit().await.map_err(media_storage)?;
+        Ok(true)
+    }
+
+    async fn mime_type_for_filename(
+        &self,
+        filename: &str,
+    ) -> Result<Option<String>, MediaRepositoryError> {
+        let original: Option<String> =
+            sqlx::query_scalar("SELECT mime_type FROM media WHERE id || '.' || extension = ?")
+                .bind(filename)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(media_storage)?;
+        if original.is_some() {
+            return Ok(original);
+        }
+        let variant: Option<String> =
+            sqlx::query_scalar("SELECT media_id FROM media_variants WHERE filename = ?")
+                .bind(filename)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(media_storage)?;
+        Ok(variant.map(|_| "image/webp".to_owned()))
+    }
+
     async fn list_media(&self) -> Result<Vec<MediaAsset>, MediaRepositoryError> {
         let ids: Vec<String> =
             sqlx::query_scalar("SELECT id FROM media ORDER BY created_at DESC, id")
@@ -2057,8 +2282,36 @@ impl ContentRow {
             version: self.version,
             created_at: self.created_at,
             updated_at: self.updated_at,
+            deleted_at: self.deleted_at,
         })
     }
+}
+
+/// Every tag assignment on the site, grouped by content id and ordered by
+/// position within each piece.
+async fn load_all_tags(
+    pool: &SqlitePool,
+) -> Result<std::collections::HashMap<i64, Vec<Tag>>, RepositoryError> {
+    let rows = sqlx::query(
+        "SELECT content_tags.content_id, tags.name, tags.slug FROM content_tags
+         JOIN tags ON tags.id = content_tags.tag_id
+         ORDER BY content_tags.content_id, content_tags.position",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(storage)?;
+    let mut grouped: std::collections::HashMap<i64, Vec<Tag>> = std::collections::HashMap::new();
+    for row in rows {
+        let content_id: i64 = row.try_get("content_id").map_err(storage)?;
+        let slug: String = row.try_get("slug").map_err(storage)?;
+        grouped.entry(content_id).or_default().push(Tag {
+            name: row.try_get("name").map_err(storage)?,
+            slug: Slug::parse(slug).map_err(|_| {
+                RepositoryError::Storage("database contains an invalid tag slug".into())
+            })?,
+        });
+    }
+    Ok(grouped)
 }
 
 async fn load_tags(pool: &SqlitePool, content_id: ContentId) -> Result<Vec<Tag>, RepositoryError> {
@@ -2136,7 +2389,7 @@ async fn snapshot_contents(
 ) -> Result<Vec<Content>, RepositoryError> {
     let rows = sqlx::query_as::<_, ContentRow>(
         "SELECT * FROM contents
-         WHERE status = 'public' AND publish_at <= ?
+         WHERE status = 'public' AND publish_at <= ? AND deleted_at IS NULL
          ORDER BY publish_at DESC, id DESC",
     )
     .bind(effective_at)
@@ -2187,6 +2440,7 @@ async fn snapshot_redirects(
          FROM redirects
          JOIN contents ON contents.id = redirects.content_id
          WHERE contents.status = 'public' AND contents.publish_at <= ?
+           AND contents.deleted_at IS NULL
          ORDER BY redirects.old_slug",
     )
     .bind(effective_at)
@@ -2286,7 +2540,7 @@ async fn refresh_publication_state(
 ) -> Result<(), RepositoryError> {
     let next_publish_at: Option<DateTime<Utc>> = sqlx::query_scalar(
         "SELECT MIN(publish_at) FROM contents
-         WHERE status = 'public' AND publish_at > ?",
+         WHERE status = 'public' AND publish_at > ? AND deleted_at IS NULL",
     )
     .bind(now)
     .fetch_one(&mut **transaction)
@@ -2428,6 +2682,7 @@ fn content_from_prepared(
         version,
         created_at,
         updated_at,
+        deleted_at: None,
     }
 }
 

@@ -8,7 +8,7 @@ use std::{sync::Arc, time::Duration};
 use axum::{
     Router,
     extract::{DefaultBodyLimit, Request, State},
-    http::{HeaderValue, StatusCode, header},
+    http::{HeaderValue, Method, StatusCode, header},
     middleware::{self, Next},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
@@ -273,11 +273,13 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/admin/", get(admin::dashboard))
         .route("/admin/login/", get(admin::login_page))
+        .route("/admin/logout/", post(admin::logout))
         .route("/admin/setup/", get(admin::setup_page))
         .route(
             "/admin/settings/recovery-codes/",
             post(admin::regenerate_recovery_codes),
         )
+        .route("/admin/settings/theme/reset/", post(admin::reset_theme))
         .route(
             "/admin/settings/passkeys/remove/",
             post(admin::remove_passkey),
@@ -287,6 +289,9 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/preview/", post(admin::preview_markdown))
         .route("/admin/content/{id}/edit/", get(admin::edit_content))
         .route("/admin/content/{id}/", post(admin::update_content))
+        .route("/admin/content/{id}/trash/", post(admin::trash_content))
+        .route("/admin/content/{id}/restore/", post(admin::restore_content))
+        .route("/admin/content/{id}/delete/", post(admin::delete_content))
         .route(
             "/admin/content/{id}/revisions/{revision_id}/",
             get(admin::revision_page),
@@ -303,6 +308,7 @@ pub fn router(state: AppState) -> Router {
             "/admin/media/",
             post(admin::upload_media).layer(DefaultBodyLimit::max(upload_envelope)),
         )
+        .route("/admin/media/{id}/", post(admin::update_media))
         .route("/admin/auth/setup/start", post(admin::setup_start))
         .route("/admin/auth/setup/finish", post(admin::setup_finish))
         .route("/admin/auth/login/start", post(admin::login_start))
@@ -328,7 +334,11 @@ pub fn router(state: AppState) -> Router {
         .layer(middleware::from_fn(observability::request_trace))
 }
 
-async fn perimeter(State(state): State<AppState>, request: Request, next: Next) -> Response {
+/// Set by the perimeter on admin page loads so a login can return the writer
+/// to the page they asked for. Always overwritten, so a client cannot supply it.
+pub(crate) const REQUESTED_PATH_HEADER: &str = "x-simple-blog-requested-path";
+
+async fn perimeter(State(state): State<AppState>, mut request: Request, next: Next) -> Response {
     let path = request.uri().path().to_owned();
     let private = path.starts_with("/admin/") && !path.starts_with("/admin/assets/");
     if path != "/healthz" && !valid_host(&state.config, request.headers()) {
@@ -337,6 +347,13 @@ async fn perimeter(State(state): State<AppState>, request: Request, next: Next) 
             state.secure_cookies(),
             private,
         );
+    }
+    request.headers_mut().remove(REQUESTED_PATH_HEADER);
+    if private
+        && request.method() == Method::GET
+        && let Ok(value) = HeaderValue::from_str(&path)
+    {
+        request.headers_mut().insert(REQUESTED_PATH_HEADER, value);
     }
     security_headers(next.run(request).await, state.secure_cookies(), private)
 }

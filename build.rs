@@ -1,7 +1,9 @@
 use std::{env, fs, path::PathBuf, process::Command};
 
 fn main() {
-    println!("cargo:rerun-if-changed=frontend/admin.ts");
+    // The whole frontend directory feeds the bundle: a helper module edited on
+    // its own must retrigger bundling just like the entry point does.
+    println!("cargo:rerun-if-changed=frontend");
     println!("cargo:rerun-if-changed=bun.lock");
     println!("cargo:rerun-if-changed=static/admin.js");
     let output = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR")).join("admin.js");

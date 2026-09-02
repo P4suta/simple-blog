@@ -57,6 +57,8 @@ pub enum ConfigError {
     PublicUrl(String),
     #[error("invalid max upload size")]
     MaxUpload,
+    #[error("invalid trusted proxy address: {0:?}")]
+    TrustedProxy(String),
     #[error("could not read configuration at {path}: {source}")]
     Read {
         path: PathBuf,
@@ -101,19 +103,15 @@ impl Config {
             .or(file.public_url)
             .unwrap_or_else(|| DEFAULT_PUBLIC_URL.to_owned());
         let public_url = parse_origin(&public_url)?;
-        let trusted_proxies = sources
-            .cli
-            .trusted_proxies
-            .or_else(|| {
-                env.get("SIMPLE_BLOG_TRUSTED_PROXIES").map(|value| {
-                    value
-                        .split(',')
-                        .filter_map(|item| item.trim().parse().ok())
-                        .collect()
-                })
-            })
-            .or(file.trusted_proxies)
-            .unwrap_or_default();
+        // A mistyped proxy address must fail loudly: silently dropping it
+        // would key rate limiting on the proxy itself without any warning.
+        let trusted_proxies = match sources.cli.trusted_proxies {
+            Some(list) => list,
+            None => match env.get("SIMPLE_BLOG_TRUSTED_PROXIES") {
+                Some(value) => parse_proxy_list(value)?,
+                None => file.trusted_proxies.unwrap_or_default(),
+            },
+        };
         let max_upload_bytes = sources
             .cli
             .max_upload_bytes
@@ -210,6 +208,18 @@ impl Config {
         }
         Ok(())
     }
+}
+
+fn parse_proxy_list(value: &str) -> Result<Vec<IpAddr>, ConfigError> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(|item| {
+            item.parse()
+                .map_err(|_| ConfigError::TrustedProxy(item.to_owned()))
+        })
+        .collect()
 }
 
 fn read_optional_file(path: &Path) -> Result<Option<ConfigFile>, ConfigError> {

@@ -456,3 +456,63 @@ async fn every_operational_database_open_applies_pending_migrations_after_a_safe
         .collect::<Vec<_>>();
     assert_eq!(safety_backups.len(), 1);
 }
+#[test]
+fn serve_prints_the_setup_link_while_no_owner_exists_and_the_admin_address() {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+
+    let temp = tempfile::tempdir().unwrap();
+    let data_dir = temp.path().join("fresh");
+    let mut child = binary()
+        .args([
+            "--data-dir",
+            data_dir.to_str().unwrap(),
+            "--bind",
+            "127.0.0.1:0",
+            "serve",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if sender.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let mut lines = Vec::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while std::time::Instant::now() < deadline {
+        match receiver.recv_timeout(std::time::Duration::from_secs(1)) {
+            Ok(line) => {
+                lines.push(line);
+                if lines.iter().any(|line| line.starts_with("Admin: ")) {
+                    break;
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+
+    let output = lines.join("\n");
+    assert!(
+        output.contains("No owner passkey is registered yet"),
+        "{output}"
+    );
+    assert!(
+        output.contains("http://localhost:8080/admin/setup/?token="),
+        "{output}"
+    );
+    assert!(
+        output.contains("Admin: http://localhost:8080/admin/"),
+        "{output}"
+    );
+    assert!(output.contains("Site:  http://localhost:8080/"), "{output}");
+}

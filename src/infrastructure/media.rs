@@ -108,6 +108,21 @@ impl LocalMediaService {
         Ok(removed)
     }
 
+    /// Replaces an asset's alternative text after the same validation the
+    /// upload applied; `false` when no such asset exists.
+    pub async fn update_alt_text(
+        &self,
+        id: &MediaId,
+        alt_text: &str,
+        now: DateTime<Utc>,
+    ) -> Result<bool, MediaError> {
+        let alt_text = clean_text(alt_text, 500, "alt text")?;
+        self.repository
+            .update_media_alt_text(id, &alt_text, now)
+            .await
+            .map_err(MediaError::from)
+    }
+
     pub async fn store(
         &self,
         original_name: &str,

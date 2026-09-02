@@ -24,6 +24,16 @@ impl Locale {
             Self::Zh => "zh",
         }
     }
+
+    /// The Open Graph locale tag that social previews expect.
+    #[must_use]
+    pub const fn og_locale(self) -> &'static str {
+        match self {
+            Self::En => "en_US",
+            Self::Ja => "ja_JP",
+            Self::Zh => "zh_CN",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
@@ -139,7 +149,25 @@ pub struct PageMeta {
     pub description: String,
     pub canonical_url: String,
     pub og_type: String,
+    pub og_locale: String,
     pub image_url: Option<String>,
+    /// RFC 3339 instants for `article:*` metadata; posts only.
+    pub published_time: Option<String>,
+    pub modified_time: Option<String>,
+    pub article_tags: Vec<String>,
+    /// Pagination neighbours for `<link rel="prev|next">`.
+    pub prev_url: Option<String>,
+    pub next_url: Option<String>,
+    /// A feed specific to this page (a tag), on top of the site feed.
+    pub alternate_feed: Option<AlternateFeed>,
+    /// Serialized JSON-LD with `<`, `>` and `&` escaped, safe to inline.
+    pub json_ld: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct AlternateFeed {
+    pub href: String,
+    pub title: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]

@@ -19,3 +19,4 @@ Each ADR uses: `Status`, `Context`, `Decision`, and `Consequences`.
 | [0011](0011-portable-core-and-host-adapters.md) | Portable Core and conforming host adapters | Accepted |
 | [0012](0012-domain-first-official-hosting.md) | Domain-first official hosting | Accepted |
 | [0013](0013-dependency-free-static-highlighting.md) | Dependency-free deterministic static highlighting | Accepted |
+| [0014](0014-recoverable-trash.md) | Recoverable trash is durable content state | Accepted |

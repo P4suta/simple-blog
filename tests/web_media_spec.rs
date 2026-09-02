@@ -65,6 +65,8 @@ struct CoverHarness {
     _temp: tempfile::TempDir,
     state: AppState,
     asset: MediaAsset,
+    repository: Arc<SqliteRepository>,
+    config: Config,
 }
 
 async fn cover_harness() -> CoverHarness {
@@ -123,8 +125,10 @@ async fn cover_harness() -> CoverHarness {
     .unwrap();
     CoverHarness {
         _temp: temp,
-        state: AppState::new(config, repository).unwrap(),
+        state: AppState::new(config.clone(), repository.clone()).unwrap(),
         asset,
+        repository,
+        config,
     }
 }
 
@@ -432,4 +436,216 @@ async fn media_loses_its_last_reference_and_is_deleted_immediately() {
             .join(&logo_asset.original_filename)
             .exists()
     );
+}
+
+#[tokio::test]
+async fn variant_filenames_are_served_as_webp_and_unknown_names_are_not_served() {
+    let harness = cover_harness().await;
+    let variant = harness.asset.variants.first().expect("responsive variants");
+
+    let served = get(&harness.state, &format!("/media/{}", variant.filename)).await;
+    assert_eq!(served.status(), StatusCode::OK);
+    assert_eq!(served.headers()[header::CONTENT_TYPE], "image/webp");
+    assert_eq!(
+        served.headers()[header::CACHE_CONTROL],
+        "public, max-age=31536000, immutable"
+    );
+
+    let original = get(
+        &harness.state,
+        &format!("/media/{}", harness.asset.original_filename),
+    )
+    .await;
+    assert_eq!(original.status(), StatusCode::OK);
+    assert_eq!(
+        original.headers()[header::CONTENT_TYPE],
+        harness.asset.mime_type.as_str()
+    );
+
+    // The same digest under a different extension is not a registered file.
+    let renamed = get(&harness.state, &format!("/media/{}.gif", harness.asset.id)).await;
+    assert_eq!(renamed.status(), StatusCode::NOT_FOUND);
+    let unknown = get(&harness.state, &format!("/media/{}.png", "0".repeat(64))).await;
+    assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+}
+#[tokio::test]
+async fn trashed_content_keeps_its_media_until_it_is_deleted_permanently() {
+    use simple_blog::application::ports::ContentRepository;
+
+    let harness = cover_harness().await;
+    let repository = harness.repository.clone();
+    let content = repository
+        .list_all_content()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|content| content.slug.as_str() == "with-cover")
+        .expect("cover content");
+    let media_path = harness
+        .config
+        .media_dir()
+        .join(&harness.asset.original_filename);
+
+    // Only the piece references the asset from now on.
+    let site = SiteService::new(repository.clone());
+    let mut settings = repository.site_settings().await.unwrap();
+    settings.logo_media_id = None;
+    settings.favicon_media_id = None;
+    site.update(settings, Vec::new(), Utc::now()).await.unwrap();
+
+    let auth = AuthService::new(repository.clone(), Arc::new(SystemEntropy));
+    let session = auth.create_session(Utc::now()).await.unwrap();
+    let cookie = format!(
+        "sb_session={}; sb_csrf={}",
+        session.session.expose(),
+        session.csrf.expose()
+    );
+    let post = |path: String, body: String| {
+        let state = harness.state.clone();
+        let cookie = cookie.clone();
+        async move {
+            router(state)
+                .oneshot(
+                    Request::builder()
+                        .method(Method::POST)
+                        .uri(path)
+                        .header(header::HOST, "localhost:8080")
+                        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                        .header(header::COOKIE, cookie)
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+        }
+    };
+
+    let trashed = post(
+        format!("/admin/content/{}/trash/", content.id),
+        format!("csrf={}&version={}", session.csrf.expose(), content.version),
+    )
+    .await;
+    assert_eq!(trashed.status(), StatusCode::SEE_OTHER);
+    assert!(
+        repository
+            .find_media(&harness.asset.id)
+            .await
+            .unwrap()
+            .is_some(),
+        "a trashed piece still references its cover"
+    );
+    assert!(media_path.exists());
+
+    let deleted = post(
+        format!("/admin/content/{}/delete/", content.id),
+        format!("csrf={}", session.csrf.expose()),
+    )
+    .await;
+    assert_eq!(deleted.status(), StatusCode::SEE_OTHER);
+    assert!(
+        repository
+            .find_media(&harness.asset.id)
+            .await
+            .unwrap()
+            .is_none(),
+        "permanent deletion releases the cover"
+    );
+    assert!(!media_path.exists());
+}
+#[tokio::test]
+async fn cover_alt_text_can_be_edited_and_reaches_the_released_page() {
+    use simple_blog::application::ports::PublicSnapshotRepository;
+
+    let harness = cover_harness().await;
+    let auth = AuthService::new(harness.repository.clone(), Arc::new(SystemEntropy));
+    let session = auth.create_session(Utc::now()).await.unwrap();
+    let cookie = format!(
+        "sb_session={}; sb_csrf={}",
+        session.session.expose(),
+        session.csrf.expose()
+    );
+    let post = |path: String, body: String, accept: &'static str| {
+        let state = harness.state.clone();
+        let cookie = cookie.clone();
+        async move {
+            router(state)
+                .oneshot(
+                    Request::builder()
+                        .method(Method::POST)
+                        .uri(path)
+                        .header(header::HOST, "localhost:8080")
+                        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                        .header(header::ACCEPT, accept)
+                        .header(header::COOKIE, cookie)
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+        }
+    };
+    let path = format!("/admin/media/{}/", harness.asset.id);
+    let revision_before = harness
+        .repository
+        .publication_state()
+        .await
+        .unwrap()
+        .revision;
+
+    let forbidden = post(path.clone(), "csrf=wrong&alt_text=x".into(), "*/*").await;
+    assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+
+    let unknown = post(
+        format!("/admin/media/{}/", "f".repeat(64)),
+        format!("csrf={}&alt_text=Sea", session.csrf.expose()),
+        "*/*",
+    )
+    .await;
+    assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+
+    let too_long = post(
+        path.clone(),
+        format!(
+            "csrf={}&alt_text={}",
+            session.csrf.expose(),
+            "a".repeat(501)
+        ),
+        "*/*",
+    )
+    .await;
+    assert_eq!(too_long.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let saved = post(
+        path.clone(),
+        format!("csrf={}&alt_text=Calm+blue+sea", session.csrf.expose()),
+        "application/json",
+    )
+    .await;
+    assert_eq!(saved.status(), StatusCode::OK);
+    let json: serde_json::Value = serde_json::from_slice(&response_body(saved).await).unwrap();
+    assert_eq!(json["alt_text"], "Calm blue sea");
+    assert_eq!(
+        harness
+            .repository
+            .publication_state()
+            .await
+            .unwrap()
+            .revision,
+        revision_before + 1,
+        "alternative text is part of the released pages"
+    );
+
+    let page = get(&harness.state, "/with-cover/").await;
+    assert_eq!(page.status(), StatusCode::OK);
+    let html = String::from_utf8(response_body(page).await).unwrap();
+    assert!(html.contains("alt=\"Calm blue sea\""), "{html}");
+
+    let redirected = post(
+        path,
+        format!("csrf={}&alt_text=Still+sea", session.csrf.expose()),
+        "text/html",
+    )
+    .await;
+    assert_eq!(redirected.status(), StatusCode::SEE_OTHER);
+    assert_eq!(redirected.headers()[header::LOCATION], "/admin/");
 }

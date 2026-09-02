@@ -26,7 +26,9 @@ cargo run --locked -- init
 cargo run --locked -- serve
 ```
 
-`init` prints a short-lived setup URL for registering the first owner passkey. Data is stored in `./data` by default.
+`init` prints a short-lived setup URL for registering the first owner passkey; `serve` prints the same link on start while no owner is registered, and always prints the site and admin addresses. Data is stored in `./data` by default.
+
+`rust-toolchain.toml` pins current stable for day-to-day work; CI separately proves the declared MSRV in `Cargo.toml`.
 
 Build or materialize the currently visible static release without introducing Git into the writing workflow:
 

@@ -25,8 +25,14 @@ impl MigrationCoordinator {
         config: &Config,
         now: DateTime<Utc>,
     ) -> Result<ManagedDatabase, OperationError> {
-        std::fs::create_dir_all(&config.data_dir)?;
-        std::fs::create_dir_all(config.backup_dir())?;
+        let data_dir = config.data_dir.clone();
+        let backup_dir = config.backup_dir();
+        tokio::task::spawn_blocking(move || {
+            std::fs::create_dir_all(&data_dir)?;
+            std::fs::create_dir_all(backup_dir)
+        })
+        .await
+        .map_err(|error| OperationError::InvalidData(error.to_string()))??;
 
         let safety_backup = if SqliteMaintenance::safety_backup_required(&config.database_path())
             .await
@@ -82,7 +88,16 @@ async fn create_safety_backup(
         .await
         .map_err(database)?;
 
-    let result = archive_safety_files(config, &snapshot, &output, now);
+    // Walking and archiving the media tree is blocking work; keep it off
+    // the async runtime so the scheduler stays responsive during startup.
+    let result = {
+        let config = config.clone();
+        let snapshot = snapshot.clone();
+        let output = output.clone();
+        tokio::task::spawn_blocking(move || archive_safety_files(&config, &snapshot, &output, now))
+            .await
+            .map_err(|error| OperationError::InvalidData(error.to_string()))?
+    };
     let cleanup = std::fs::remove_file(&snapshot);
     if let Err(error) = result {
         if let Err(cleanup_error) = cleanup {

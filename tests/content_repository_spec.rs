@@ -394,3 +394,326 @@ async fn active_and_historical_slugs_are_globally_unique() {
         Err(RepositoryError::SlugTaken(_))
     ));
 }
+
+#[tokio::test]
+async fn listing_many_pieces_keeps_every_tag_in_position_order() {
+    let (_temp, repository, service) = harness().await;
+    let now = Utc.with_ymd_and_hms(2026, 9, 3, 9, 0, 0).unwrap();
+    for index in 0..30 {
+        service
+            .create(
+                ContentDraft {
+                    tags: vec![
+                        format!("Tag {index}"),
+                        "Rust".into(),
+                        "Writing Tools".into(),
+                    ],
+                    ..post(
+                        &format!("post-{index}"),
+                        Publication::Public {
+                            publish_at: now - Duration::minutes(index),
+                        },
+                    )
+                },
+                SaveIntent::Explicit,
+                now,
+            )
+            .await
+            .expect("create post");
+    }
+
+    let everything = repository.list_all_content().await.expect("list all");
+    let public = repository.list_all_public(now).await.expect("list public");
+    let by_tag = repository
+        .list_public_by_tag(&Slug::parse("rust").unwrap(), now)
+        .await
+        .expect("list by tag");
+    let recent = repository
+        .list_public_posts(now, 10, 5)
+        .await
+        .expect("list posts");
+
+    assert_eq!(everything.len(), 30);
+    assert_eq!(public.len(), 30);
+    assert_eq!(by_tag.len(), 30);
+    assert_eq!(recent.len(), 10);
+    assert_eq!(recent[0].slug.as_str(), "post-5");
+    for content in everything
+        .iter()
+        .chain(&public)
+        .chain(&by_tag)
+        .chain(&recent)
+    {
+        let names: Vec<&str> = content.tags.iter().map(|tag| tag.name.as_str()).collect();
+        assert!(names[0].starts_with("Tag "), "{names:?}");
+        assert_eq!(&names[1..], ["Rust", "Writing Tools"], "{names:?}");
+        assert_eq!(content.tags[1].slug.as_str(), "rust");
+    }
+}
+#[tokio::test]
+async fn trashed_content_leaves_every_public_query_but_keeps_its_slug() {
+    use simple_blog::application::ports::{LikeRepository, SearchRepository};
+    use simple_blog::domain::search::parse_query;
+
+    let (_temp, repository, service) = harness().await;
+    let now = Utc.with_ymd_and_hms(2026, 9, 3, 10, 0, 0).unwrap();
+    let created = service
+        .create(
+            post("first-post", Publication::Public { publish_at: now }),
+            SaveIntent::Explicit,
+            now,
+        )
+        .await
+        .expect("create post");
+    let sibling = service
+        .create(
+            post(
+                "second-post",
+                Publication::Public {
+                    publish_at: now + Duration::minutes(1),
+                },
+            ),
+            SaveIntent::Explicit,
+            now,
+        )
+        .await
+        .expect("create sibling");
+
+    let trashed = repository
+        .move_to_trash(created.id, created.version, now + Duration::minutes(2))
+        .await
+        .expect("trash");
+    assert_eq!(trashed.deleted_at, Some(now + Duration::minutes(2)));
+    assert_eq!(trashed.version, created.version + 1);
+    assert!(trashed.is_trashed());
+
+    let later = now + Duration::minutes(3);
+    let slug = Slug::parse("first-post").unwrap();
+    assert!(
+        repository
+            .find_public_by_slug(&slug, later)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        repository
+            .list_public_posts(later, 10, 0)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(repository.list_all_public(later).await.unwrap().len(), 1);
+    assert_eq!(
+        repository
+            .list_public_by_tag(&Slug::parse("rust").unwrap(), later)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(
+        repository
+            .search(&parse_query("Heading"), later, 10)
+            .await
+            .unwrap()
+            .iter()
+            .all(|hit| hit.slug != slug)
+    );
+    assert_eq!(
+        repository.add_like(created.id, later).await,
+        Err(RepositoryError::NotFound)
+    );
+    let (older, newer) = repository
+        .neighbor_posts(sibling.id, now + Duration::minutes(1), later)
+        .await
+        .unwrap();
+    assert!(
+        older.is_none(),
+        "a trashed post must not appear as a neighbour"
+    );
+    assert!(newer.is_none());
+
+    // The slug stays reserved for the trashed piece.
+    let reuse = service
+        .create(
+            post("first-post", Publication::Draft),
+            SaveIntent::Explicit,
+            later,
+        )
+        .await;
+    assert!(matches!(reuse, Err(RepositoryError::SlugTaken(_))));
+
+    let everything = repository.list_all_content().await.unwrap();
+    assert_eq!(everything.len(), 2);
+    assert!(
+        everything
+            .iter()
+            .any(simple_blog::domain::content::Content::is_trashed)
+    );
+}
+
+#[tokio::test]
+async fn trash_requires_the_current_version_and_refuses_edits_until_restored() {
+    let (_temp, repository, service) = harness().await;
+    let now = Utc.with_ymd_and_hms(2026, 9, 3, 10, 0, 0).unwrap();
+    let created = service
+        .create(
+            post("guarded", Publication::Draft),
+            SaveIntent::Explicit,
+            now,
+        )
+        .await
+        .expect("create");
+
+    let stale = repository
+        .move_to_trash(created.id, created.version + 7, now)
+        .await;
+    assert!(matches!(stale, Err(RepositoryError::Conflict { .. })));
+
+    let trashed = repository
+        .move_to_trash(created.id, created.version, now)
+        .await
+        .expect("trash");
+    // Trashing twice is a harmless no-op.
+    let again = repository
+        .move_to_trash(created.id, trashed.version, now)
+        .await
+        .expect("idempotent trash");
+    assert_eq!(again.version, trashed.version);
+
+    let edit = service
+        .update(
+            created.id,
+            trashed.version,
+            created.to_draft(),
+            SaveIntent::Explicit,
+            now,
+        )
+        .await;
+    match edit {
+        Err(RepositoryError::Validation(message)) => assert!(message.contains("trash")),
+        other => panic!("trashed content must refuse edits, got {other:?}"),
+    }
+
+    let restored = repository
+        .restore_from_trash(created.id, now + Duration::minutes(1))
+        .await
+        .expect("restore");
+    assert_eq!(restored.deleted_at, None);
+    assert_eq!(restored.version, trashed.version + 1);
+    let restored_again = repository
+        .restore_from_trash(created.id, now + Duration::minutes(2))
+        .await
+        .expect("restore is idempotent");
+    assert_eq!(restored_again.version, restored.version);
+
+    let edited = service
+        .update(
+            created.id,
+            restored.version,
+            created.to_draft(),
+            SaveIntent::Explicit,
+            now + Duration::minutes(3),
+        )
+        .await
+        .expect("editing works again after restore");
+    assert_eq!(edited.version, restored.version + 1);
+}
+
+#[tokio::test]
+async fn permanent_delete_only_applies_to_trashed_content_and_cascades() {
+    let (_temp, repository, service) = harness().await;
+    let now = Utc.with_ymd_and_hms(2026, 9, 3, 10, 0, 0).unwrap();
+    let created = service
+        .create(
+            post("old-name", Publication::Public { publish_at: now }),
+            SaveIntent::Explicit,
+            now,
+        )
+        .await
+        .expect("create");
+
+    assert_eq!(
+        repository.delete_permanently(created.id).await,
+        Err(RepositoryError::NotFound),
+        "live content must never be hard-deleted"
+    );
+
+    let mut renamed = created.to_draft();
+    renamed.slug = Slug::parse("new-name").unwrap();
+    let renamed = service
+        .update(
+            created.id,
+            created.version,
+            renamed,
+            SaveIntent::Explicit,
+            now,
+        )
+        .await
+        .expect("rename");
+    assert_eq!(
+        repository
+            .resolve_redirect(&Slug::parse("old-name").unwrap())
+            .await
+            .unwrap()
+            .map(|slug| slug.to_string()),
+        Some("new-name".into())
+    );
+
+    repository
+        .move_to_trash(created.id, renamed.version, now)
+        .await
+        .expect("trash");
+    repository
+        .delete_permanently(created.id)
+        .await
+        .expect("permanent delete");
+
+    assert!(repository.find_by_id(created.id).await.unwrap().is_none());
+    assert!(
+        repository
+            .list_revisions(created.id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        repository
+            .resolve_redirect(&Slug::parse("old-name").unwrap())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let indexed: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM search_index WHERE rowid = ?")
+        .bind(created.id.as_i64())
+        .fetch_one(repository.pool())
+        .await
+        .unwrap();
+    assert_eq!(indexed, 0);
+    let tagged: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM content_tags WHERE content_id = ?")
+        .bind(created.id.as_i64())
+        .fetch_one(repository.pool())
+        .await
+        .unwrap();
+    assert_eq!(tagged, 0);
+
+    // Both slugs are free again.
+    service
+        .create(
+            post("old-name", Publication::Draft),
+            SaveIntent::Explicit,
+            now,
+        )
+        .await
+        .expect("old slug is reusable");
+    service
+        .create(
+            post("new-name", Publication::Draft),
+            SaveIntent::Explicit,
+            now,
+        )
+        .await
+        .expect("new slug is reusable");
+}

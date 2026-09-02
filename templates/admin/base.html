@@ -4,13 +4,13 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="csrf-token" content="{{ csrf }}">
-  <title>{{ title }} — Simple Blog Admin</title>
+  <title>{% block title %}{{ t["admin.brand"] }}{% endblock %} — {{ t["admin.brand"] }}</title>
   <link rel="stylesheet" href="/admin/assets/admin.css">
   <script src="/admin/assets/admin.js" defer></script>
 </head>
 <body class="admin-body">
   <a class="skip-link" href="#admin-main">{{ t["admin.skip"] }}</a>
-  {% block header %}<header class="admin-header"><a class="admin-brand" href="/admin/">Simple Blog</a></header>{% endblock %}
+  {% block header %}<header class="admin-header"><a class="admin-brand" href="/admin/">Simple Blog</a><form class="admin-logout" method="post" action="/admin/logout/"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">{{ t["admin.logout"] }}</button></form></header>{% endblock %}
   <main id="admin-main" class="admin-main">{% block content %}{% endblock %}</main>
 </body>
 </html>

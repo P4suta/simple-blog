@@ -10,6 +10,7 @@ const RESERVED_SLUGS: &[&str] = &[
     "feed.xml",
     "healthz",
     "media",
+    "page",
     "robots.txt",
     "search",
     "sitemap.xml",
@@ -169,6 +170,12 @@ impl Publication {
             Self::Public { publish_at } => Some(*publish_at),
         }
     }
+
+    /// Public, but not yet visible: the entry is waiting for its boundary.
+    #[must_use]
+    pub fn is_scheduled_at(&self, now: DateTime<Utc>) -> bool {
+        matches!(self, Self::Public { publish_at } if *publish_at > now)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -263,9 +270,19 @@ pub struct Content {
     pub version: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Set while the piece sits in the trash (ADR 0014). Omitted from the
+    /// serialized form when empty, so revision snapshots and portable
+    /// archives without trashed content stay byte-identical to older ones.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<DateTime<Utc>>,
 }
 
 impl Content {
+    #[must_use]
+    pub const fn is_trashed(&self) -> bool {
+        self.deleted_at.is_some()
+    }
+
     #[must_use]
     pub fn to_draft(&self) -> ContentDraft {
         ContentDraft {

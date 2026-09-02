@@ -54,6 +54,18 @@ impl Translations {
             .cloned()
             .unwrap_or_else(|| key.to_owned())
     }
+
+    /// Looks up one string and fills its `{name}` placeholders. Substitution
+    /// happens here rather than in templates so every translated sentence
+    /// stays a plain catalog entry that the parity test can see.
+    #[must_use]
+    pub fn format(&self, locale: Locale, key: &str, arguments: &[(&str, &str)]) -> String {
+        arguments
+            .iter()
+            .fold(self.text(locale, key), |text, (name, value)| {
+                text.replace(&format!("{{{name}}}"), value)
+            })
+    }
 }
 
 fn parse(file: &'static str, source: &str) -> Result<HashMap<String, String>, TranslationError> {
@@ -96,6 +108,24 @@ mod tests {
 
         assert_eq!(merged.get("only_base").map(String::as_str), Some("Base"));
         assert_eq!(merged.get("shared").map(String::as_str), Some("日本語"));
+    }
+
+    #[test]
+    fn format_substitutes_named_placeholders_and_keeps_unknown_keys_visible() {
+        let translations = Translations::embedded().unwrap();
+
+        assert_eq!(
+            translations.format(Locale::Ja, "editor.saved_at", &[("time", "12:34")]),
+            "12:34 に保存"
+        );
+        assert_eq!(
+            translations.format(Locale::En, "editor.saved_at", &[("time", "12:34")]),
+            "Saved 12:34"
+        );
+        assert_eq!(
+            translations.format(Locale::En, "no.such.key", &[("time", "x")]),
+            "no.such.key"
+        );
     }
 
     #[test]

@@ -1,2 +1,2 @@
 {% extends "public/base.html" %}
-{% block content %}<section class="not-found"><p class="eyebrow">404</p><h1>Page not found</h1><p>The address may have changed, or the page may still be a draft.</p><a class="button" href="/">Return home</a></section>{% endblock %}
+{% block content %}<section class="not-found"><p class="eyebrow">404</p><h1>{{ t["public.not_found_title"] }}</h1><p>{{ t["public.not_found_body"] }}</p><a class="button" href="/">{{ t["public.not_found_home"] }}</a></section>{% endblock %}

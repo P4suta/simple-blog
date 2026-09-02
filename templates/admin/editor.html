@@ -1,13 +1,37 @@
 {% extends "admin/base.html" %}
+{% block title %}{% if content_id %}{{ title }}{% else %}{{ t["admin.title.new"] }}{% endif %}{% endblock %}
 {% block header %}{% endblock %}
 {% block content %}
+{% if trashed %}
+<div class="trash-banner" role="status">
+  <p>{{ t["editor.trashed_note"] }}</p>
+  <form method="post" action="/admin/content/{{ content_id }}/restore/"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="primary-button">{{ t["editor.restore"] }}</button></form>
+  <details class="danger-zone"><summary>{{ t["editor.delete_permanently"] }}</summary><form method="post" action="/admin/content/{{ content_id }}/delete/"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="danger-button">{{ t["editor.delete_confirm"] }}</button></form></details>
+</div>
+{% endif %}
 <form class="editor" method="post" action="{{ action }}" data-editor
+      data-trashed="{% if trashed %}true{% else %}false{% endif %}"
       data-msg-saved="{{ t["editor.saved"] }}"
+      data-msg-saved-at="{{ t["editor.saved_at"] }}"
       data-msg-saving="{{ t["editor.saving"] }}"
       data-msg-unsaved="{{ t["editor.unsaved"] }}"
       data-msg-need-title="{{ t["editor.need_title"] }}"
       data-msg-status-draft="{{ t["status.draft"] }}"
-      data-msg-status-public="{{ t["status.public"] }}">
+      data-msg-status-scheduled="{{ t["status.scheduled"] }}"
+      data-msg-status-public="{{ t["status.public"] }}"
+      data-msg-publish="{{ t["editor.publish"] }}"
+      data-msg-schedule="{{ t["editor.schedule"] }}"
+      data-msg-publish-at-hint="{{ t["editor.publish_at_hint"] }}"
+      data-msg-count="{{ t["editor.count"] }}"
+      data-msg-shortcuts="{{ t["editor.shortcuts"] }}"
+      data-msg-slug-invalid="{{ t["editor.slug_invalid"] }}"
+      data-msg-upload-failed="{{ t["editor.upload_failed"] }}"
+      data-msg-error-session="{{ t["editor.error_session"] }}"
+      data-msg-error-invalid="{{ t["editor.error_invalid"] }}"
+      data-msg-error-too-large="{{ t["editor.error_too_large"] }}"
+      data-msg-error-rate-limited="{{ t["editor.error_rate_limited"] }}"
+      data-msg-error-server="{{ t["editor.error_server"] }}"
+      data-msg-error-offline="{{ t["editor.error_offline"] }}">
   <input type="hidden" name="csrf" value="{{ csrf }}">
   {% if version %}<input type="hidden" name="version" value="{{ version }}">{% endif %}
   {# Implicit submission (Enter in a field) triggers the FIRST submit button; this
@@ -16,25 +40,33 @@
   <header class="editor-bar">
     <a class="editor-back" href="/admin/">{{ t["editor.back"] }}</a>
     <span class="editor-save-state" data-save-state aria-live="polite">{{ t["editor.saved"] }}</span>
+    <span class="editor-count" data-count hidden></span>
     <span class="editor-bar-spacer"></span>
+    <small class="editor-shortcuts" data-shortcuts hidden></small>
     <span class="editor-status" data-status-label>{{ t["status." ~ content.status] }}</span>
-    <button type="submit" class="editor-bar-button" name="status" value="public" data-publish{% if content.status == 'public' %} hidden{% endif %}>{{ t["editor.publish"] }}</button>
-    <button type="submit" class="editor-bar-button" name="status" value="draft" data-unpublish{% if content.status != 'public' %} hidden{% endif %}>{{ t["editor.unpublish"] }}</button>
+    <time class="editor-status-time" data-status-time datetime="{{ content.publish_at }}"{% if content.status != 'scheduled' %} hidden{% endif %}>{{ content.publish_at }}</time>
+    {% if not trashed %}
+    <button type="submit" class="editor-bar-button" name="status" value="public" data-publish{% if content.status == 'public' %} hidden{% endif %}>{% if content.status == 'scheduled' %}{{ t["editor.schedule"] }}{% else %}{{ t["editor.publish"] }}{% endif %}</button>
+    <details class="editor-confirm" data-unpublish{% if content.status == 'draft' %} hidden{% endif %}>
+      <summary class="editor-bar-button">{{ t["editor.unpublish"] }}</summary>
+      <div class="editor-confirm-panel"><p>{{ t["editor.unpublish_confirm"] }}</p><button type="submit" class="editor-bar-button" name="status" value="draft">{{ t["editor.unpublish_confirm_button"] }}</button></div>
+    </details>
+    {% endif %}
     <button type="button" class="editor-bar-button" data-preview-toggle aria-pressed="false">{{ t["editor.preview"] }}</button>
     <button type="button" class="editor-bar-button" data-drawer-toggle aria-expanded="false">{{ t["editor.details"] }}</button>
   </header>
   <div class="editor-document" data-media-drop="body">
-    <textarea class="editor-title" name="title" rows="1" placeholder="{{ t["editor.title_placeholder"] }}" maxlength="200" required data-title>{{ content.title }}</textarea>
-    <textarea name="body_markdown" data-markdown required>{{ content.body_markdown }}</textarea>
+    <textarea class="editor-title" name="title" rows="1" placeholder="{{ t["editor.title_placeholder"] }}" maxlength="200" required data-title{% if trashed %} readonly{% endif %}>{{ content.title }}</textarea>
+    <textarea name="body_markdown" data-markdown required{% if trashed %} readonly{% endif %}>{{ content.body_markdown }}</textarea>
     <p class="editor-drop-hint" data-media-pick><small>{{ t["editor.body_drop_hint"] }}</small></p>
   </div>
   <section class="editor-document editor-preview" data-preview hidden>
     <div class="prose" data-preview-output></div>
   </section>
-  <div class="editor-drawer-backdrop" data-drawer-backdrop hidden></div>
-  <aside class="editor-drawer" data-drawer aria-label="{{ t["editor.details"] }}" hidden>
+  <dialog class="editor-drawer" data-drawer aria-label="{{ t["editor.details"] }}">
     <label><span>{{ t["editor.kind"] }}</span><select name="kind"><option value="post"{% if content.kind == 'post' %} selected{% endif %}>Post</option><option value="page"{% if content.kind == 'page' %} selected{% endif %}>Page</option></select></label>
     <label><span>{{ t["editor.slug"] }}</span><input name="slug" value="{{ content.slug }}" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" maxlength="120" required data-slug></label>
+    <label><span>{{ t["editor.publish_at"] }}</span><input type="datetime-local" name="publish_at" value="{{ content.publish_at_input }}" data-publish-at data-publish-at-utc="{{ content.publish_at }}" data-initial="{{ content.publish_at_input }}"><small data-publish-at-hint>{{ t["editor.publish_at_hint"]|replace("{zone}", "UTC") }}</small></label>
     <label><span>{{ t["editor.summary"] }}</span><textarea name="summary" maxlength="500" rows="3">{{ content.summary }}</textarea></label>
     <label><span>{{ t["editor.tags"] }}</span><input name="tags" value="{{ content.tags }}"></label>
     <section class="cover-field" data-media-target>
@@ -43,9 +75,23 @@
       <img class="cover-thumb" data-media-thumb {% if cover_url %}src="{{ cover_url }}"{% else %}hidden{% endif %} alt="">
       <p class="drop-zone-hint" data-media-pick><small>{{ t["editor.drop_here"] }}</small></p>
       <button type="button" data-media-clear {% if not cover_url %}hidden{% endif %}>{{ t["editor.cover_remove"] }}</button>
+      <label{% if not cover_url %} hidden{% endif %}><span>{{ t["editor.cover_alt"] }}</span><input name="alt_text" value="{{ cover_alt_text }}" maxlength="500" form="cover-alt-form" data-cover-alt></label>
+      <button type="submit" form="cover-alt-form" data-cover-alt-save{% if not cover_url %} hidden{% endif %}>{{ t["editor.cover_alt_save"] }}</button>
     </section>
     <details><summary>{{ t["editor.seo"] }}</summary><label><span>{{ t["editor.seo_title"] }}</span><input name="seo_title" value="{{ content.seo_title }}" maxlength="70"></label><label><span>{{ t["editor.seo_description"] }}</span><textarea name="seo_description" maxlength="200">{{ content.seo_description }}</textarea></label></details>
     {% if revisions %}<details><summary>{{ t["editor.history"] }}</summary><ol class="revision-list">{% for revision in revisions %}<li><a href="/admin/content/{{ content_id }}/revisions/{{ revision.id }}/"><span>{{ revision.intent }}</span> <time datetime="{{ revision.created_at }}">{{ revision.created_at }}</time></a></li>{% endfor %}</ol></details>{% endif %}
-  </aside>
+    {% if content_id and not trashed %}
+    <details class="danger-zone"><summary>{{ t["editor.trash"] }}</summary><p>{{ t["editor.trash_note"] }}</p><button type="submit" class="danger-button" form="trash-form">{{ t["editor.trash_confirm"] }}</button></details>
+    {% endif %}
+  </dialog>
 </form>
+{# The cover's alternative text belongs to the media record, so it posts to
+   the media route through its own form; the input stays inside the drawer
+   thanks to the form attribute. #}
+<form id="cover-alt-form" method="post" action="/admin/media/{{ content.cover_media_id }}/" hidden data-cover-alt-form><input type="hidden" name="csrf" value="{{ csrf }}"></form>
+{% if content_id and not trashed %}
+{# A separate form: nested forms are invalid HTML, and the button above reaches
+   it through its form attribute so the confirmation still lives in the drawer. #}
+<form id="trash-form" method="post" action="/admin/content/{{ content_id }}/trash/" hidden><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="version" value="{{ version }}" data-trash-version></form>
+{% endif %}
 {% endblock %}

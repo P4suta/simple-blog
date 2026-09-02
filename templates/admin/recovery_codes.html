@@ -1,4 +1,5 @@
 {% extends "admin/base.html" %}
+{% block title %}{{ t["admin.title.recovery_codes"] }}{% endblock %}
 {% block content %}
 <div class="auth-card"><p class="kicker">{{ t["recovery.kicker"] }}</p><h1>{{ t["recovery.heading"] }}</h1><p>{{ t["recovery.note"] }}</p><pre>{% for code in recovery_codes %}{{ code }}{% if not loop.last %}
 {% endif %}{% endfor %}</pre><a class="primary-button" href="/admin/settings/">{{ t["recovery.done"] }}</a></div>

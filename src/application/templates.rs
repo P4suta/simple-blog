@@ -53,6 +53,10 @@ impl Templates {
                 include_str!("../../templates/public/archive.html"),
             ),
             (
+                "public/tags.html",
+                include_str!("../../templates/public/tags.html"),
+            ),
+            (
                 "public/not_found.html",
                 include_str!("../../templates/public/not_found.html"),
             ),
@@ -71,6 +75,10 @@ impl Templates {
             (
                 "admin/editor.html",
                 include_str!("../../templates/admin/editor.html"),
+            ),
+            (
+                "admin/error.html",
+                include_str!("../../templates/admin/error.html"),
             ),
             (
                 "admin/conflict.html",

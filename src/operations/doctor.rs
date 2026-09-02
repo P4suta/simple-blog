@@ -73,8 +73,20 @@ impl Doctor {
         check_directory("filesystem.backups", &config.backup_dir(), &mut report);
         check_directory("filesystem.releases", &config.release_dir(), &mut report);
         check_media(config, repository, &mut report).await;
+        check_content_trash(repository, &mut report).await;
         check_releases(config, &mut report).await;
         Ok(report)
+    }
+}
+
+async fn check_content_trash(repository: &SqliteRepository, report: &mut DoctorReport) {
+    let count: Result<i64, _> =
+        sqlx::query_scalar("SELECT COUNT(*) FROM contents WHERE deleted_at IS NOT NULL")
+            .fetch_one(repository.pool())
+            .await;
+    match count {
+        Ok(count) => report.ok("content.trash", format!("{count} piece(s) in the trash")),
+        Err(error) => report.fail("content.trash", error.to_string()),
     }
 }
 

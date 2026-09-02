@@ -25,3 +25,23 @@ export function postFormAsNavigation(
   // even if a future editor field uses that name.
   HTMLFormElement.prototype.submit.call(form);
 }
+
+/**
+ * Only the server's own conflict page may replace the editor. Any other 409
+ * (a taken slug, for instance) is an ordinary validation failure that must
+ * stay inside the editor with the writer's text intact.
+ */
+export function isConflictPage(status: number, contentType: string | null): boolean {
+  return status === 409 && (contentType ?? "").toLowerCase().includes("text/html");
+}
+
+/**
+ * The replayed request becomes a top-level navigation, so it must ask for the
+ * HTML outcome of an explicit save: a conflict renders the comparison page,
+ * and a success redirects back to the editor instead of showing raw JSON.
+ */
+export function conflictNavigationParameters(parameters: URLSearchParams): URLSearchParams {
+  const replay = new URLSearchParams(parameters);
+  replay.set("intent", "explicit");
+  return replay;
+}

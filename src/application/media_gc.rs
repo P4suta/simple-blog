@@ -1,6 +1,8 @@
-//! Media is deleted the moment nothing current references it. The reference
-//! set is computed from live content and site settings only — revision
-//! snapshots deliberately do not keep media alive.
+//! Media is deleted the moment nothing current references it.
+//!
+//! The reference set is computed from current content (trashed pieces
+//! included, since the trash is recoverable) and site settings only —
+//! revision snapshots deliberately do not keep media alive.
 
 use std::collections::HashSet;
 

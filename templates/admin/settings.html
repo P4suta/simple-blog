@@ -1,4 +1,5 @@
 {% extends "admin/base.html" %}
+{% block title %}{{ t["admin.title.settings"] }}{% endblock %}
 {% block header %}{% endblock %}
 {% block content %}
 <header class="editor-bar settings-bar">
@@ -9,7 +10,14 @@
 <form class="settings-form" method="post" action="/admin/settings/" data-settings
       data-msg-saved="{{ t["editor.saved"] }}"
       data-msg-saving="{{ t["editor.saving"] }}"
-      data-msg-unsaved="{{ t["editor.unsaved"] }}">
+      data-msg-unsaved="{{ t["editor.unsaved"] }}"
+      data-msg-upload-failed="{{ t["editor.upload_failed"] }}"
+      data-msg-error-session="{{ t["editor.error_session"] }}"
+      data-msg-error-invalid="{{ t["editor.error_invalid"] }}"
+      data-msg-error-too-large="{{ t["editor.error_too_large"] }}"
+      data-msg-error-rate-limited="{{ t["editor.error_rate_limited"] }}"
+      data-msg-error-server="{{ t["editor.error_server"] }}"
+      data-msg-error-offline="{{ t["editor.error_offline"] }}">
   <input type="hidden" name="csrf" value="{{ csrf }}">
   <section>
     <h2>{{ t["settings.site"] }}</h2>
@@ -39,6 +47,7 @@
     <h2>{{ t["settings.design"] }}</h2>
     <p>{{ t["settings.design_note"] }}</p>
     <label data-css-field><span>{{ t["settings.css"] }}</span><textarea name="custom_css" rows="20" spellcheck="false">{{ settings.custom_css }}</textarea></label>
+    <details class="danger-zone"><summary>{{ t["settings.theme_reset"] }}</summary><p>{{ t["settings.theme_reset_note"] }}</p><button type="submit" class="danger-button" form="theme-reset-form">{{ t["settings.theme_reset_confirm"] }}</button></details>
   </section>
   <section>
     <h2>{{ t["settings.navigation"] }}</h2>
@@ -46,6 +55,7 @@
     <label><span>{{ t["settings.links"] }}</span><textarea name="navigation" rows="5" spellcheck="false">{{ navigation }}</textarea></label>
   </section>
 </form>
+<form id="theme-reset-form" method="post" action="/admin/settings/theme/reset/" hidden><input type="hidden" name="csrf" value="{{ csrf }}"></form>
 <div class="settings-form security-section">
   <section>
     <h2>{{ t["settings.security"] }}</h2>
@@ -61,6 +71,11 @@
     <div class="recovery-row">
       <p>{{ t["settings.recovery_note"] }}</p>
       <form method="post" action="/admin/settings/recovery-codes/"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="primary-button" type="submit">{{ t["settings.recovery_regenerate"] }}</button></form>
+    </div>
+    <h3>{{ t["settings.session"] }}</h3>
+    <div class="recovery-row">
+      <p>{{ t["settings.logout_note"] }}</p>
+      <form method="post" action="/admin/logout/"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="primary-button" type="submit">{{ t["admin.logout"] }}</button></form>
     </div>
   </section>
 </div>

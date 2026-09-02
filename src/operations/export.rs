@@ -51,6 +51,8 @@ impl Exporter {
             .list_all_content()
             .await
             .map_err(|error| OperationError::Database(error.to_string()))?
+            .into_iter()
+            .filter(|content| !content.is_trashed())
         {
             let directory = match content.kind {
                 ContentKind::Post => "posts",

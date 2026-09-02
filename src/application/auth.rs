@@ -297,6 +297,14 @@ impl AuthService {
             .into()
     }
 
+    /// Ends the presented session. Returns whether a session was actually
+    /// revoked, so a replayed logout is visible as a no-op rather than an error.
+    pub async fn logout(&self, session_token: &str) -> Result<bool, AuthError> {
+        self.repository
+            .revoke_session(hash_secret(session_token))
+            .await
+    }
+
     pub async fn rotate_session(
         &self,
         current_token: &str,

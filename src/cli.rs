@@ -235,6 +235,24 @@ async fn serve(overrides: Overrides) -> Result<()> {
             .await
             .context("could not open SQLite")?,
     );
+    let public_url = config.public_url.clone();
+    if repository
+        .owner_handle()
+        .await
+        .context("could not inspect owner state")?
+        .is_none()
+    {
+        // A fresh installation started with `serve` alone must still be
+        // claimable: print the same one-time setup link `init` would.
+        let token = AuthService::new(repository.clone(), Arc::new(SystemEntropy))
+            .issue_setup_token(SetupPurpose::Initial, Utc::now())
+            .await
+            .context("could not issue setup token")?;
+        println!(
+            "No owner passkey is registered yet. Open this link within 15 minutes to register one:\n{}",
+            setup_url(&public_url, token.expose())?
+        );
+    }
     let state = AppState::new(config, repository).context("could not build web application")?;
     let initial = state
         .publish_now()
@@ -251,6 +269,7 @@ async fn serve(overrides: Overrides) -> Result<()> {
         .await
         .with_context(|| format!("could not bind {bind}"))?;
     tracing::info!(%bind, "simple-blog is listening");
+    println!("Site:  {public_url}\nAdmin: {public_url}admin/");
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let scheduler = tokio::spawn(async move {
         state.run_publication_scheduler(shutdown_rx).await;

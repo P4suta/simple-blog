@@ -288,3 +288,115 @@ async fn site_configuration_is_validated_and_replaced_atomically() {
     );
     assert_eq!(repository.navigation().await.unwrap().len(), 2);
 }
+#[tokio::test]
+async fn page_route_migration_preserves_legacy_content_tags_revisions_and_navigation() {
+    let temp = tempfile::tempdir().unwrap();
+    let database = temp.path().join("legacy-page.sqlite3");
+    let pool = migration_fixture(&database, 12).await;
+    let at = "2026-09-02T00:00:00+00:00";
+    sqlx::query(
+        "INSERT INTO contents (
+           id, kind, title, slug, summary, body_markdown, body_html, status, publish_at,
+           version, created_at, updated_at
+         ) VALUES (7, 'post', 'Legacy page', 'page', '', '# Legacy', '<h1>Legacy</h1>',
+                   'draft', NULL, 1, ?, ?)",
+    )
+    .bind(at)
+    .bind(at)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO tags (id, name, slug) VALUES (9, 'Page', 'page')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO content_tags (content_id, tag_id, position) VALUES (7, 9, 0)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let snapshot = serde_json::json!({
+        "id": 7,
+        "kind": "post",
+        "title": "Legacy page",
+        "slug": "page",
+        "summary": "",
+        "body_markdown": "# Legacy",
+        "body_html": "<h1>Legacy</h1>",
+        "tags": [{ "name": "Page", "slug": "page" }],
+        "cover_media_id": null,
+        "seo_title": null,
+        "seo_description": null,
+        "publication": { "state": "draft" },
+        "version": 1,
+        "created_at": at,
+        "updated_at": at
+    });
+    sqlx::query(
+        "INSERT INTO revisions (content_id, intent, snapshot_json, created_at)
+         VALUES (7, 'explicit', ?, ?)",
+    )
+    .bind(snapshot.to_string())
+    .bind(at)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO navigation (label, destination, is_external, position)
+         VALUES ('Legacy page', '/page/', 0, 0)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    finish_migrations(&pool).await;
+    pool.close().await;
+
+    let repository = SqliteRepository::connect(&database).await.unwrap();
+    let contents = repository.list_all_content().await.unwrap();
+    assert_eq!(contents.len(), 1);
+    assert_eq!(contents[0].slug.as_str(), "page-content-7");
+    assert_eq!(contents[0].tags[0].slug.as_str(), "page-tag-9");
+    let revisions = repository
+        .list_revisions(ContentId::from_i64(7))
+        .await
+        .unwrap();
+    assert_eq!(revisions[0].snapshot.slug.as_str(), "page-content-7");
+    assert_eq!(revisions[0].snapshot.tags[0].slug.as_str(), "page-tag-9");
+    assert_eq!(
+        repository.navigation().await.unwrap()[0].destination,
+        "/page-content-7/"
+    );
+}
+
+#[tokio::test]
+async fn theme_refresh_updates_only_the_untouched_previous_default() {
+    let temp = tempfile::tempdir().unwrap();
+
+    let untouched = temp.path().join("untouched.sqlite3");
+    let pool = migration_fixture(&untouched, 11).await;
+    finish_migrations(&pool).await;
+    pool.close().await;
+    let repository = SqliteRepository::connect(&untouched).await.unwrap();
+    assert_eq!(
+        repository.site_settings().await.unwrap().custom_css,
+        include_str!("../static/default-theme.css"),
+        "a stylesheet still equal to the previous default receives the new one"
+    );
+
+    let customized = temp.path().join("customized.sqlite3");
+    let pool = migration_fixture(&customized, 11).await;
+    sqlx::query(
+        "UPDATE site_settings SET custom_css = 'body { color: teal; }' WHERE singleton = 1",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    finish_migrations(&pool).await;
+    pool.close().await;
+    let repository = SqliteRepository::connect(&customized).await.unwrap();
+    assert_eq!(
+        repository.site_settings().await.unwrap().custom_css,
+        "body { color: teal; }",
+        "an edited stylesheet is never clobbered"
+    );
+}

@@ -36,6 +36,7 @@ fn package() -> PortablePackage {
         version: 3,
         created_at: at,
         updated_at: at,
+        deleted_at: None,
     };
     PortablePackage {
         site: PortableSiteV1 {
@@ -386,4 +387,32 @@ fn append_test_entry(
     header.set_mode(0o600);
     header.set_cksum();
     archive.append_data(&mut header, path, bytes).unwrap();
+}
+#[test]
+fn trashed_scheduled_content_does_not_participate_in_the_publication_clock() {
+    let mut trashed = package();
+    let later = trashed.site.exported_at + chrono::Duration::hours(2);
+    trashed.site.contents[0].current.publication = Publication::Public { publish_at: later };
+    trashed.site.contents[0].current.deleted_at = Some(trashed.site.exported_at);
+    trashed.site.publication.next_publish_at = None;
+    assert!(
+        trashed.validate().is_ok(),
+        "a trashed entry must not be expected to hold the clock"
+    );
+
+    let mut live = package();
+    live.site.contents[0].current.publication = Publication::Public { publish_at: later };
+    live.site.publication.next_publish_at = None;
+    assert!(
+        live.validate().is_err(),
+        "a live scheduled entry must still be reflected by the clock"
+    );
+
+    let mut impossible = package();
+    impossible.site.contents[0].current.deleted_at =
+        Some(impossible.site.exported_at - chrono::Duration::days(400));
+    assert!(
+        impossible.validate().is_err(),
+        "trashed before it was created is not a valid history"
+    );
 }

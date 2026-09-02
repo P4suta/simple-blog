@@ -7,17 +7,19 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use chrono::{DateTime, Duration, SecondsFormat, Utc};
+use chrono::{DateTime, Duration, NaiveDateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 use webauthn_rs::prelude::{PublicKeyCredential, RegisterPublicKeyCredential};
 
 use crate::{
-    application::{content::SaveIntent, ports::RepositoryError},
+    application::{content::SaveIntent, ports::RepositoryError, site::DEFAULT_THEME_CSS},
+    domain::diff::{DiffLine, diff_lines},
     domain::{
         auth::{SessionIdentity, SessionSecrets, SetupPurpose, StoredPasskey},
         content::{Content, ContentDraft, ContentId, ContentKind, Publication, Slug},
+        media::MediaId,
         theme::{Locale, NavigationItem, SiteSettings},
     },
     web::{AppState, WebError},
@@ -25,9 +27,15 @@ use crate::{
 
 #[derive(Serialize)]
 struct DashboardContext {
-    title: &'static str,
     csrf: String,
     contents: Vec<DashboardItem>,
+    /// The active filter key: `all`, `draft`, `scheduled`, `public`, or `trash`.
+    filter: &'static str,
+    q: String,
+    /// `q` percent-encoded for use inside the filter links.
+    q_query: String,
+    /// Which empty-state sentence applies when `contents` is empty.
+    empty_key: &'static str,
 }
 
 #[derive(Serialize)]
@@ -38,6 +46,67 @@ struct DashboardItem {
     status: &'static str,
     views: u64,
     likes: u64,
+    updated_at: String,
+    publish_at: Option<String>,
+    deleted_at: Option<String>,
+    trashed: bool,
+}
+
+#[derive(Deserialize)]
+pub struct DashboardQuery {
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    q: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DashboardFilter {
+    All,
+    Draft,
+    Scheduled,
+    Public,
+    Trash,
+}
+
+impl DashboardFilter {
+    /// An unknown value shows everything rather than an error: a stale link
+    /// should never strand the writer.
+    fn parse(value: &str) -> Self {
+        match value {
+            "draft" => Self::Draft,
+            "scheduled" => Self::Scheduled,
+            "public" => Self::Public,
+            "trash" => Self::Trash,
+            _ => Self::All,
+        }
+    }
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Draft => "draft",
+            Self::Scheduled => "scheduled",
+            Self::Public => "public",
+            Self::Trash => "trash",
+        }
+    }
+
+    fn admits(self, status: &str) -> bool {
+        match self {
+            Self::All => status != "trashed",
+            Self::Trash => status == "trashed",
+            other => status == other.as_str(),
+        }
+    }
+}
+
+/// Case-insensitive match on the title or slug; an empty query admits all.
+fn dashboard_matches(query: &str, title: &str, slug: &str) -> bool {
+    let query = query.trim().to_lowercase();
+    query.is_empty()
+        || title.to_lowercase().contains(&query)
+        || slug.to_lowercase().contains(&query)
 }
 
 #[derive(Serialize)]
@@ -49,7 +118,10 @@ struct EditorContext {
     version: Option<i64>,
     content: EditorContent,
     cover_url: Option<String>,
+    /// The cover's stored alternative text, editable from the drawer.
+    cover_alt_text: String,
     revisions: Vec<RevisionItem>,
+    trashed: bool,
 }
 
 #[derive(Serialize)]
@@ -67,7 +139,13 @@ struct EditorContent {
     summary: String,
     body_markdown: String,
     tags: String,
+    /// `draft`, `scheduled`, `public`, or `trashed`.
     status: &'static str,
+    /// RFC 3339 publication instant, or empty for a draft.
+    publish_at: String,
+    /// The same instant shaped for a `datetime-local` control, in UTC; the
+    /// browser script re-expresses it in the writer's own zone.
+    publish_at_input: String,
     seo_title: String,
     seo_description: String,
     cover_media_id: String,
@@ -75,7 +153,6 @@ struct EditorContent {
 
 #[derive(Serialize)]
 struct ConflictContext {
-    title: &'static str,
     csrf: String,
     current: ConflictVersion,
     submitted: ConflictVersion,
@@ -90,7 +167,6 @@ struct ConflictVersion {
 
 #[derive(Serialize)]
 struct SettingsContext {
-    title: &'static str,
     csrf: String,
     settings: SiteSettings,
     navigation: String,
@@ -108,20 +184,19 @@ struct PasskeyView {
 
 #[derive(Serialize)]
 struct RecoveryCodesContext<'a> {
-    title: &'static str,
     csrf: String,
     recovery_codes: Vec<&'a str>,
 }
 
 #[derive(Serialize)]
 struct RevisionContext {
-    title: &'static str,
     csrf: String,
     content_id: i64,
     revision_id: i64,
     expected_version: i64,
     current: RevisionVersion,
     revision: RevisionVersion,
+    diff: RevisionDiffContext,
 }
 
 #[derive(Serialize)]
@@ -129,6 +204,15 @@ struct RevisionVersion {
     title: String,
     body_markdown: String,
     version: i64,
+}
+
+#[derive(Serialize)]
+struct RevisionDiffContext {
+    /// Lines of the current text compared against the selected revision:
+    /// what a restore would remove reads as `added`, what it would put back
+    /// as `removed`.
+    lines: Vec<DiffLine>,
+    title_changed: bool,
 }
 
 #[derive(Deserialize)]
@@ -145,6 +229,8 @@ pub struct ContentForm {
     #[serde(default)]
     status: String,
     #[serde(default)]
+    publish_at: String,
+    #[serde(default)]
     seo_title: String,
     #[serde(default)]
     seo_description: String,
@@ -153,6 +239,19 @@ pub struct ContentForm {
     #[serde(default)]
     intent: String,
     version: Option<i64>,
+}
+
+#[derive(Deserialize)]
+pub struct TrashForm {
+    csrf: String,
+    version: i64,
+}
+
+#[derive(Deserialize)]
+pub struct MediaAltForm {
+    csrf: String,
+    #[serde(default)]
+    alt_text: String,
 }
 
 #[derive(Deserialize)]
@@ -180,6 +279,12 @@ struct AdminIdentity {
 #[derive(Deserialize)]
 pub struct SetupPageQuery {
     token: String,
+}
+
+#[derive(Deserialize)]
+pub struct LoginPageQuery {
+    #[serde(default)]
+    next: String,
 }
 
 #[derive(Deserialize)]
@@ -246,35 +351,54 @@ pub struct PreviewRequest {
 
 pub async fn dashboard(
     State(state): State<AppState>,
+    Query(query): Query<DashboardQuery>,
     headers: HeaderMap,
 ) -> Result<Response, WebError> {
     let identity = match authenticate(&state, &headers, None).await? {
         Ok(identity) => identity,
         Err(response) => return Ok(response),
     };
-    let contents = state.content.list_all_content().await?;
+    let now = state.clock.now();
+    let filter = DashboardFilter::parse(&query.status);
+    let everything = state.content.list_all_content().await?;
+    let any_content = everything.iter().any(|content| !content.is_trashed());
     let totals = state.engagement.engagement_totals().await?;
-    let contents = contents
+    let stamp = |at: DateTime<Utc>| at.to_rfc3339_opts(SecondsFormat::Secs, true);
+    let contents: Vec<DashboardItem> = everything
         .into_iter()
+        .filter(|content| filter.admits(content_status(content, now)))
+        .filter(|content| dashboard_matches(&query.q, &content.title, content.slug.as_str()))
         .map(|content| {
             let engagement = totals.get(&content.id).copied().unwrap_or_default();
             DashboardItem {
                 id: content.id.as_i64(),
+                status: content_status(&content, now),
+                updated_at: stamp(content.updated_at),
+                publish_at: content.publication.publish_at().map(stamp),
+                deleted_at: content.deleted_at.map(stamp),
+                trashed: content.is_trashed(),
                 title: content.title,
                 slug: content.slug.to_string(),
-                status: publication_status(&content.publication),
                 views: engagement.views,
                 likes: engagement.likes,
             }
         })
         .collect();
+    let empty_key = match filter {
+        DashboardFilter::Trash => "dashboard.empty_trash",
+        DashboardFilter::All if !any_content && query.q.trim().is_empty() => "dashboard.empty",
+        _ => "dashboard.empty_filtered",
+    };
     state
         .render_admin(
             "admin/dashboard.html",
             DashboardContext {
-                title: "Dashboard",
                 csrf: identity.csrf,
                 contents,
+                filter: filter.as_str(),
+                q_query: percent_encode_query(query.q.trim()),
+                q: query.q.trim().to_owned(),
+                empty_key,
             },
         )
         .await
@@ -299,7 +423,9 @@ pub async fn new_content(
                 version: None,
                 content: EditorContent::empty(state.clock.now()),
                 cover_url: None,
+                cover_alt_text: String::new(),
                 revisions: Vec::new(),
+                trashed: false,
             },
         )
         .await
@@ -344,7 +470,6 @@ pub async fn settings_page(
         .render_admin(
             "admin/settings.html",
             SettingsContext {
-                title: "Settings",
                 csrf: identity.csrf,
                 settings,
                 navigation,
@@ -357,6 +482,36 @@ pub async fn settings_page(
         .await
 }
 
+/// Puts the stock stylesheet back. The owner's edits are gone afterwards,
+/// which is why the page asks twice before posting here.
+pub async fn reset_theme(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<CsrfForm>,
+) -> Result<Response, WebError> {
+    if let Err(response) = authenticate(&state, &headers, Some(&form.csrf)).await? {
+        return Ok(response);
+    }
+    let mut settings = state.site.site_settings().await?;
+    settings.custom_css = DEFAULT_THEME_CSS.to_owned();
+    let navigation = state.site.navigation().await?;
+    match state
+        .site_service
+        .update(settings, navigation, state.clock.now())
+        .await
+    {
+        Ok(()) => {
+            state.publish_now().await?;
+            if wants_json(&headers) {
+                Ok(Json(json!({ "ok": true })).into_response())
+            } else {
+                Ok(redirect(StatusCode::SEE_OTHER, "/admin/settings/"))
+            }
+        }
+        Err(error) => application_error(&state, &headers, error).await,
+    }
+}
+
 pub async fn update_settings(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -367,7 +522,9 @@ pub async fn update_settings(
     }
     let (settings, navigation) = match form.into_configuration() {
         Ok(configuration) => configuration,
-        Err(message) => return Ok((StatusCode::UNPROCESSABLE_ENTITY, message).into_response()),
+        Err(message) => {
+            return failure(&state, &headers, StatusCode::UNPROCESSABLE_ENTITY, &message).await;
+        }
     };
     match state
         .site_service
@@ -383,7 +540,7 @@ pub async fn update_settings(
                 Ok(redirect(StatusCode::SEE_OTHER, "/admin/settings/"))
             }
         }
-        Err(error) => application_error(error),
+        Err(error) => application_error(&state, &headers, error).await,
     }
 }
 
@@ -401,7 +558,13 @@ pub async fn edit_content(
         .find_by_id(ContentId::from_i64(raw_id))
         .await?
     else {
-        return Ok(StatusCode::NOT_FOUND.into_response());
+        return failure(
+            &state,
+            &headers,
+            StatusCode::NOT_FOUND,
+            "content does not exist",
+        )
+        .await;
     };
     let revisions = state
         .content
@@ -419,6 +582,16 @@ pub async fn edit_content(
     let cover_url = state
         .theme_media_url(content.cover_media_id.as_deref())
         .await?;
+    let cover_alt_text = match content.cover_media_id.as_deref().map(MediaId::parse) {
+        Some(Ok(id)) => state
+            .media_repository
+            .find_media(&id)
+            .await
+            .map_err(WebError::media_repository)?
+            .map(|asset| asset.alt_text)
+            .unwrap_or_default(),
+        _ => String::new(),
+    };
     state
         .render_admin(
             "admin/editor.html",
@@ -428,12 +601,185 @@ pub async fn edit_content(
                 action: format!("/admin/content/{raw_id}/"),
                 content_id: Some(raw_id),
                 version: Some(content.version),
-                content: EditorContent::from_content(&content),
+                trashed: content.is_trashed(),
+                content: EditorContent::from_content(&content, state.clock.now()),
                 cover_url,
+                cover_alt_text,
                 revisions,
             },
         )
         .await
+}
+
+/// Alternative text lives on the media record and is baked into every page
+/// that shows the image, so a change republishes the site.
+pub async fn update_media(
+    State(state): State<AppState>,
+    Path(raw_id): Path<String>,
+    headers: HeaderMap,
+    Form(form): Form<MediaAltForm>,
+) -> Result<Response, WebError> {
+    if let Err(response) = authenticate(&state, &headers, Some(&form.csrf)).await? {
+        return Ok(response);
+    }
+    let Ok(id) = MediaId::parse(&raw_id) else {
+        return failure(
+            &state,
+            &headers,
+            StatusCode::NOT_FOUND,
+            "media does not exist",
+        )
+        .await;
+    };
+    match state
+        .media_service
+        .update_alt_text(&id, &form.alt_text, state.clock.now())
+        .await
+    {
+        Ok(true) => {
+            state.publish_now().await?;
+            if wants_json(&headers) {
+                Ok(Json(json!({ "ok": true, "alt_text": form.alt_text.trim() })).into_response())
+            } else {
+                Ok(redirect(StatusCode::SEE_OTHER, "/admin/"))
+            }
+        }
+        Ok(false) => {
+            failure(
+                &state,
+                &headers,
+                StatusCode::NOT_FOUND,
+                "media does not exist",
+            )
+            .await
+        }
+        Err(crate::infrastructure::media::MediaError::InvalidMetadata(message)) => {
+            failure(&state, &headers, StatusCode::UNPROCESSABLE_ENTITY, &message).await
+        }
+        Err(error) => Err(WebError::media(error)),
+    }
+}
+
+pub async fn trash_content(
+    State(state): State<AppState>,
+    Path(raw_id): Path<i64>,
+    headers: HeaderMap,
+    Form(form): Form<TrashForm>,
+) -> Result<Response, WebError> {
+    if let Err(response) = authenticate(&state, &headers, Some(&form.csrf)).await? {
+        return Ok(response);
+    }
+    let now = state.clock.now();
+    match state
+        .content_service
+        .move_to_trash(ContentId::from_i64(raw_id), form.version, now)
+        .await
+    {
+        Ok(_) => {
+            // The route is withdrawn by the next release; media stays
+            // referenced by the trashed piece, so no garbage collection.
+            state.publish_now().await?;
+            if wants_json(&headers) {
+                Ok(Json(json!({ "ok": true })).into_response())
+            } else {
+                Ok(redirect(StatusCode::SEE_OTHER, "/admin/?status=trash"))
+            }
+        }
+        Err(RepositoryError::Conflict { .. }) => {
+            failure(
+                &state,
+                &headers,
+                StatusCode::CONFLICT,
+                "content changed after this page was opened",
+            )
+            .await
+        }
+        Err(RepositoryError::NotFound) => {
+            failure(
+                &state,
+                &headers,
+                StatusCode::NOT_FOUND,
+                "content does not exist",
+            )
+            .await
+        }
+        Err(error) => application_error(&state, &headers, error).await,
+    }
+}
+
+pub async fn restore_content(
+    State(state): State<AppState>,
+    Path(raw_id): Path<i64>,
+    headers: HeaderMap,
+    Form(form): Form<CsrfForm>,
+) -> Result<Response, WebError> {
+    if let Err(response) = authenticate(&state, &headers, Some(&form.csrf)).await? {
+        return Ok(response);
+    }
+    match state
+        .content_service
+        .restore_from_trash(ContentId::from_i64(raw_id), state.clock.now())
+        .await
+    {
+        Ok(_) => {
+            state.publish_now().await?;
+            if wants_json(&headers) {
+                Ok(Json(json!({ "ok": true })).into_response())
+            } else {
+                Ok(redirect(
+                    StatusCode::SEE_OTHER,
+                    &format!("/admin/content/{raw_id}/edit/"),
+                ))
+            }
+        }
+        Err(RepositoryError::NotFound) => {
+            failure(
+                &state,
+                &headers,
+                StatusCode::NOT_FOUND,
+                "content does not exist",
+            )
+            .await
+        }
+        Err(error) => application_error(&state, &headers, error).await,
+    }
+}
+
+pub async fn delete_content(
+    State(state): State<AppState>,
+    Path(raw_id): Path<i64>,
+    headers: HeaderMap,
+    Form(form): Form<CsrfForm>,
+) -> Result<Response, WebError> {
+    if let Err(response) = authenticate(&state, &headers, Some(&form.csrf)).await? {
+        return Ok(response);
+    }
+    match state
+        .content_service
+        .delete_permanently(ContentId::from_i64(raw_id))
+        .await
+    {
+        Ok(()) => {
+            // A trashed piece was already outside the release; only its media
+            // references disappear now.
+            run_media_gc(&state).await;
+            if wants_json(&headers) {
+                Ok(Json(json!({ "ok": true })).into_response())
+            } else {
+                Ok(redirect(StatusCode::SEE_OTHER, "/admin/?status=trash"))
+            }
+        }
+        Err(RepositoryError::NotFound) => {
+            failure(
+                &state,
+                &headers,
+                StatusCode::NOT_FOUND,
+                "content does not exist",
+            )
+            .await
+        }
+        Err(error) => application_error(&state, &headers, error).await,
+    }
 }
 
 pub async fn revision_page(
@@ -447,20 +793,35 @@ pub async fn revision_page(
     };
     let id = ContentId::from_i64(raw_id);
     let Some(current) = state.content.find_by_id(id).await? else {
-        return Ok(StatusCode::NOT_FOUND.into_response());
+        return failure(
+            &state,
+            &headers,
+            StatusCode::NOT_FOUND,
+            "content does not exist",
+        )
+        .await;
     };
     let Some(revision) = state.content.find_revision(id, revision_id).await? else {
-        return Ok(StatusCode::NOT_FOUND.into_response());
+        return failure(
+            &state,
+            &headers,
+            StatusCode::NOT_FOUND,
+            "content does not exist",
+        )
+        .await;
     };
     state
         .render_admin(
             "admin/revision.html",
             RevisionContext {
-                title: "Revision",
                 csrf: identity.csrf,
                 content_id: raw_id,
                 revision_id,
                 expected_version: current.version,
+                diff: RevisionDiffContext {
+                    lines: diff_lines(&revision.snapshot.body_markdown, &current.body_markdown),
+                    title_changed: revision.snapshot.title != current.title,
+                },
                 current: RevisionVersion {
                     title: current.title,
                     body_markdown: current.body_markdown,
@@ -503,12 +864,16 @@ pub async fn restore_revision(
                 &format!("/admin/content/{raw_id}/edit/"),
             ))
         }
-        Err(RepositoryError::Conflict { .. }) => Ok((
-            StatusCode::CONFLICT,
-            "content changed after this restore page was opened",
-        )
-            .into_response()),
-        Err(error) => application_error(error),
+        Err(RepositoryError::Conflict { .. }) => {
+            failure(
+                &state,
+                &headers,
+                StatusCode::CONFLICT,
+                "content changed after this restore page was opened",
+            )
+            .await
+        }
+        Err(error) => application_error(&state, &headers, error).await,
     }
 }
 
@@ -525,7 +890,7 @@ pub async fn preview_markdown(
         Err(RepositoryError::Validation(message)) => {
             Ok((StatusCode::UNPROCESSABLE_ENTITY, message).into_response())
         }
-        Err(error) => application_error(error),
+        Err(error) => application_error(&state, &headers, error).await,
     }
 }
 
@@ -540,7 +905,9 @@ pub async fn create_content(
     let now = state.clock.now();
     let (draft, intent) = match form.to_draft(now, None) {
         Ok(value) => value,
-        Err(error) => return Ok((StatusCode::UNPROCESSABLE_ENTITY, error).into_response()),
+        Err(error) => {
+            return failure(&state, &headers, StatusCode::UNPROCESSABLE_ENTITY, &error).await;
+        }
     };
     let mut result = state
         .content_service
@@ -560,15 +927,7 @@ pub async fn create_content(
             state.publish_now().await?;
             run_media_gc(&state).await;
             if intent == SaveIntent::Autosave || wants_json(&headers) {
-                Ok((
-                    StatusCode::CREATED,
-                    Json(json!({
-                        "id": content.id.as_i64(),
-                        "version": content.version,
-                        "slug": content.slug.as_str(),
-                    })),
-                )
-                    .into_response())
+                Ok((StatusCode::CREATED, Json(save_response(&content, now))).into_response())
             } else {
                 Ok(redirect(
                     StatusCode::SEE_OTHER,
@@ -576,7 +935,7 @@ pub async fn create_content(
                 ))
             }
         }
-        Err(error) => application_error(error),
+        Err(error) => application_error(&state, &headers, error).await,
     }
 }
 
@@ -620,16 +979,30 @@ pub async fn update_content(
         Err(response) => return Ok(response),
     };
     let Some(expected_version) = form.version else {
-        return Ok((StatusCode::BAD_REQUEST, "missing content version").into_response());
+        return failure(
+            &state,
+            &headers,
+            StatusCode::BAD_REQUEST,
+            "missing content version",
+        )
+        .await;
     };
     let now = state.clock.now();
     let id = ContentId::from_i64(raw_id);
     let Some(existing) = state.content.find_by_id(id).await? else {
-        return Ok(StatusCode::NOT_FOUND.into_response());
+        return failure(
+            &state,
+            &headers,
+            StatusCode::NOT_FOUND,
+            "content does not exist",
+        )
+        .await;
     };
     let (draft, intent) = match form.to_draft(now, Some(&existing)) {
         Ok(value) => value,
-        Err(error) => return Ok((StatusCode::UNPROCESSABLE_ENTITY, error).into_response()),
+        Err(error) => {
+            return failure(&state, &headers, StatusCode::UNPROCESSABLE_ENTITY, &error).await;
+        }
     };
     let submitted_title = draft.title.clone();
     let submitted_body = draft.body_markdown.clone();
@@ -642,12 +1015,7 @@ pub async fn update_content(
             state.publish_now().await?;
             run_media_gc(&state).await;
             if intent == SaveIntent::Autosave || wants_json(&headers) {
-                Ok(Json(json!({
-                    "id": content.id.as_i64(),
-                    "version": content.version,
-                    "slug": content.slug.as_str(),
-                }))
-                .into_response())
+                Ok(Json(save_response(&content, now)).into_response())
             } else {
                 Ok(redirect(
                     StatusCode::SEE_OTHER,
@@ -657,13 +1025,18 @@ pub async fn update_content(
         }
         Err(RepositoryError::Conflict { .. }) => {
             let Some(current) = state.content.find_by_id(id).await? else {
-                return Ok(StatusCode::NOT_FOUND.into_response());
+                return failure(
+                    &state,
+                    &headers,
+                    StatusCode::NOT_FOUND,
+                    "content does not exist",
+                )
+                .await;
             };
             let html = state
                 .render_admin_string(
                     "admin/conflict.html",
                     ConflictContext {
-                        title: "Save conflict",
                         csrf: identity.csrf,
                         current: ConflictVersion {
                             id: current.id.as_i64(),
@@ -680,17 +1053,45 @@ pub async fn update_content(
                 .await?;
             Ok((StatusCode::CONFLICT, axum::response::Html(html)).into_response())
         }
-        Err(error) => application_error(error),
+        Err(error) => application_error(&state, &headers, error).await,
     }
 }
 
-pub async fn login_page(State(state): State<AppState>) -> Result<Response, WebError> {
-    state.render_admin("admin/login.html", json!({})).await
+pub async fn login_page(
+    State(state): State<AppState>,
+    Query(query): Query<LoginPageQuery>,
+) -> Result<Response, WebError> {
+    state
+        .render_admin(
+            "admin/login.html",
+            json!({ "next": safe_admin_path(&query.next).unwrap_or("/admin/") }),
+        )
+        .await
+}
+
+pub async fn logout(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<CsrfForm>,
+) -> Result<Response, WebError> {
+    if let Err(response) = authenticate(&state, &headers, Some(&form.csrf)).await? {
+        return Ok(response);
+    }
+    // `authenticate` has just proven the cookie exists and names a live session.
+    let Some(token) = cookie(&headers, "sb_session") else {
+        return Ok(login_redirect(None));
+    };
+    let revoked = state.auth.logout(token).await.map_err(WebError::auth)?;
+    tracing::info!(event = "auth.session.logged_out", revoked);
+    let mut response = redirect(StatusCode::SEE_OTHER, "/admin/login/");
+    clear_auth_cookies(&mut response, state.secure_cookies())?;
+    Ok(response)
 }
 
 pub async fn setup_page(
     State(state): State<AppState>,
     Query(query): Query<SetupPageQuery>,
+    headers: HeaderMap,
 ) -> Result<Response, WebError> {
     if state
         .accounts
@@ -699,7 +1100,13 @@ pub async fn setup_page(
         .map_err(WebError::auth)?
         .is_none()
     {
-        return Ok((StatusCode::GONE, "This setup link is invalid or expired.").into_response());
+        return failure(
+            &state,
+            &headers,
+            StatusCode::GONE,
+            "This setup link is invalid or expired.",
+        )
+        .await;
     }
     state
         .render_admin("admin/setup.html", json!({ "token": query.token }))
@@ -938,7 +1345,13 @@ pub async fn regenerate_recovery_codes(
         Err(response) => return Ok(response),
     };
     if !recently_reauthenticated(&identity, state.clock.now()) {
-        return Ok((StatusCode::UNAUTHORIZED, "reauthentication required").into_response());
+        return failure(
+            &state,
+            &headers,
+            StatusCode::UNAUTHORIZED,
+            "reauthentication required",
+        )
+        .await;
     }
     let recovery_codes = state
         .auth
@@ -953,7 +1366,6 @@ pub async fn regenerate_recovery_codes(
         .render_admin(
             "admin/recovery_codes.html",
             RecoveryCodesContext {
-                title: "Recovery codes",
                 csrf: identity.csrf,
                 recovery_codes,
             },
@@ -971,10 +1383,22 @@ pub async fn remove_passkey(
         Err(response) => return Ok(response),
     };
     if !recently_reauthenticated(&identity, state.clock.now()) {
-        return Ok((StatusCode::UNAUTHORIZED, "reauthentication required").into_response());
+        return failure(
+            &state,
+            &headers,
+            StatusCode::UNAUTHORIZED,
+            "reauthentication required",
+        )
+        .await;
     }
     let Ok(credential_id) = URL_SAFE_NO_PAD.decode(&form.credential_id) else {
-        return Ok((StatusCode::BAD_REQUEST, "invalid credential ID").into_response());
+        return failure(
+            &state,
+            &headers,
+            StatusCode::BAD_REQUEST,
+            "invalid credential ID",
+        )
+        .await;
     };
     if state
         .accounts
@@ -984,7 +1408,13 @@ pub async fn remove_passkey(
     {
         Ok(redirect(StatusCode::SEE_OTHER, "/admin/settings/"))
     } else {
-        Ok((StatusCode::CONFLICT, "the last Passkey cannot be removed").into_response())
+        failure(
+            &state,
+            &headers,
+            StatusCode::CONFLICT,
+            "the last Passkey cannot be removed",
+        )
+        .await
     }
 }
 
@@ -1107,18 +1537,8 @@ impl ContentForm {
         } else {
             Slug::parse(&self.slug).map_err(|error| error.to_string())?
         };
-        // An absent status means "keep what the content already is": saves that
-        // are not an explicit Publish/Unpublish must never change publication,
-        // and a re-save of public content must keep its original publish_at.
-        let publication = match self.status.as_str() {
-            "" => current.map_or(Publication::Draft, |content| content.publication.clone()),
-            "draft" => Publication::Draft,
-            "public" => match current.map(|content| &content.publication) {
-                Some(&Publication::Public { publish_at }) => Publication::Public { publish_at },
-                _ => Publication::Public { publish_at: now },
-            },
-            _ => return Err("unknown publication status".into()),
-        };
+        let requested = parse_publish_at(&self.publish_at)?;
+        let publication = publication_for(&self.status, requested, current, now)?;
         let intent = if self.intent == "autosave" {
             SaveIntent::Autosave
         } else {
@@ -1200,13 +1620,16 @@ impl EditorContent {
             body_markdown: String::new(),
             tags: String::new(),
             status: "draft",
+            publish_at: String::new(),
+            publish_at_input: String::new(),
             seo_title: String::new(),
             seo_description: String::new(),
             cover_media_id: String::new(),
         }
     }
 
-    fn from_content(content: &Content) -> Self {
+    fn from_content(content: &Content, now: DateTime<Utc>) -> Self {
+        let publish_at = content.publication.publish_at();
         Self {
             kind: content.kind.as_str(),
             title: content.title.clone(),
@@ -1219,7 +1642,13 @@ impl EditorContent {
                 .map(|tag| tag.name.as_str())
                 .collect::<Vec<_>>()
                 .join(", "),
-            status: publication_status(&content.publication),
+            status: content_status(content, now),
+            publish_at: publish_at
+                .map(|at| at.to_rfc3339_opts(SecondsFormat::Secs, true))
+                .unwrap_or_default(),
+            publish_at_input: publish_at
+                .map(|at| at.format("%Y-%m-%dT%H:%M").to_string())
+                .unwrap_or_default(),
             seo_title: content.seo_title.clone().unwrap_or_default(),
             seo_description: content.seo_description.clone().unwrap_or_default(),
             cover_media_id: content.cover_media_id.clone().unwrap_or_default(),
@@ -1232,11 +1661,14 @@ async fn authenticate(
     headers: &HeaderMap,
     csrf: Option<&str>,
 ) -> Result<Result<AdminIdentity, Response>, WebError> {
+    // Only a page the browser navigated to is worth returning to after login;
+    // form posts and JSON calls fall back to the dashboard.
+    let next = csrf.is_none().then(|| requested_path(headers)).flatten();
     let Some(session_token) = cookie(headers, "sb_session") else {
-        return Ok(Err(login_redirect()));
+        return Ok(Err(login_redirect(next.as_deref())));
     };
     let Some(csrf_cookie) = cookie(headers, "sb_csrf") else {
-        return Ok(Err(login_redirect()));
+        return Ok(Err(login_redirect(next.as_deref())));
     };
     let Some(identity) = state
         .auth
@@ -1244,7 +1676,7 @@ async fn authenticate(
         .await
         .map_err(WebError::auth)?
     else {
-        return Ok(Err(login_redirect()));
+        return Ok(Err(login_redirect(next.as_deref())));
     };
     if let Some(presented) = csrf
         && (presented != csrf_cookie || !state.auth.verify_csrf(&identity, presented))
@@ -1280,25 +1712,159 @@ fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
         .find_map(|(key, value)| (key == name).then_some(value))
 }
 
-const fn publication_status(publication: &Publication) -> &'static str {
-    match publication {
-        Publication::Draft => "draft",
-        Publication::Public { .. } => "public",
+/// The writer-facing state of one piece: `trashed`, `draft`, `scheduled`
+/// (public with a future instant), or `public`.
+fn content_status(content: &Content, now: DateTime<Utc>) -> &'static str {
+    if content.is_trashed() {
+        "trashed"
+    } else if content.publication.is_scheduled_at(now) {
+        "scheduled"
+    } else {
+        match content.publication {
+            Publication::Draft => "draft",
+            Publication::Public { .. } => "public",
+        }
     }
 }
 
-fn application_error(error: RepositoryError) -> Result<Response, WebError> {
+fn save_response(content: &Content, now: DateTime<Utc>) -> serde_json::Value {
+    json!({
+        "id": content.id.as_i64(),
+        "version": content.version,
+        "slug": content.slug.as_str(),
+        "status": content_status(content, now),
+        "publish_at": content
+            .publication
+            .publish_at()
+            .map(|at| at.to_rfc3339_opts(SecondsFormat::Secs, true)),
+    })
+}
+
+/// Accepts the RFC 3339 instant the browser script sends, or the naive
+/// `datetime-local` value a JavaScript-free form submits, which the editor
+/// labels as UTC. Empty means "no explicit instant".
+fn parse_publish_at(value: &str) -> Result<Option<DateTime<Utc>>, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    if let Ok(parsed) = DateTime::parse_from_rfc3339(value) {
+        return Ok(Some(parsed.with_timezone(&Utc)));
+    }
+    for format in ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M"] {
+        if let Ok(naive) = NaiveDateTime::parse_from_str(value, format) {
+            return Ok(Some(naive.and_utc()));
+        }
+    }
+    Err("publish date must be an ISO 8601 date-time".into())
+}
+
+/// The `datetime-local` control has minute resolution, so a value that merely
+/// round-tripped through it must not re-date a piece or bump a revision.
+const fn same_minute(left: DateTime<Utc>, right: DateTime<Utc>) -> bool {
+    left.timestamp().div_euclid(60) == right.timestamp().div_euclid(60)
+}
+
+/// An absent status means "keep what the content already is": saves that are
+/// not an explicit Publish/Unpublish never change publication, though a public
+/// piece may be moved along the timeline. Publishing with an instant
+/// schedules; publishing without one keeps an existing instant or uses now.
+fn publication_for(
+    status: &str,
+    requested: Option<DateTime<Utc>>,
+    current: Option<&Content>,
+    now: DateTime<Utc>,
+) -> Result<Publication, String> {
+    let current = current.map(|content| &content.publication);
+    match status {
+        "" => Ok(match (requested, current) {
+            (Some(date), Some(&Publication::Public { publish_at })) => Publication::Public {
+                publish_at: if same_minute(date, publish_at) {
+                    publish_at
+                } else {
+                    date
+                },
+            },
+            (_, Some(publication)) => publication.clone(),
+            (_, None) => Publication::Draft,
+        }),
+        "draft" => Ok(Publication::Draft),
+        "public" => Ok(Publication::Public {
+            publish_at: match (requested, current) {
+                (Some(date), Some(&Publication::Public { publish_at }))
+                    if same_minute(date, publish_at) =>
+                {
+                    publish_at
+                }
+                (Some(date), _) => date,
+                (None, Some(&Publication::Public { publish_at })) => publish_at,
+                (None, _) => now,
+            },
+        }),
+        _ => Err("unknown publication status".into()),
+    }
+}
+
+async fn application_error(
+    state: &AppState,
+    headers: &HeaderMap,
+    error: RepositoryError,
+) -> Result<Response, WebError> {
     match error {
         RepositoryError::Validation(message) => {
-            Ok((StatusCode::UNPROCESSABLE_ENTITY, message).into_response())
+            failure(state, headers, StatusCode::UNPROCESSABLE_ENTITY, &message).await
         }
-        RepositoryError::SlugTaken(slug) => Ok((
-            StatusCode::CONFLICT,
-            format!("slug is already used: {slug}"),
-        )
-            .into_response()),
+        RepositoryError::SlugTaken(slug) => {
+            failure(
+                state,
+                headers,
+                StatusCode::CONFLICT,
+                &format!("slug is already used: {slug}"),
+            )
+            .await
+        }
         other => Err(WebError::Repository(other)),
     }
+}
+
+/// A browser navigation gets a real page for an expected failure instead of
+/// a bare sentence on white; scripts and JSON callers keep the plain text
+/// they parse today.
+fn wants_html(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|accept| accept.contains("text/html") && !accept.contains("application/json"))
+}
+
+async fn failure(
+    state: &AppState,
+    headers: &HeaderMap,
+    status: StatusCode,
+    message: &str,
+) -> Result<Response, WebError> {
+    if !wants_html(headers) {
+        return Ok((status, message.to_owned()).into_response());
+    }
+    let heading_key = match status {
+        StatusCode::UNPROCESSABLE_ENTITY | StatusCode::BAD_REQUEST => "admin.error_invalid_heading",
+        StatusCode::CONFLICT => "admin.error_conflict_heading",
+        StatusCode::FORBIDDEN | StatusCode::UNAUTHORIZED => "admin.error_forbidden_heading",
+        StatusCode::NOT_FOUND | StatusCode::GONE => "admin.error_not_found_heading",
+        _ => "admin.error_heading",
+    };
+    let html = state
+        .render_admin_string(
+            "admin/error.html",
+            json!({
+                "status": status.as_u16(),
+                "heading_key": heading_key,
+                "message": message,
+                "csrf": "",
+            }),
+        )
+        .await?;
+    Ok((status, axum::response::Html(html)).into_response())
 }
 
 fn set_auth_cookies(
@@ -1326,8 +1892,79 @@ fn set_auth_cookies(
     Ok(())
 }
 
-fn login_redirect() -> Response {
-    redirect(StatusCode::SEE_OTHER, "/admin/login/")
+fn login_redirect(next: Option<&str>) -> Response {
+    match next.and_then(safe_admin_path) {
+        Some(next) if next != "/admin/" => redirect(
+            StatusCode::SEE_OTHER,
+            &format!("/admin/login/?next={}", percent_encode_path(next)),
+        ),
+        _ => redirect(StatusCode::SEE_OTHER, "/admin/login/"),
+    }
+}
+
+/// The admin path the browser asked for, carried as the login `next` target.
+/// Axum strips nothing here, so the original path is what the proxy or
+/// browser sent; only same-site admin pages are ever accepted.
+fn requested_path(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(crate::web::REQUESTED_PATH_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
+}
+
+/// Accepts only an absolute admin path without a scheme, host, query, or
+/// fragment, so `next` can never send the writer off-site after login.
+fn safe_admin_path(candidate: &str) -> Option<&str> {
+    let valid = candidate.starts_with("/admin/")
+        && !candidate.starts_with("//")
+        && !candidate.contains(['\\', '?', '#', '\n', '\r'])
+        && candidate.len() <= 512
+        && candidate
+            .split('/')
+            .all(|segment| !matches!(segment, "." | ".."));
+    valid.then_some(candidate)
+}
+
+/// Percent-encodes a query value: everything but unreserved characters.
+fn percent_encode_query(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(char::from(byte));
+            }
+            b' ' => encoded.push('+'),
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
+}
+
+fn percent_encode_path(path: &str) -> String {
+    let mut encoded = String::with_capacity(path.len());
+    for byte in path.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
+                encoded.push(char::from(byte));
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
+}
+
+fn clear_auth_cookies(response: &mut Response, secure: bool) -> Result<(), WebError> {
+    let secure = if secure { "; Secure" } else { "" };
+    for cookie in [
+        format!("sb_session=; Path=/admin; HttpOnly; SameSite=Strict; Max-Age=0{secure}"),
+        format!("sb_csrf=; Path=/admin; SameSite=Strict; Max-Age=0{secure}"),
+    ] {
+        response.headers_mut().append(
+            header::SET_COOKIE,
+            HeaderValue::from_str(&cookie).map_err(WebError::header)?,
+        );
+    }
+    Ok(())
 }
 
 fn redirect(status: StatusCode, location: &str) -> Response {
@@ -1365,4 +2002,173 @@ fn clean_passkey_name(value: &str) -> String {
 
 fn default_passkey_name() -> String {
     "Passkey".into()
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::TimeZone;
+
+    use super::*;
+
+    fn content_with(publication: Publication, deleted: bool) -> Content {
+        let at = Utc.with_ymd_and_hms(2026, 9, 3, 12, 0, 0).unwrap();
+        Content {
+            id: ContentId::from_i64(1),
+            kind: ContentKind::Post,
+            title: "T".into(),
+            slug: Slug::parse("t").unwrap(),
+            summary: String::new(),
+            body_markdown: String::new(),
+            body_html: String::new(),
+            tags: Vec::new(),
+            cover_media_id: None,
+            seo_title: None,
+            seo_description: None,
+            publication,
+            version: 1,
+            created_at: at,
+            updated_at: at,
+            deleted_at: deleted.then_some(at),
+        }
+    }
+
+    #[test]
+    fn parse_publish_at_accepts_rfc3339_and_naive_utc_and_rejects_garbage() {
+        let expected = Utc.with_ymd_and_hms(2026, 9, 3, 12, 1, 0).unwrap();
+        assert_eq!(parse_publish_at(""), Ok(None));
+        assert_eq!(parse_publish_at("   "), Ok(None));
+        assert_eq!(parse_publish_at("2026-09-03T12:01:00Z"), Ok(Some(expected)));
+        assert_eq!(
+            parse_publish_at("2026-09-03T21:01:00+09:00"),
+            Ok(Some(expected))
+        );
+        assert_eq!(parse_publish_at("2026-09-03T12:01"), Ok(Some(expected)));
+        assert_eq!(parse_publish_at("2026-09-03T12:01:00"), Ok(Some(expected)));
+        assert!(parse_publish_at("next tuesday").is_err());
+        assert!(parse_publish_at("2026-13-40T99:99").is_err());
+    }
+
+    #[test]
+    fn publication_for_follows_the_status_and_date_table() {
+        let now = Utc.with_ymd_and_hms(2026, 9, 3, 12, 0, 37).unwrap();
+        let minute = Utc.with_ymd_and_hms(2026, 9, 3, 12, 0, 0).unwrap();
+        let earlier = Utc.with_ymd_and_hms(2026, 9, 1, 8, 0, 0).unwrap();
+        let later = Utc.with_ymd_and_hms(2026, 9, 9, 8, 0, 0).unwrap();
+        let public = content_with(Publication::Public { publish_at: now }, false);
+        let draft = content_with(Publication::Draft, false);
+
+        // Absent status keeps things as they are, but may move a public piece.
+        assert_eq!(publication_for("", None, None, now), Ok(Publication::Draft));
+        assert_eq!(
+            publication_for("", None, Some(&public), now),
+            Ok(Publication::Public { publish_at: now })
+        );
+        assert_eq!(
+            publication_for("", Some(minute), Some(&public), now),
+            Ok(Publication::Public { publish_at: now }),
+            "a same-minute round trip keeps the exact instant"
+        );
+        assert_eq!(
+            publication_for("", Some(earlier), Some(&public), now),
+            Ok(Publication::Public {
+                publish_at: earlier
+            })
+        );
+        assert_eq!(
+            publication_for("", Some(later), Some(&draft), now),
+            Ok(Publication::Draft),
+            "a draft does not take a date until it is published"
+        );
+        assert_eq!(
+            publication_for("draft", Some(later), Some(&public), now),
+            Ok(Publication::Draft)
+        );
+        assert_eq!(
+            publication_for("public", Some(later), Some(&draft), now),
+            Ok(Publication::Public { publish_at: later })
+        );
+        assert_eq!(
+            publication_for("public", Some(minute), Some(&public), now),
+            Ok(Publication::Public { publish_at: now })
+        );
+        assert_eq!(
+            publication_for("public", None, Some(&public), now),
+            Ok(Publication::Public { publish_at: now })
+        );
+        assert_eq!(
+            publication_for("public", None, Some(&draft), now),
+            Ok(Publication::Public { publish_at: now })
+        );
+        assert!(publication_for("archived", None, None, now).is_err());
+    }
+
+    #[test]
+    fn content_status_distinguishes_trash_schedule_and_visibility() {
+        let now = Utc.with_ymd_and_hms(2026, 9, 3, 12, 0, 0).unwrap();
+        let later = now + Duration::hours(1);
+        assert_eq!(
+            content_status(&content_with(Publication::Draft, false), now),
+            "draft"
+        );
+        assert_eq!(
+            content_status(
+                &content_with(Publication::Public { publish_at: later }, false),
+                now
+            ),
+            "scheduled"
+        );
+        assert_eq!(
+            content_status(
+                &content_with(Publication::Public { publish_at: now }, false),
+                now
+            ),
+            "public"
+        );
+        assert_eq!(
+            content_status(
+                &content_with(Publication::Public { publish_at: now }, true),
+                now
+            ),
+            "trashed"
+        );
+    }
+
+    #[test]
+    fn dashboard_filter_matches_status_and_query_case_insensitively() {
+        assert_eq!(DashboardFilter::parse("bogus"), DashboardFilter::All);
+        assert!(DashboardFilter::All.admits("draft"));
+        assert!(DashboardFilter::All.admits("public"));
+        assert!(!DashboardFilter::All.admits("trashed"));
+        assert!(DashboardFilter::Trash.admits("trashed"));
+        assert!(!DashboardFilter::Trash.admits("public"));
+        assert!(DashboardFilter::Scheduled.admits("scheduled"));
+        assert!(!DashboardFilter::Scheduled.admits("public"));
+        assert!(dashboard_matches("", "Anything", "anything"));
+        assert!(dashboard_matches("BET", "Beta", "b"));
+        assert!(dashboard_matches("second", "Two", "the-second-piece"));
+        assert!(!dashboard_matches("zzz", "Two", "two"));
+    }
+
+    #[test]
+    fn next_targets_are_limited_to_admin_pages() {
+        assert_eq!(
+            safe_admin_path("/admin/settings/"),
+            Some("/admin/settings/")
+        );
+        assert_eq!(
+            safe_admin_path("/admin/content/7/edit/"),
+            Some("/admin/content/7/edit/")
+        );
+        assert_eq!(safe_admin_path("https://evil.example/admin/"), None);
+        assert_eq!(safe_admin_path("//evil.example/admin/"), None);
+        assert_eq!(safe_admin_path("/archive/"), None);
+        assert_eq!(safe_admin_path("/admin/../secret"), None);
+        assert_eq!(safe_admin_path("/admin/settings/?x=1"), None);
+        assert_eq!(safe_admin_path("/admin/a#b"), None);
+        assert_eq!(
+            percent_encode_path("/admin/コンテンツ/"),
+            "/admin/%E3%82%B3%E3%83%B3%E3%83%86%E3%83%B3%E3%83%84/"
+        );
+        assert_eq!(percent_encode_query("a b&c=d/é"), "a+b%26c%3Dd%2F%C3%A9");
+    }
 }
