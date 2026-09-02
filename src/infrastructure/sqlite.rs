@@ -3,7 +3,7 @@ use std::{path::Path, str::FromStr, time::Duration};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::{
-    FromRow, Row, Sqlite, SqlitePool, Transaction,
+    AssertSqlSafe, FromRow, Row, Sqlite, SqlitePool, Transaction,
     migrate::Migrator,
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous},
 };
@@ -956,7 +956,7 @@ async fn index_search_document(
 /// Builds the hybrid search statement for one parsed query: an optional FTS
 /// MATCH for trigram-capable terms, one LIKE group per short term, and a
 /// ranking clause that prefers bm25 (title-weighted) when FTS took part.
-fn build_search_sql(terms: &SearchTerms) -> String {
+fn build_search_sql(terms: &SearchTerms) -> AssertSqlSafe<String> {
     // The FTS table keeps its real name: SQLite rejects MATCH through an
     // alias ("no such column") in a plain join like this.
     let mut sql = String::from(
@@ -984,7 +984,9 @@ fn build_search_sql(terms: &SearchTerms) -> String {
         sql.push_str(" ORDER BY bm25(search_index, 4.0, 1.0), c.publish_at DESC");
     }
     sql.push_str(" LIMIT ?");
-    sql
+    // SQL SAFETY: this function appends only the literal fragments above.
+    // Search terms are never interpolated; `search` binds every value below.
+    AssertSqlSafe(sql)
 }
 
 #[async_trait]
@@ -1002,9 +1004,7 @@ impl SearchRepository for SqliteRepository {
         if terms.is_empty() {
             return Ok(Vec::new());
         }
-        let sql = build_search_sql(terms);
-
-        let mut query = sqlx::query(&sql).bind(now);
+        let mut query = sqlx::query(build_search_sql(terms)).bind(now);
         if !terms.fts.is_empty() {
             let match_expression = terms
                 .fts
@@ -1101,7 +1101,7 @@ impl EngagementRepository for SqliteRepository {
 impl SqliteRepository {
     async fn neighbor(
         &self,
-        sql: &str,
+        sql: &'static str,
         id: ContentId,
         publish_at: DateTime<Utc>,
         now: DateTime<Utc>,
@@ -2546,4 +2546,23 @@ fn media_from_row(
 
 fn media_storage(error: impl std::fmt::Display) -> MediaRepositoryError {
     MediaRepositoryError::Storage(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dynamic_search_sql_never_interpolates_term_data() {
+        let terms = SearchTerms {
+            fts: vec!["\"; DROP TABLE contents; --".to_owned()],
+            like: vec!["%' OR 1 = 1; --".to_owned()],
+        };
+
+        let sql = build_search_sql(&terms).0;
+
+        assert!(!sql.contains("DROP TABLE"));
+        assert!(!sql.contains("OR 1 = 1"));
+        assert_eq!(sql.matches('?').count(), 5);
+    }
 }
