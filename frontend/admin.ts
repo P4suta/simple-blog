@@ -3,6 +3,7 @@ import { keymap } from "@codemirror/view";
 import { EditorSelection, type EditorState } from "@codemirror/state";
 import { markdown } from "@codemirror/lang-markdown";
 import { css } from "@codemirror/lang-css";
+import { postFormAsNavigation } from "./form-navigation";
 
 // Word-wise cursor movement that actually understands 日本語. CodeMirror's
 // default group motion sees an unbroken CJK run as one giant word;
@@ -533,9 +534,14 @@ if (editor) {
         body: parameters,
       });
       if (response.status === 409) {
-        document.open();
-        document.write(await response.text());
-        document.close();
+        // Let the browser render the server's full conflict page as a normal
+        // navigation. This preserves every submitted field without evaluating
+        // response text through document.write.
+        dirty = false;
+        saving = false;
+        saveAgain = false;
+        pendingStatus = undefined;
+        postFormAsNavigation(document, editor.action, parameters);
         return;
       }
       if (!response.ok) throw new Error(await response.text());

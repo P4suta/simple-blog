@@ -291,6 +291,17 @@ if grep -En '#[[:space:]]*\[[[:space:]]*allow([[:space:](]|$)' \
   fail 'allow attributes are forbidden'
 fi
 
+frontend_sources=()
+while IFS= read -r path; do
+  frontend_sources+=("$path")
+done < <(find frontend -type f -name '*.ts' -print)
+
+if grep -En \
+  'document[[:space:]]*\.[[:space:]]*(open|write|writeln)[[:space:]]*\(' \
+  "${frontend_sources[@]}"; then
+  fail 'document stream mutation is forbidden in frontend sources'
+fi
+
 if ! awk '
   function finish_attribute() {
     if (in_expect && !has_reason) {
