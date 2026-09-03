@@ -301,6 +301,55 @@ a {
   border-bottom-color: var(--ink);
 }
 
+.dashboard-filters .count {
+  color: var(--faint);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.dashboard-sort {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.dashboard-sort select {
+  width: auto;
+  padding: 0.3rem 0.5rem;
+  font-size: 0.85rem;
+}
+
+.dashboard-sort button {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: none;
+  color: var(--muted);
+  padding: 0.35rem 0.7rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.dashboard-pager {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1rem;
+  margin-top: 1rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.dashboard-pager a {
+  text-decoration: none;
+}
+
+.dashboard-empty-trash {
+  margin-top: 1.5rem;
+}
+
 .dashboard-search {
   display: flex;
   gap: 0.4rem;
@@ -1611,9 +1660,19 @@ dialog.editor-drawer::backdrop {
     grid-template-columns: minmax(0, 1fr) max-content max-content;
   }
 
-  .engagement,
-  .dates {
+  /* Metrics fold away; the dates move under the title as a compact line,
+     because when a piece publishes matters on a phone too. */
+  .engagement {
     display: none;
+  }
+
+  .dates {
+    grid-column: 1 / -1;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.2rem 0.75rem;
+    justify-items: start;
+    font-size: 0.7rem;
   }
 
   .dashboard-search input[type="search"] {

@@ -557,6 +557,15 @@ function showSaved(
   }
 }
 
+// The dashboard sort applies on change; the button stays for scripting-free
+// browsers and disappears once the script is in charge.
+const sortSelect = document.querySelector<HTMLSelectElement>("[data-sort]");
+if (sortSelect) {
+  sortSelect.addEventListener("change", () => sortSelect.form?.requestSubmit());
+  const apply = document.querySelector<HTMLElement>("[data-sort-apply]");
+  if (apply) apply.hidden = true;
+}
+
 // Settings save themselves like the editor does: debounced on input, flushed
 // by Ctrl+S, no save button.
 const settingsForm = document.querySelector<HTMLFormElement>("[data-settings]");

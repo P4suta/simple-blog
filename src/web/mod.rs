@@ -380,6 +380,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/admin/", get(admin::dashboard))
         .route("/admin/publish/", post(admin::publish_site))
+        .route("/admin/trash/empty/", post(admin::empty_trash))
         .route("/admin/preview/home/", get(admin::preview_home))
         .route("/admin/tags/", get(admin::list_tags))
         .route("/admin/share/{token}/", get(admin::shared_preview))

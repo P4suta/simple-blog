@@ -3328,3 +3328,209 @@ async fn editor_and_settings_expose_progressive_enhancement_markers() {
     assert!(!settings.contains("data-passkey-add"));
     assert!(settings.contains("href=\"/admin/login/?next=/admin/settings/\""));
 }
+
+/// One dashboard page as the writer sees it.
+async fn dashboard_page(harness: &Harness, cookie: &str, path: &str) -> String {
+    text(
+        harness
+            .send(Method::GET, path, None, Body::empty(), Some(cookie))
+            .await,
+    )
+    .await
+}
+
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "counts, pages and every sort order in one scenario"
+)]
+async fn dashboard_paginates_sorts_and_counts() {
+    let harness = Harness::new().await;
+    let (cookie, _csrf) = harness.session_cookie().await;
+    let now = Utc::now();
+    for number in 1..=60 {
+        harness
+            .contents
+            .create(
+                ContentDraft {
+                    title: format!("Piece {number:02}"),
+                    ..draft(&format!("piece-{number}"))
+                },
+                SaveIntent::Explicit,
+                now - Duration::minutes(number),
+            )
+            .await
+            .unwrap();
+    }
+    for (title, slug, minutes_ago) in [("Zulu", "zulu", 30), ("Alpha", "alpha", 5)] {
+        harness
+            .contents
+            .create(
+                ContentDraft {
+                    title: title.into(),
+                    publication: Publication::Public {
+                        publish_at: now - Duration::minutes(minutes_ago),
+                    },
+                    ..draft(slug)
+                },
+                SaveIntent::Explicit,
+                now,
+            )
+            .await
+            .unwrap();
+    }
+    let binned = harness
+        .contents
+        .create(draft("binned"), SaveIntent::Explicit, now)
+        .await
+        .unwrap();
+    harness
+        .repository
+        .move_to_trash(binned.id, binned.version, now)
+        .await
+        .unwrap();
+
+    let first = dashboard_page(&harness, &cookie, "/admin/").await;
+    for count in [
+        ">All <span class=\"count\">62</span>",
+        ">Drafts <span class=\"count\">60</span>",
+        ">Public <span class=\"count\">2</span>",
+        ">Trash <span class=\"count\">1</span>",
+    ] {
+        assert!(first.contains(count), "missing {count}");
+    }
+    // Every row carries one edit link; <link> tags would confuse a "<li" count.
+    assert_eq!(first.matches("/edit/\"").count(), 50, "fifty rows per page");
+    assert!(first.contains("rel=\"next\""));
+    assert!(!first.contains("rel=\"prev\""));
+    assert!(first.contains("Page 1 of 2"));
+
+    let second = dashboard_page(&harness, &cookie, "/admin/?page=2").await;
+    assert_eq!(second.matches("/edit/\"").count(), 12);
+    assert!(second.contains("rel=\"prev\""));
+    assert!(!second.contains("rel=\"next\""));
+    // An impossible page falls back to the last one rather than an empty list.
+    assert_eq!(
+        dashboard_page(&harness, &cookie, "/admin/?page=9")
+            .await
+            .matches("/edit/\"")
+            .count(),
+        12
+    );
+
+    let by_title = dashboard_page(&harness, &cookie, "/admin/?sort=title").await;
+    let alpha = by_title.find("Alpha").unwrap();
+    let piece = by_title.find("Piece 01").unwrap();
+    assert!(alpha < piece, "titles sort alphabetically");
+    assert!(by_title.contains("<option value=\"title\" selected"));
+    assert!(
+        by_title.contains("data-filter=\"draft\" href=\"/admin/?status=draft&amp;sort=title\"")
+    );
+
+    let by_published =
+        dashboard_page(&harness, &cookie, "/admin/?status=public&sort=published").await;
+    let alpha = by_published.find("Alpha").unwrap();
+    let zulu = by_published.find("Zulu").unwrap();
+    assert!(alpha < zulu, "the newest publication comes first");
+
+    // The filter search also reads summaries and tags.
+    harness
+        .contents
+        .create(
+            ContentDraft {
+                title: "Untitled thoughts".into(),
+                summary: "About pelicans".into(),
+                tags: vec!["Seabirds".into()],
+                ..draft("pelicans")
+            },
+            SaveIntent::Explicit,
+            now,
+        )
+        .await
+        .unwrap();
+    assert!(
+        dashboard_page(&harness, &cookie, "/admin/?q=pelicans")
+            .await
+            .contains("Untitled thoughts")
+    );
+    assert!(
+        dashboard_page(&harness, &cookie, "/admin/?q=seabirds")
+            .await
+            .contains("Untitled thoughts")
+    );
+}
+
+#[tokio::test]
+async fn empty_trash_deletes_everything_in_the_trash_only() {
+    let harness = Harness::new().await;
+    let (cookie, csrf) = harness.session_cookie().await;
+    let now = Utc::now();
+    for slug in ["gone-one", "gone-two"] {
+        let piece = harness
+            .contents
+            .create(draft(slug), SaveIntent::Explicit, now)
+            .await
+            .unwrap();
+        harness
+            .repository
+            .move_to_trash(piece.id, piece.version, now)
+            .await
+            .unwrap();
+    }
+    let kept = harness
+        .contents
+        .create(draft("kept"), SaveIntent::Explicit, now)
+        .await
+        .unwrap();
+    let trash_page = text(
+        harness
+            .send(
+                Method::GET,
+                "/admin/?status=trash",
+                None,
+                Body::empty(),
+                Some(&cookie),
+            )
+            .await,
+    )
+    .await;
+    assert!(trash_page.contains("action=\"/admin/trash/empty/\""));
+
+    let forbidden = harness
+        .send(
+            Method::POST,
+            "/admin/trash/empty/",
+            Some("application/x-www-form-urlencoded"),
+            serde_urlencoded::to_string([("csrf", "wrong")]).unwrap(),
+            Some(&cookie),
+        )
+        .await;
+    assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+    let emptied = harness
+        .send(
+            Method::POST,
+            "/admin/trash/empty/",
+            Some("application/x-www-form-urlencoded"),
+            serde_urlencoded::to_string([("csrf", csrf.as_str())]).unwrap(),
+            Some(&cookie),
+        )
+        .await;
+    assert_eq!(emptied.status(), StatusCode::SEE_OTHER);
+    assert_eq!(emptied.headers()[header::LOCATION], "/admin/?status=trash");
+    let remaining = harness.repository.list_all_content().await.unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].id, kept.id);
+    let empty = text(
+        harness
+            .send(
+                Method::GET,
+                "/admin/?status=trash",
+                None,
+                Body::empty(),
+                Some(&cookie),
+            )
+            .await,
+    )
+    .await;
+    assert!(!empty.contains("action=\"/admin/trash/empty/\""));
+}

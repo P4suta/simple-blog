@@ -30,6 +30,9 @@ use crate::{
 
 const ADMIN_PREFS_JS: &str = include_str!("../../static/prefs.js");
 
+/// Rows per dashboard page: enough to scan, few enough to render instantly.
+const DASHBOARD_PAGE_SIZE: usize = 50;
+
 #[derive(Serialize)]
 struct DashboardContext {
     csrf: String,
@@ -43,6 +46,19 @@ struct DashboardContext {
     empty_key: &'static str,
     /// The active release lags behind a committed change; a retry is pending.
     site_pending: bool,
+    /// The active sort key: `updated`, `published`, or `title`.
+    sort: &'static str,
+    /// Query-string suffix carrying a non-default sort, for the filter links.
+    sort_query: String,
+    page: usize,
+    page_count: usize,
+    page_of: String,
+    prev_url: Option<String>,
+    next_url: Option<String>,
+    /// How many pieces each filter would show for the same search.
+    counts: std::collections::BTreeMap<&'static str, usize>,
+    /// The trash filter is showing something that can be emptied.
+    can_empty_trash: bool,
 }
 
 #[derive(Serialize)]
@@ -65,6 +81,55 @@ pub struct DashboardQuery {
     status: String,
     #[serde(default)]
     q: String,
+    #[serde(default)]
+    sort: String,
+    #[serde(default)]
+    page: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DashboardSort {
+    Updated,
+    Published,
+    Title,
+}
+
+impl DashboardSort {
+    fn parse(value: &str) -> Self {
+        match value {
+            "published" => Self::Published,
+            "title" => Self::Title,
+            _ => Self::Updated,
+        }
+    }
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Updated => "updated",
+            Self::Published => "published",
+            Self::Title => "title",
+        }
+    }
+
+    /// Orders pieces for the dashboard; every order falls back to the most
+    /// recent edit so the list is stable.
+    fn apply(self, items: &mut [Content]) {
+        match self {
+            Self::Updated => items.sort_by_key(|item| std::cmp::Reverse(item.updated_at)),
+            Self::Published => items.sort_by(|a, b| {
+                b.publication
+                    .publish_at()
+                    .cmp(&a.publication.publish_at())
+                    .then(b.updated_at.cmp(&a.updated_at))
+            }),
+            Self::Title => items.sort_by(|a, b| {
+                a.title
+                    .to_lowercase()
+                    .cmp(&b.title.to_lowercase())
+                    .then(b.updated_at.cmp(&a.updated_at))
+            }),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -108,12 +173,35 @@ impl DashboardFilter {
     }
 }
 
-/// Case-insensitive match on the title or slug; an empty query admits all.
-fn dashboard_matches(query: &str, title: &str, slug: &str) -> bool {
+/// Case-insensitive match on the title, slug, summary or a tag; an empty
+/// query admits all.
+fn dashboard_matches(query: &str, content: &Content) -> bool {
     let query = query.trim().to_lowercase();
     query.is_empty()
-        || title.to_lowercase().contains(&query)
-        || slug.to_lowercase().contains(&query)
+        || content.title.to_lowercase().contains(&query)
+        || content.slug.as_str().contains(&query)
+        || content.summary.to_lowercase().contains(&query)
+        || content
+            .tags
+            .iter()
+            .any(|tag| tag.name.to_lowercase().contains(&query))
+}
+
+/// `/admin/?status=…&q=…&sort=…&page=N` with only the parts that matter.
+fn dashboard_url(filter: &str, q_query: &str, sort: DashboardSort, page: usize) -> String {
+    let mut url = format!("/admin/?status={filter}");
+    if !q_query.is_empty() {
+        url.push_str("&q=");
+        url.push_str(q_query);
+    }
+    if sort != DashboardSort::Updated {
+        url.push_str("&sort=");
+        url.push_str(sort.as_str());
+    }
+    if page > 1 {
+        url.push_str(&format!("&page={page}"));
+    }
+    url
 }
 
 #[derive(Serialize)]
@@ -384,14 +472,107 @@ pub async fn dashboard(
     };
     let now = state.clock.now();
     let filter = DashboardFilter::parse(&query.status);
+    let sort = DashboardSort::parse(&query.sort);
+    let q = query.q.trim().to_owned();
     let everything = state.content.list_all_content().await?;
     let any_content = everything.iter().any(|content| !content.is_trashed());
     let totals = state.engagement.engagement_totals().await?;
-    let stamp = |at: DateTime<Utc>| at.to_rfc3339_opts(SecondsFormat::Secs, true);
-    let contents: Vec<DashboardItem> = everything
+
+    let matching = everything
+        .into_iter()
+        .filter(|content| dashboard_matches(&q, content))
+        .collect::<Vec<_>>();
+    let counts = filter_counts(&matching, now);
+    let mut shown = matching
         .into_iter()
         .filter(|content| filter.admits(content_status(content, now)))
-        .filter(|content| dashboard_matches(&query.q, &content.title, content.slug.as_str()))
+        .collect::<Vec<_>>();
+    sort.apply(&mut shown);
+
+    let page_count = shown.len().div_ceil(DASHBOARD_PAGE_SIZE).max(1);
+    let page = query.page.clamp(1, page_count);
+    let start = (page - 1) * DASHBOARD_PAGE_SIZE;
+    let end = (start + DASHBOARD_PAGE_SIZE).min(shown.len());
+    let contents = dashboard_items(shown.drain(start..end), &totals, now);
+    let empty_key = match filter {
+        DashboardFilter::Trash => "dashboard.empty_trash",
+        DashboardFilter::All if !any_content && q.is_empty() => "dashboard.empty",
+        _ => "dashboard.empty_filtered",
+    };
+    let site_pending = state.site_state().await? == SiteState::Pending;
+    let locale = state.site.site_settings().await?.locale;
+    let q_query = percent_encode_query(&q);
+    let can_empty_trash = filter == DashboardFilter::Trash && !contents.is_empty();
+    let page = state
+        .render_admin(
+            "admin/dashboard.html",
+            DashboardContext {
+                csrf: identity.csrf.clone(),
+                contents,
+                filter: filter.as_str(),
+                sort: sort.as_str(),
+                sort_query: if sort == DashboardSort::Updated {
+                    String::new()
+                } else {
+                    format!("&sort={}", sort.as_str())
+                },
+                page_of: state.translations.format(
+                    locale,
+                    "dashboard.page_of",
+                    &[
+                        ("number", &page.to_string()),
+                        ("count", &page_count.to_string()),
+                    ],
+                ),
+                prev_url: (page > 1)
+                    .then(|| dashboard_url(filter.as_str(), &q_query, sort, page - 1)),
+                next_url: (page < page_count)
+                    .then(|| dashboard_url(filter.as_str(), &q_query, sort, page + 1)),
+                page,
+                page_count,
+                q_query,
+                q,
+                empty_key,
+                site_pending,
+                counts,
+                can_empty_trash,
+            },
+        )
+        .await?;
+    with_session_refresh(page, &identity, state.secure_cookies())
+}
+
+/// How many matching pieces each filter tab would show.
+fn filter_counts(
+    matching: &[Content],
+    now: DateTime<Utc>,
+) -> std::collections::BTreeMap<&'static str, usize> {
+    [
+        DashboardFilter::All,
+        DashboardFilter::Draft,
+        DashboardFilter::Scheduled,
+        DashboardFilter::Public,
+        DashboardFilter::Trash,
+    ]
+    .into_iter()
+    .map(|candidate| {
+        let count = matching
+            .iter()
+            .filter(|content| candidate.admits(content_status(content, now)))
+            .count();
+        (candidate.as_str(), count)
+    })
+    .collect()
+}
+
+/// One dashboard row per piece, stamps in RFC 3339 for the local-time script.
+fn dashboard_items(
+    contents: impl Iterator<Item = Content>,
+    totals: &std::collections::HashMap<ContentId, crate::application::ports::Engagement>,
+    now: DateTime<Utc>,
+) -> Vec<DashboardItem> {
+    let stamp = |at: DateTime<Utc>| at.to_rfc3339_opts(SecondsFormat::Secs, true);
+    contents
         .map(|content| {
             let engagement = totals.get(&content.id).copied().unwrap_or_default();
             DashboardItem {
@@ -407,28 +588,41 @@ pub async fn dashboard(
                 likes: engagement.likes,
             }
         })
-        .collect();
-    let empty_key = match filter {
-        DashboardFilter::Trash => "dashboard.empty_trash",
-        DashboardFilter::All if !any_content && query.q.trim().is_empty() => "dashboard.empty",
-        _ => "dashboard.empty_filtered",
-    };
-    let site_pending = state.site_state().await? == SiteState::Pending;
-    let page = state
-        .render_admin(
-            "admin/dashboard.html",
-            DashboardContext {
-                csrf: identity.csrf.clone(),
-                contents,
-                filter: filter.as_str(),
-                q_query: percent_encode_query(query.q.trim()),
-                q: query.q.trim().to_owned(),
-                empty_key,
-                site_pending,
-            },
-        )
-        .await?;
-    with_session_refresh(page, &identity, state.secure_cookies())
+        .collect()
+}
+
+/// Deletes every trashed piece for good, in one deliberate step.
+pub async fn empty_trash(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<CsrfForm>,
+) -> Result<Response, WebError> {
+    if let Err(response) = authenticate(&state, &headers, Some(&form.csrf)).await? {
+        return Ok(response);
+    }
+    let trashed = state
+        .content
+        .list_all_content()
+        .await?
+        .into_iter()
+        .filter(Content::is_trashed)
+        .map(|content| content.id)
+        .collect::<Vec<_>>();
+    let mut deleted = 0_usize;
+    for id in trashed {
+        match state.content_service.delete_permanently(id).await {
+            Ok(()) => deleted += 1,
+            // Restored between the page load and the click: not ours to delete.
+            Err(RepositoryError::NotFound) => {}
+            Err(error) => return application_error(&state, &headers, error).await,
+        }
+    }
+    run_media_gc(&state).await;
+    if wants_json(&headers) {
+        Ok(Json(json!({ "ok": true, "deleted": deleted })).into_response())
+    } else {
+        Ok(redirect(StatusCode::SEE_OTHER, "/admin/?status=trash"))
+    }
 }
 
 /// Rebuilds the public site on request, typically from the dashboard banner
@@ -2529,6 +2723,27 @@ mod tests {
 
     use super::*;
 
+    fn matching_content(title: &str, slug: &str) -> Content {
+        Content {
+            id: ContentId::from_i64(1),
+            kind: ContentKind::Post,
+            title: title.into(),
+            slug: Slug::parse(slug).unwrap(),
+            summary: String::new(),
+            body_markdown: String::new(),
+            body_html: String::new(),
+            tags: Vec::new(),
+            cover_media_id: None,
+            seo_title: None,
+            seo_description: None,
+            publication: Publication::Draft,
+            version: 1,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            deleted_at: None,
+        }
+    }
+
     fn content_with(publication: Publication, deleted: bool) -> Content {
         let at = Utc.with_ymd_and_hms(2026, 9, 3, 12, 0, 0).unwrap();
         Content {
@@ -2662,10 +2877,16 @@ mod tests {
         assert!(!DashboardFilter::Trash.admits("public"));
         assert!(DashboardFilter::Scheduled.admits("scheduled"));
         assert!(!DashboardFilter::Scheduled.admits("public"));
-        assert!(dashboard_matches("", "Anything", "anything"));
-        assert!(dashboard_matches("BET", "Beta", "b"));
-        assert!(dashboard_matches("second", "Two", "the-second-piece"));
-        assert!(!dashboard_matches("zzz", "Two", "two"));
+        assert!(dashboard_matches(
+            "",
+            &matching_content("Anything", "anything")
+        ));
+        assert!(dashboard_matches("BET", &matching_content("Beta", "b")));
+        assert!(dashboard_matches(
+            "second",
+            &matching_content("Two", "the-second-piece")
+        ));
+        assert!(!dashboard_matches("zzz", &matching_content("Two", "two")));
     }
 
     #[test]
