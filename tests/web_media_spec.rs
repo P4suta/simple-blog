@@ -757,7 +757,7 @@ async fn cover_alt_text_can_be_edited_and_reaches_the_released_page() {
     )
     .await;
     assert_eq!(redirected.status(), StatusCode::SEE_OTHER);
-    assert_eq!(redirected.headers()[header::LOCATION], "/admin/");
+    assert_eq!(redirected.headers()[header::LOCATION], "/admin/media/");
 }
 
 #[tokio::test]
@@ -797,4 +797,123 @@ async fn cover_alt_text_edit_answers_pending_when_publication_fails() {
     assert_eq!(body["ok"], true);
     assert_eq!(body["site"], "pending");
     assert_eq!(body["alt_text"], "Calm sea at dusk");
+}
+
+async fn media_page(harness: &GcHarness) -> String {
+    let response = router(harness.state.clone())
+        .oneshot(
+            Request::builder()
+                .uri("/admin/media/")
+                .header(header::HOST, "localhost:8080")
+                .header(header::COOKIE, &harness.cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    String::from_utf8(response_body(response).await).unwrap()
+}
+
+#[tokio::test]
+async fn media_library_lists_assets_with_usage_and_deletes_only_unreferenced_ones() {
+    let (harness, body_asset, logo_asset, content) = gc_harness().await;
+
+    let anonymous = router(harness.state.clone())
+        .oneshot(
+            Request::builder()
+                .uri("/admin/media/")
+                .header(header::HOST, "localhost:8080")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(anonymous.status(), StatusCode::SEE_OTHER);
+
+    let page = media_page(&harness).await;
+    // Newest first: the logo was stored after the inline image.
+    assert!(
+        page.find(logo_asset.id.as_str()).unwrap() < page.find(body_asset.id.as_str()).unwrap()
+    );
+    let smallest = body_asset.variants.first().expect("variants");
+    // minijinja escapes the slashes inside attribute values.
+    assert!(page.contains(&format!("src=\"&#x2f;media&#x2f;{}\"", smallest.filename)));
+    assert!(page.contains("name=\"alt_text\" value=\"Inline\""));
+    assert!(page.contains("Used by 1 piece"));
+    assert!(page.contains("Used by the site settings"));
+    assert!(page.contains(&format!(
+        "data-copy-markdown=\"![Inline](&#x2f;media&#x2f;{})\"",
+        body_asset.original_filename
+    )));
+    assert!(page.contains("data-msg-copied"));
+    assert!(
+        !page.contains(&format!("/admin/media/{}/delete/", body_asset.id)),
+        "a referenced asset offers no delete"
+    );
+
+    // Dropping the only live reference leaves the image to history, which
+    // the page says, and only then may it be deleted.
+    let status = harness
+        .save_without_image(content.id.as_i64(), content.version, "explicit")
+        .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let page = media_page(&harness).await;
+    assert!(page.contains("History only"));
+    assert!(page.contains(&format!("/admin/media/{}/delete/", body_asset.id)));
+
+    let deleted = harness
+        .post(&format!("/admin/media/{}/delete/", body_asset.id), &[])
+        .await;
+    assert_eq!(deleted.status(), StatusCode::SEE_OTHER);
+    assert_eq!(deleted.headers()[header::LOCATION], "/admin/media/");
+    assert!(!harness.asset_exists(&body_asset).await);
+    assert!(harness.asset_exists(&logo_asset).await);
+    let gone = get(
+        &harness.state,
+        &format!("/media/{}", body_asset.original_filename),
+    )
+    .await;
+    assert_eq!(gone.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn media_delete_route_refuses_assets_referenced_by_current_content() {
+    let (harness, body_asset, logo_asset, _content) = gc_harness().await;
+    let forbidden = router(harness.state.clone())
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/admin/media/{}/delete/", body_asset.id))
+                .header(header::HOST, "localhost:8080")
+                .header(header::COOKIE, &harness.cookie)
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(
+                    serde_urlencoded::to_string([("csrf", "wrong")]).unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+
+    let in_body = harness
+        .post(&format!("/admin/media/{}/delete/", body_asset.id), &[])
+        .await;
+    assert_eq!(in_body.status(), StatusCode::CONFLICT);
+    assert!(
+        String::from_utf8(response_body(in_body).await)
+            .unwrap()
+            .contains("still used")
+    );
+    let in_settings = harness
+        .post(&format!("/admin/media/{}/delete/", logo_asset.id), &[])
+        .await;
+    assert_eq!(in_settings.status(), StatusCode::CONFLICT);
+    let unknown = harness
+        .post(&format!("/admin/media/{}/delete/", "f".repeat(64)), &[])
+        .await;
+    assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+    assert!(harness.asset_exists(&body_asset).await);
+    assert!(harness.asset_exists(&logo_asset).await);
 }

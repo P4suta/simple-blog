@@ -1,0 +1,16 @@
+{% extends "admin/base.html" %}
+{% block title %}{{ t["admin.title.media"] }}{% endblock %}
+{% block content %}
+<header class="admin-page-head"><h1>{{ t["media.heading"] }}</h1><a class="editor-back" href="/admin/">{{ t["editor.back"] }}</a></header>
+<div data-media-library data-msg-copied="{{ t["media.copied"] }}">
+{% if items %}<ul class="media-grid">
+{% for item in items %}<li class="media-card" data-media-row>
+  <a href="{{ item.url }}" target="_blank" rel="noopener"><img src="{{ item.thumb_url }}" alt="" width="{{ item.width }}" height="{{ item.height }}" loading="lazy"></a>
+  <p class="media-meta"><span>{{ item.width }}×{{ item.height }} · {{ item.size_label }}</span> <time datetime="{{ item.created_at }}" data-local-time>{{ item.created_at }}</time></p>
+  <form method="post" action="/admin/media/{{ item.id }}/" class="media-alt" data-media-alt-form><input type="hidden" name="csrf" value="{{ csrf }}"><label><span>{{ t["media.alt"] }}</span><input name="alt_text" value="{{ item.alt_text }}" maxlength="500"></label><button type="submit" data-media-alt-save>{{ t["media.alt_save"] }}</button></form>
+  <p class="media-usage media-usage-{{ item.usage_key }}">{{ item.usage_label }}</p>
+  <p class="media-actions"><button type="button" data-copy-markdown="{{ item.markdown }}">{{ t["media.copy_markdown"] }}</button>{% if item.deletable %}<details class="danger-zone"><summary>{{ t["media.delete"] }}</summary><p>{{ t["media.delete_note"] }}</p><form method="post" action="/admin/media/{{ item.id }}/delete/"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="danger-button">{{ t["media.delete_confirm"] }}</button></form></details>{% endif %}</p>
+</li>
+{% endfor %}</ul>{% else %}<p class="content-empty">{{ t["media.empty"] }}</p>{% endif %}
+</div>
+{% endblock %}

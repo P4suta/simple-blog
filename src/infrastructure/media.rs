@@ -93,19 +93,34 @@ impl LocalMediaService {
             if referenced.contains(asset.id.as_str()) {
                 continue;
             }
-            self.repository.delete_media(&asset.id).await?;
-            let filenames = std::iter::once(&asset.original_filename)
-                .chain(asset.variants.iter().map(|variant| &variant.filename));
-            for filename in filenames {
-                match std::fs::remove_file(self.directory.join(filename)) {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(MediaError::File(error.to_string())),
-                }
-            }
+            self.remove_asset(&asset).await?;
             removed += 1;
         }
         Ok(removed)
+    }
+
+    /// Deletes one asset the owner chose to drop; `false` when it does not
+    /// exist. The caller decides whether anything still shows it.
+    pub async fn delete_asset(&self, id: &MediaId) -> Result<bool, MediaError> {
+        let Some(asset) = self.repository.find_media(id).await? else {
+            return Ok(false);
+        };
+        self.remove_asset(&asset).await?;
+        Ok(true)
+    }
+
+    async fn remove_asset(&self, asset: &MediaAsset) -> Result<(), MediaError> {
+        self.repository.delete_media(&asset.id).await?;
+        let filenames = std::iter::once(&asset.original_filename)
+            .chain(asset.variants.iter().map(|variant| &variant.filename));
+        for filename in filenames {
+            match std::fs::remove_file(self.directory.join(filename)) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(MediaError::File(error.to_string())),
+            }
+        }
+        Ok(())
     }
 
     /// Replaces an asset's alternative text after the same validation the

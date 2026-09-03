@@ -5,7 +5,7 @@
 //! snapshots keep their images alive too: restoring an older version must
 //! never bring back a broken picture, so history is part of the survivor set.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::domain::{content::Content, media::media_id_from_path, theme::SiteSettings};
 
@@ -27,6 +27,56 @@ pub fn referenced_media_ids(contents: &[Content], settings: &SiteSettings) -> Ha
         collect_media_references(&content.body_markdown, &mut referenced);
     }
     referenced
+}
+
+/// How one asset is used, for the media page and the delete guard.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MediaUsage {
+    /// Pieces (cover or body) that show the asset now.
+    pub pieces: usize,
+    /// The site logo or favicon.
+    pub settings: bool,
+    /// Only stored revisions still mention it.
+    pub history_only: bool,
+}
+
+impl MediaUsage {
+    /// Something readers can reach today still needs the asset.
+    #[must_use]
+    pub const fn is_current(self) -> bool {
+        self.pieces > 0 || self.settings
+    }
+}
+
+/// Usage of every referenced asset; an asset absent from the map is unused.
+#[must_use]
+pub fn media_usage(
+    contents: &[Content],
+    settings: &SiteSettings,
+    revision_references: &HashSet<String>,
+) -> HashMap<String, MediaUsage> {
+    let mut usage: HashMap<String, MediaUsage> = HashMap::new();
+    for content in contents {
+        let mut own = HashSet::new();
+        if let Some(id) = &content.cover_media_id {
+            own.insert(id.clone());
+        }
+        collect_media_references(&content.body_markdown, &mut own);
+        for id in own {
+            usage.entry(id).or_default().pieces += 1;
+        }
+    }
+    for id in [&settings.logo_media_id, &settings.favicon_media_id]
+        .into_iter()
+        .flatten()
+    {
+        usage.entry(id.clone()).or_default().settings = true;
+    }
+    for id in revision_references {
+        let entry = usage.entry(id.clone()).or_default();
+        entry.history_only = !entry.is_current();
+    }
+    usage
 }
 
 /// Everything a sweep must keep: live references plus what stored revisions
@@ -94,6 +144,55 @@ mod tests {
         let survivors = gc_survivors(&[], &settings, &revisions);
 
         assert_eq!(survivors, HashSet::from([live, historical]));
+    }
+
+    #[test]
+    fn usage_counts_pieces_and_settings_and_flags_history_only_assets() {
+        let cover = "d".repeat(MEDIA_ID_LENGTH);
+        let inline = "e".repeat(MEDIA_ID_LENGTH);
+        let historical = "f".repeat(MEDIA_ID_LENGTH);
+        let logo = "1".repeat(MEDIA_ID_LENGTH);
+        let mut piece = crate::domain::content::Content {
+            id: crate::domain::content::ContentId::from_i64(1),
+            kind: crate::domain::content::ContentKind::Post,
+            title: "t".into(),
+            slug: crate::domain::content::Slug::parse("t").unwrap(),
+            summary: String::new(),
+            body_markdown: format!("![](/media/{inline}.webp) ![](/media/{inline}.webp)"),
+            body_html: String::new(),
+            tags: Vec::new(),
+            cover_media_id: Some(cover.clone()),
+            seo_title: None,
+            seo_description: None,
+            publication: crate::domain::content::Publication::Draft,
+            version: 1,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+        };
+        let settings = SiteSettings {
+            site_title: "t".into(),
+            site_description: String::new(),
+            locale: crate::domain::theme::Locale::En,
+            logo_media_id: Some(logo.clone()),
+            favicon_media_id: None,
+            custom_css: String::new(),
+            timezone: "UTC".into(),
+            author_name: String::new(),
+            custom_css_backup: None,
+        };
+        let revisions = HashSet::from([historical.clone(), inline.clone()]);
+
+        let usage = media_usage(std::slice::from_ref(&piece), &settings, &revisions);
+
+        assert_eq!(usage[&cover].pieces, 1);
+        assert_eq!(usage[&inline].pieces, 1, "one piece, however many times");
+        assert!(!usage[&inline].history_only);
+        assert!(usage[&logo].settings);
+        assert!(usage[&historical].history_only);
+        assert!(!usage[&historical].is_current());
+        piece.cover_media_id = None;
+        assert!(!media_usage(&[piece], &settings, &revisions).contains_key(&cover));
     }
 
     #[test]

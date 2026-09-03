@@ -704,6 +704,83 @@ dialog.confirm::backdrop {
   margin: 1rem 0 0;
 }
 
+/* The image library: a grid of cards, each with its facts and actions. */
+.media-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  gap: 1rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.media-card {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.8rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.media-card img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+.media-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.media-alt label {
+  display: grid;
+  gap: 0.2rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.media-alt input[data-error="true"] {
+  border-color: var(--danger);
+}
+
+.media-usage {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.media-usage-unused,
+.media-usage-history {
+  color: var(--faint);
+}
+
+.media-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem 1rem;
+  margin: 0;
+}
+
+.media-actions button[data-copy-markdown] {
+  padding: 0.3rem 0.6rem;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--ink);
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
 .theme-preview-note {
   margin: 0.8rem 0 0.4rem;
   color: var(--muted);

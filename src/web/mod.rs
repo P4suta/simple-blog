@@ -431,9 +431,12 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/admin/media/",
-            post(admin::upload_media).layer(DefaultBodyLimit::max(upload_envelope)),
+            get(admin::media_library)
+                .post(admin::upload_media)
+                .layer(DefaultBodyLimit::max(upload_envelope)),
         )
         .route("/admin/media/{id}/", post(admin::update_media))
+        .route("/admin/media/{id}/delete/", post(admin::delete_media))
         .route("/admin/auth/setup/start", post(admin::setup_start))
         .route("/admin/auth/setup/finish", post(admin::setup_finish))
         .route("/admin/auth/login/start", post(admin::login_start))

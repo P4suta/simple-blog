@@ -1007,7 +1007,7 @@ pub async fn update_media(
                         .into_response(),
                 )
             } else {
-                Ok(redirect(StatusCode::SEE_OTHER, "/admin/"))
+                Ok(redirect(StatusCode::SEE_OTHER, "/admin/media/"))
             }
         }
         Ok(false) => {
@@ -2852,6 +2852,187 @@ pub async fn remove_redirect(
             StatusCode::SEE_OTHER,
             "/admin/settings/#redirects",
         ))
+    }
+}
+
+#[derive(Serialize)]
+struct MediaLibraryContext {
+    csrf: String,
+    items: Vec<MediaItem>,
+}
+
+#[derive(Serialize)]
+struct MediaItem {
+    id: String,
+    url: String,
+    thumb_url: String,
+    alt_text: String,
+    width: u32,
+    height: u32,
+    size_label: String,
+    created_at: String,
+    /// `used`, `settings`, `history` or `unused`, for styling.
+    usage_key: &'static str,
+    usage_label: String,
+    deletable: bool,
+    /// The Markdown that places the image, ready to paste.
+    markdown: String,
+}
+
+/// Every uploaded image, newest first, with what uses it and what can go.
+pub async fn media_library(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, WebError> {
+    let identity = match authenticate(&state, &headers, None).await? {
+        Ok(identity) => identity,
+        Err(response) => return Ok(response),
+    };
+    let usage = current_media_usage(&state).await?;
+    let locale = state.site.site_settings().await?.locale;
+    let assets = state
+        .media_repository
+        .list_media()
+        .await
+        .map_err(WebError::media_repository)?;
+    let items = assets
+        .iter()
+        .map(|asset| media_item(asset, usage.get(asset.id.as_str()).copied(), &state, locale))
+        .collect();
+    let page = state
+        .render_admin(
+            "admin/media.html",
+            MediaLibraryContext {
+                csrf: identity.csrf.clone(),
+                items,
+            },
+        )
+        .await?;
+    with_session_refresh(page, &identity, state.secure_cookies())
+}
+
+/// Removes an image nothing current shows. History may still mention it,
+/// which the page says before the writer confirms.
+pub async fn delete_media(
+    State(state): State<AppState>,
+    Path(raw_id): Path<String>,
+    headers: HeaderMap,
+    Form(form): Form<CsrfForm>,
+) -> Result<Response, WebError> {
+    if let Err(response) = authenticate(&state, &headers, Some(&form.csrf)).await? {
+        return Ok(response);
+    }
+    let Ok(id) = MediaId::parse(&raw_id) else {
+        return failure(
+            &state,
+            &headers,
+            StatusCode::NOT_FOUND,
+            "media does not exist",
+        )
+        .await;
+    };
+    let usage = current_media_usage(&state).await?;
+    if usage
+        .get(id.as_str())
+        .is_some_and(|usage| usage.is_current())
+    {
+        return failure(
+            &state,
+            &headers,
+            StatusCode::CONFLICT,
+            "the image is still used by current content or the site settings",
+        )
+        .await;
+    }
+    if !state
+        .media_service
+        .delete_asset(&id)
+        .await
+        .map_err(WebError::media)?
+    {
+        return failure(
+            &state,
+            &headers,
+            StatusCode::NOT_FOUND,
+            "media does not exist",
+        )
+        .await;
+    }
+    if wants_json(&headers) {
+        Ok(Json(json!({ "ok": true })).into_response())
+    } else {
+        Ok(redirect(StatusCode::SEE_OTHER, "/admin/media/"))
+    }
+}
+
+async fn current_media_usage(
+    state: &AppState,
+) -> Result<std::collections::HashMap<String, crate::application::media_gc::MediaUsage>, WebError> {
+    let contents = state.content.list_all_content().await?;
+    let settings = state.site.site_settings().await?;
+    let revisions = state.revision_media.revision_media_ids().await?;
+    Ok(crate::application::media_gc::media_usage(
+        &contents, &settings, &revisions,
+    ))
+}
+
+fn media_item(
+    asset: &crate::domain::media::MediaAsset,
+    usage: Option<crate::application::media_gc::MediaUsage>,
+    state: &AppState,
+    locale: Locale,
+) -> MediaItem {
+    let usage = usage.unwrap_or_default();
+    let (usage_key, usage_label) = if usage.pieces > 0 {
+        (
+            "used",
+            state.translations.format(
+                locale,
+                "media.used_by",
+                &[("count", &usage.pieces.to_string())],
+            ),
+        )
+    } else if usage.settings {
+        (
+            "settings",
+            state.translations.text(locale, "media.used_by_settings"),
+        )
+    } else if usage.history_only {
+        (
+            "history",
+            state.translations.text(locale, "media.history_only"),
+        )
+    } else {
+        ("unused", state.translations.text(locale, "media.unused"))
+    };
+    let url = format!("/media/{}", asset.original_filename);
+    MediaItem {
+        id: asset.id.to_string(),
+        thumb_url: asset.variants.first().map_or_else(
+            || url.clone(),
+            |variant| format!("/media/{}", variant.filename),
+        ),
+        markdown: format!("![{}]({url})", asset.alt_text),
+        url,
+        alt_text: asset.alt_text.clone(),
+        width: asset.width,
+        height: asset.height,
+        size_label: size_label(asset.byte_size),
+        created_at: asset.created_at.to_rfc3339_opts(SecondsFormat::Secs, true),
+        usage_key,
+        usage_label,
+        deletable: !usage.is_current(),
+    }
+}
+
+/// `12 KB`, `3.4 MB`: enough precision to notice an accidental 20 MB scan.
+fn size_label(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    if bytes >= MB {
+        format!("{}.{} MB", bytes / MB, (bytes % MB) * 10 / MB)
+    } else {
+        format!("{} KB", bytes.div_ceil(KB))
     }
 }
 

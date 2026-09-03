@@ -32,5 +32,5 @@
 {% endif %}{% endfor %}</ul>{% else %}<p class="content-empty">{{ t[empty_key] }}</p>{% endif %}
 {% if page_count > 1 %}<nav class="dashboard-pager" aria-label="{{ t["dashboard.pager"] }}">{% if prev_url %}<a href="{{ prev_url }}" rel="prev">← {{ t["dashboard.prev"] }}</a>{% else %}<span></span>{% endif %}<span>{{ page_of }}</span>{% if next_url %}<a href="{{ next_url }}" rel="next">{{ t["dashboard.next"] }} →</a>{% else %}<span></span>{% endif %}</nav>{% endif %}
 {% if can_empty_trash %}<details class="danger-zone dashboard-empty-trash"><summary>{{ t["dashboard.empty_trash_action"] }}</summary><form method="post" action="/admin/trash/empty/"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="danger-button">{{ t["dashboard.empty_trash_confirm"] }}</button></form></details>{% endif %}
-<p class="dashboard-links"><a href="/" target="_blank" rel="noopener">{{ t["dashboard.view_site"] }}</a><a href="/admin/settings/">{{ t["dashboard.settings"] }}</a></p>
+<p class="dashboard-links"><a href="/" target="_blank" rel="noopener">{{ t["dashboard.view_site"] }}</a><a href="/admin/media/">{{ t["dashboard.media"] }}</a><a href="/admin/settings/">{{ t["dashboard.settings"] }}</a></p>
 {% endblock %}

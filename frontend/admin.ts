@@ -557,6 +557,50 @@ function showSaved(
   }
 }
 
+// The media page: alt text saves itself a moment after typing stops, and
+// the Markdown for an image is one click away.
+const mediaLibrary = document.querySelector<HTMLElement>("[data-media-library]");
+if (mediaLibrary) {
+  for (const form of mediaLibrary.querySelectorAll<HTMLFormElement>("[data-media-alt-form]")) {
+    const input = form.querySelector<HTMLInputElement>('[name="alt_text"]');
+    const save = form.querySelector<HTMLButtonElement>("[data-media-alt-save]");
+    if (!input) continue;
+    if (save) save.hidden = true;
+    let timer: number | undefined;
+    const submit = async (): Promise<void> => {
+      const response = await fetch(form.action, {
+        method: "POST",
+        headers: { Accept: "application/json" },
+        body: new URLSearchParams(new FormData(form) as unknown as Record<string, string>),
+      });
+      input.dataset.error = response.ok ? "" : "true";
+    };
+    input.addEventListener("input", () => {
+      clearTimeout(timer);
+      timer = window.setTimeout(() => void submit(), 1_200);
+    });
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      clearTimeout(timer);
+      void submit();
+    });
+  }
+  for (const button of mediaLibrary.querySelectorAll<HTMLButtonElement>("[data-copy-markdown]")) {
+    const label = button.textContent;
+    button.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(button.dataset.copyMarkdown ?? "");
+        button.textContent = mediaLibrary.dataset.msgCopied ?? "Copied";
+        setTimeout(() => {
+          button.textContent = label;
+        }, 1500);
+      } catch {
+        /* clipboard refused: the markdown is still visible in the data attribute */
+      }
+    });
+  }
+}
+
 // The dashboard sort applies on change; the button stays for scripting-free
 // browsers and disappears once the script is in charge.
 const sortSelect = document.querySelector<HTMLSelectElement>("[data-sort]");
