@@ -18,6 +18,7 @@ use simple_blog::{
     domain::{
         auth::{SetupPurpose, StoredPasskey},
         content::{ContentDraft, ContentId, ContentKind, Publication, Slug},
+        theme::Locale,
     },
     infrastructure::{
         entropy::SystemEntropy, markdown::ComrakMarkdownRenderer, sqlite::SqliteRepository,
@@ -3676,4 +3677,70 @@ async fn redirects_can_be_listed_added_and_removed_and_reach_the_release() {
         .create(draft("moved-from"), SaveIntent::Explicit, Utc::now())
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn expected_failures_render_localized_detail() {
+    let harness = Harness::new().await;
+    let (cookie, csrf) = harness.session_cookie().await;
+    let mut settings = harness.repository.site_settings().await.unwrap();
+    settings.locale = Locale::Ja;
+    harness
+        .repository
+        .save_configuration(&settings, &[], Utc::now())
+        .await
+        .unwrap();
+    harness
+        .contents
+        .create(draft("held"), SaveIntent::Explicit, Utc::now())
+        .await
+        .unwrap();
+
+    // Scripts get the sentence as text, browsers inside the error page; both
+    // in the site's language, with the variable part kept.
+    let taken = harness
+        .send(
+            Method::POST,
+            "/admin/content/",
+            Some("application/x-www-form-urlencoded"),
+            form(&csrf, "Another", "held", None, "autosave"),
+            Some(&cookie),
+        )
+        .await;
+    assert_eq!(taken.status(), StatusCode::CONFLICT);
+    assert_eq!(text(taken).await, "この slug は既に使われています: held");
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/admin/content/")
+        .header(header::HOST, "localhost:8080")
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .header(header::ACCEPT, "text/html")
+        .header(header::COOKIE, &cookie)
+        .body(Body::from(form(&csrf, "Another", "held", None, "explicit")))
+        .unwrap();
+    let page = router(harness.state.clone())
+        .oneshot(request)
+        .await
+        .unwrap();
+    assert_eq!(page.status(), StatusCode::CONFLICT);
+    let html = text(page).await;
+    assert!(
+        html.contains("この slug は既に使われています: held"),
+        "{html}"
+    );
+
+    let too_long = harness
+        .send(
+            Method::POST,
+            "/admin/content/",
+            Some("application/x-www-form-urlencoded"),
+            form(&csrf, &"長".repeat(201), "", None, "autosave"),
+            Some(&cookie),
+        )
+        .await;
+    assert_eq!(too_long.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        text(too_long).await,
+        "タイトルは 1〜200 文字で入力してください"
+    );
 }

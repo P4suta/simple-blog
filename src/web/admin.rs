@@ -25,6 +25,7 @@ use crate::{
         media::MediaId,
         theme::{Locale, NavigationItem, SiteSettings, TimezoneGroup, timezone_choices},
     },
+    i18n::Translations,
     web::{AppState, EMBEDDABLE_CSP, WebError},
 };
 
@@ -2313,12 +2314,139 @@ fn wants_html(headers: &HeaderMap) -> bool {
         .is_some_and(|accept| accept.contains("text/html") && !accept.contains("application/json"))
 }
 
+/// English sentences the application layers produce, mapped to catalog keys
+/// so a writer reads them in the site's language. Sentences with a variable
+/// part keep it in `{detail}`; anything unknown is shown as it came.
+const EXACT_DETAILS: &[(&str, &str)] = &[
+    (
+        "title must contain 1-200 characters",
+        "validation.title_length",
+    ),
+    (
+        "summary must contain at most 500 characters",
+        "validation.summary_length",
+    ),
+    (
+        "Markdown exceeds the 2 MiB limit",
+        "validation.markdown_size",
+    ),
+    (
+        "SEO title or description is too long",
+        "validation.seo_length",
+    ),
+    (
+        "tag names must contain at most 50 characters",
+        "validation.tag_length",
+    ),
+    (
+        "content may contain at most 20 tags",
+        "validation.tag_count",
+    ),
+    (
+        "media id must be a 64-character lowercase hexadecimal digest",
+        "validation.media_id",
+    ),
+    ("logo or favicon media ID is invalid", "validation.media_id"),
+    (
+        "publish date must be an ISO 8601 date-time",
+        "validation.publish_at",
+    ),
+    ("unknown publication status", "validation.status"),
+    ("missing content version", "validation.version_missing"),
+    ("content does not exist", "validation.not_found"),
+    ("media does not exist", "validation.media_not_found"),
+    ("redirect does not exist", "validation.redirect_not_found"),
+    (
+        "content changed after this page was opened",
+        "validation.conflict",
+    ),
+    (
+        "content changed after this restore page was opened",
+        "validation.conflict",
+    ),
+    ("too many navigation items", "validation.navigation_count"),
+    (
+        "navigation may contain at most 16 items",
+        "validation.navigation_count",
+    ),
+    (
+        "navigation label must contain 1-80 characters",
+        "validation.navigation_label",
+    ),
+    (
+        "navigation destination does not match its internal or external kind",
+        "validation.navigation_destination",
+    ),
+    ("unknown locale", "validation.locale"),
+    (
+        "site title must contain 1-120 characters",
+        "validation.site_title",
+    ),
+    (
+        "site description must contain at most 300 characters",
+        "validation.site_description",
+    ),
+    (
+        "custom CSS is too large or could escape its style element",
+        "validation.custom_css",
+    ),
+    (
+        "time zone must be an IANA zone name such as Asia/Tokyo",
+        "validation.timezone",
+    ),
+    (
+        "author name must contain at most 120 characters",
+        "validation.author_name",
+    ),
+    (
+        "there is no stylesheet to bring back",
+        "validation.no_theme_backup",
+    ),
+    (
+        "the image is still used by current content or the site settings",
+        "validation.media_in_use",
+    ),
+    (
+        "slug must be 1-120 lowercase ASCII characters, using only letters, digits, and interior hyphens",
+        "validation.slug_shape",
+    ),
+];
+const PREFIXED_DETAILS: &[(&str, &str)] = &[
+    ("slug is already used: ", "validation.slug_taken"),
+    (
+        "slug is already active or historical: ",
+        "validation.slug_taken",
+    ),
+    ("navigation line ", "validation.navigation_line"),
+    ("tag ", "validation.tag_slug"),
+];
+
+fn localize_detail(translations: &Translations, locale: Locale, message: &str) -> String {
+    if let Some((_, key)) = EXACT_DETAILS.iter().find(|(text, _)| *text == message) {
+        return translations.text(locale, key);
+    }
+    for (prefix, key) in PREFIXED_DETAILS {
+        if let Some(rest) = message.strip_prefix(prefix) {
+            // The variable part: a slug, a line number, or a quoted tag name.
+            let detail = rest
+                .split_once('"')
+                .and_then(|(_, after)| after.split_once('"').map(|(inner, _)| inner))
+                .unwrap_or_else(|| rest.split_whitespace().next().unwrap_or(rest));
+            return translations.format(locale, key, &[("detail", detail)]);
+        }
+    }
+    message.to_owned()
+}
+
 async fn failure(
     state: &AppState,
     headers: &HeaderMap,
     status: StatusCode,
     message: &str,
 ) -> Result<Response, WebError> {
+    let locale = state.site.site_settings().await?.locale;
+    let message = localize_detail(&state.translations, locale, message);
+    let message = message.as_str();
     if !wants_html(headers) {
         return Ok((status, message.to_owned()).into_response());
     }
