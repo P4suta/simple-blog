@@ -355,12 +355,15 @@ async fn import(overrides: Overrides, directory: PathBuf, force: bool) -> Result
             println!("  {file}: {reason}");
         }
     }
-    // Everything imported is visible only once a release carries it.
-    let state = AppState::new(config, repository).context("could not build web application")?;
+    // Everything imported is visible only once a release carries it. The
+    // pieces are already saved at this point, so a publishing problem is
+    // reported as such rather than as a failed import.
+    let state = AppState::new(config, repository)
+        .context("the import is saved, but the site could not be prepared for publishing")?;
     state
         .publish_now()
         .await
-        .context("could not publish the imported site")?;
+        .context("the import is saved, but the site could not be published")?;
     Ok(())
 }
 
