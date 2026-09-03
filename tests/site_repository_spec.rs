@@ -376,7 +376,7 @@ async fn theme_refresh_updates_only_the_untouched_previous_default() {
     let temp = tempfile::tempdir().unwrap();
 
     let untouched = temp.path().join("untouched.sqlite3");
-    let pool = migration_fixture(&untouched, 11).await;
+    let pool = migration_fixture(&untouched, 15).await;
     finish_migrations(&pool).await;
     pool.close().await;
     let repository = SqliteRepository::connect(&untouched).await.unwrap();
@@ -387,7 +387,7 @@ async fn theme_refresh_updates_only_the_untouched_previous_default() {
     );
 
     let customized = temp.path().join("customized.sqlite3");
-    let pool = migration_fixture(&customized, 11).await;
+    let pool = migration_fixture(&customized, 15).await;
     sqlx::query(
         "UPDATE site_settings SET custom_css = 'body { color: teal; }' WHERE singleton = 1",
     )

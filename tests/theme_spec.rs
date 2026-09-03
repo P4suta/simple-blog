@@ -98,6 +98,33 @@ fn embedded_styles_preserve_font_names_and_apply_hairline_color_last() {
     assert!(theme.contains(".toc {"));
     assert!(theme.contains(".article-meta {"));
     assert!(theme.contains(".tag-list td:last-child"));
+
+    // Typography, figures, related posts, focus, and the copy button.
+    for family in ["\"Hiragino Sans\"", "\"Noto Sans JP\"", "\"PingFang SC\""] {
+        assert!(theme.contains(family), "theme lacks {family}");
+    }
+    for rule in [
+        "ruby {",
+        ":lang(ja) body {",
+        ".prose figure {",
+        ".related {",
+        ":focus-visible {",
+        ".copy-code {",
+    ] {
+        assert!(theme.contains(rule), "theme lacks {rule}");
+    }
+    let hairline_block = &theme[theme.rfind("hr,\nthead th").unwrap()..hairline_color];
+    assert!(hairline_block.contains(".related,"));
+    let body_start = theme.find("\nbody {").unwrap();
+    let body_block = &theme[body_start..theme[body_start..].find('}').unwrap() + body_start];
+    assert!(body_block.contains("overflow-wrap: break-word"));
+    assert!(!body_block.contains("anywhere"));
+    let print_block = &theme[theme.find("@media print").unwrap()..];
+    assert!(print_block.contains(".copy-code"));
+    assert!(
+        !theme.contains(['<', '>']),
+        "a stylesheet with angle brackets could never be stored"
+    );
 }
 
 #[test]
