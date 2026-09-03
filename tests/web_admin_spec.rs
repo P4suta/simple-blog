@@ -3534,3 +3534,146 @@ async fn empty_trash_deletes_everything_in_the_trash_only() {
     .await;
     assert!(!empty.contains("action=\"/admin/trash/empty/\""));
 }
+
+#[tokio::test]
+async fn settings_offer_a_save_button_and_a_theme_preview() {
+    let harness = Harness::new().await;
+    let (cookie, _csrf) = harness.session_cookie().await;
+    let page = dashboard_page(&harness, &cookie, "/admin/settings/").await;
+    assert!(page.contains(
+        "<button type=\"submit\" class=\"primary-button\" data-settings-save>Save settings</button>"
+    ));
+    assert!(page.contains("data-theme-preview"));
+    assert!(page.contains("src=\"/admin/preview/home/\""));
+    assert!(page.contains("id=\"redirects\""));
+}
+
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the whole life of a manual redirect in one scenario"
+)]
+async fn redirects_can_be_listed_added_and_removed_and_reach_the_release() {
+    let harness = Harness::new().await;
+    let (cookie, csrf) = harness.session_cookie().await;
+    let piece = harness
+        .contents
+        .create(
+            ContentDraft {
+                publication: Publication::Public {
+                    publish_at: Utc::now(),
+                },
+                ..draft("current-home")
+            },
+            SaveIntent::Explicit,
+            Utc::now(),
+        )
+        .await
+        .unwrap();
+    let add = |csrf: &str, old_slug: &str| {
+        serde_urlencoded::to_string([
+            ("csrf", csrf),
+            ("old_slug", old_slug),
+            ("content_id", &piece.id.to_string()),
+        ])
+        .unwrap()
+    };
+
+    let forbidden = harness
+        .send(
+            Method::POST,
+            "/admin/redirects/",
+            Some("application/x-www-form-urlencoded"),
+            add("wrong", "moved-from"),
+            Some(&cookie),
+        )
+        .await;
+    assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+
+    let added = harness
+        .send(
+            Method::POST,
+            "/admin/redirects/",
+            Some("application/x-www-form-urlencoded"),
+            add(&csrf, "moved-from"),
+            Some(&cookie),
+        )
+        .await;
+    assert_eq!(added.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        added.headers()[header::LOCATION],
+        "/admin/settings/#redirects"
+    );
+    let settings = dashboard_page(&harness, &cookie, "/admin/settings/").await;
+    assert!(settings.contains("/moved-from/"));
+    assert!(settings.contains("/current-home/"));
+    assert!(settings.contains("Original title"));
+
+    // The release honours it right away.
+    let moved = harness
+        .send(Method::GET, "/moved-from/", None, Body::empty(), None)
+        .await;
+    assert_eq!(moved.status(), StatusCode::MOVED_PERMANENTLY);
+    assert_eq!(moved.headers()[header::LOCATION], "/current-home/");
+
+    // An address that is in use, or malformed, is refused with a reason.
+    let taken = harness
+        .send(
+            Method::POST,
+            "/admin/redirects/",
+            Some("application/x-www-form-urlencoded"),
+            add(&csrf, "current-home"),
+            Some(&cookie),
+        )
+        .await;
+    assert_eq!(taken.status(), StatusCode::CONFLICT);
+    let malformed = harness
+        .send(
+            Method::POST,
+            "/admin/redirects/",
+            Some("application/x-www-form-urlencoded"),
+            add(&csrf, "Not A Slug"),
+            Some(&cookie),
+        )
+        .await;
+    assert_eq!(malformed.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let orphan = harness
+        .send(
+            Method::POST,
+            "/admin/redirects/",
+            Some("application/x-www-form-urlencoded"),
+            serde_urlencoded::to_string([
+                ("csrf", csrf.as_str()),
+                ("old_slug", "nowhere"),
+                ("content_id", "999"),
+            ])
+            .unwrap(),
+            Some(&cookie),
+        )
+        .await;
+    assert_eq!(orphan.status(), StatusCode::NOT_FOUND);
+
+    let removed = harness
+        .send(
+            Method::POST,
+            "/admin/redirects/remove/",
+            Some("application/x-www-form-urlencoded"),
+            serde_urlencoded::to_string([("csrf", csrf.as_str()), ("old_slug", "moved-from")])
+                .unwrap(),
+            Some(&cookie),
+        )
+        .await;
+    assert_eq!(removed.status(), StatusCode::SEE_OTHER);
+    let settings = dashboard_page(&harness, &cookie, "/admin/settings/").await;
+    assert!(!settings.contains("/moved-from/"));
+    let gone = harness
+        .send(Method::GET, "/moved-from/", None, Body::empty(), None)
+        .await;
+    assert_eq!(gone.status(), StatusCode::NOT_FOUND);
+    // The freed address may be taken by new writing again.
+    harness
+        .contents
+        .create(draft("moved-from"), SaveIntent::Explicit, Utc::now())
+        .await
+        .unwrap();
+}

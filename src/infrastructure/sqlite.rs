@@ -13,8 +13,9 @@ use crate::{
         AuthError, AuthRepository, ContentLink, ContentRepository, Engagement,
         EngagementRepository, LikeRepository, MediaRepository, MediaRepositoryError,
         PasskeyRepository, PortableRepository, PreparedContent, PreviewLinkRepository,
-        PublicSnapshotRepository, PublicationState, RepositoryError, RevisionMediaReferences,
-        SearchHit, SearchRepository, SetupRegistration, SiteRepository, TagUsage,
+        PublicSnapshotRepository, PublicationState, RedirectEntry, RepositoryError,
+        RevisionMediaReferences, SearchHit, SearchRepository, SetupRegistration, SiteRepository,
+        TagUsage,
     },
     application::{
         media_gc,
@@ -1430,6 +1431,88 @@ fn unsigned_count(value: i64) -> u64 {
 
 #[async_trait]
 impl SiteRepository for SqliteRepository {
+    async fn list_redirects(&self) -> Result<Vec<RedirectEntry>, RepositoryError> {
+        let rows = sqlx::query(
+            "SELECT redirects.old_slug, redirects.content_id, redirects.created_at,
+                    contents.slug, contents.title
+             FROM redirects
+             JOIN contents ON contents.id = redirects.content_id
+             ORDER BY redirects.old_slug",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage)?;
+        rows.into_iter()
+            .map(|row| {
+                let old_slug: String = row.try_get("old_slug").map_err(storage)?;
+                let slug: String = row.try_get("slug").map_err(storage)?;
+                Ok(RedirectEntry {
+                    old_slug: Slug::parse(old_slug).map_err(|_| {
+                        RepositoryError::Storage(
+                            "database contains an invalid redirect slug".into(),
+                        )
+                    })?,
+                    content_id: ContentId::from_i64(row.try_get("content_id").map_err(storage)?),
+                    slug: Slug::parse(slug).map_err(|_| {
+                        RepositoryError::Storage("database contains an invalid slug".into())
+                    })?,
+                    title: row.try_get("title").map_err(storage)?,
+                    created_at: row.try_get("created_at").map_err(storage)?,
+                })
+            })
+            .collect()
+    }
+
+    async fn add_redirect(
+        &self,
+        old_slug: &Slug,
+        content_id: ContentId,
+        now: DateTime<Utc>,
+    ) -> Result<(), RepositoryError> {
+        let mut transaction = self.pool.begin().await.map_err(storage)?;
+        let exists: Option<i64> = sqlx::query_scalar("SELECT id FROM contents WHERE id = ?")
+            .bind(content_id.as_i64())
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(storage)?;
+        if exists.is_none() {
+            return Err(RepositoryError::NotFound);
+        }
+        ensure_slug_available(&mut transaction, old_slug, None).await?;
+        sqlx::query("INSERT INTO redirects (old_slug, content_id, created_at) VALUES (?, ?, ?)")
+            .bind(old_slug.as_str())
+            .bind(content_id.as_i64())
+            .bind(now)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| match error {
+                sqlx::Error::Database(_) => RepositoryError::SlugTaken(old_slug.clone()),
+                other => storage(other),
+            })?;
+        refresh_publication_state(&mut transaction, now, true).await?;
+        transaction.commit().await.map_err(storage)?;
+        Ok(())
+    }
+
+    async fn remove_redirect(
+        &self,
+        old_slug: &Slug,
+        now: DateTime<Utc>,
+    ) -> Result<bool, RepositoryError> {
+        let mut transaction = self.pool.begin().await.map_err(storage)?;
+        let result = sqlx::query("DELETE FROM redirects WHERE old_slug = ?")
+            .bind(old_slug.as_str())
+            .execute(&mut *transaction)
+            .await
+            .map_err(storage)?;
+        let removed = result.rows_affected() == 1;
+        if removed {
+            refresh_publication_state(&mut transaction, now, true).await?;
+        }
+        transaction.commit().await.map_err(storage)?;
+        Ok(removed)
+    }
+
     async fn site_settings(&self) -> Result<SiteSettings, RepositoryError> {
         let row = sqlx::query(SITE_SETTINGS_SELECT)
             .fetch_one(&self.pool)

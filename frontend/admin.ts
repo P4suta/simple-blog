@@ -605,6 +605,7 @@ if (settingsForm) {
         dirty = false;
         delete saveState.dataset.error;
         showSaved(saveState, result.site, msg.saved, msg.savedPending);
+        themePreview?.contentWindow?.location.reload();
       }
     } catch (reason) {
       saveState.dataset.error = "true";
@@ -622,12 +623,18 @@ if (settingsForm) {
     void save();
   };
 
-  settingsForm.addEventListener("input", () => {
+  // A stylesheet edit republishes the whole site, so it waits a little
+  // longer for the typing to stop than a title does.
+  const themePreview = document.querySelector<HTMLIFrameElement>("[data-theme-preview]");
+  settingsForm.addEventListener("input", (event) => {
     dirty = true;
     saveState.textContent = msg.unsaved;
     clearTimeout(timer);
-    timer = window.setTimeout(() => void save(), 1_200);
+    const editingCss = (event.target as HTMLElement | null)?.getAttribute("name") === "custom_css";
+    timer = window.setTimeout(() => void save(), editingCss ? 2_500 : 1_200);
   });
+  const saveButton = settingsForm.querySelector<HTMLButtonElement>("[data-settings-save]");
+  if (saveButton) saveButton.hidden = true;
 
   // The theme is a whole stylesheet; a bare textarea is no place to edit
   // one. CodeMirror takes over and mirrors back into the form field, so

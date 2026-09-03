@@ -395,6 +395,8 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/admin/settings/theme/reset/", post(admin::reset_theme))
         .route("/admin/settings/theme/undo/", post(admin::undo_theme_reset))
+        .route("/admin/redirects/", post(admin::add_redirect))
+        .route("/admin/redirects/remove/", post(admin::remove_redirect))
         .route(
             "/admin/settings/passkeys/remove/",
             post(admin::remove_passkey),

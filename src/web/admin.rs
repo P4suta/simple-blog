@@ -273,10 +273,44 @@ struct ConflictVersion {
 }
 
 #[derive(Serialize)]
+struct RedirectView {
+    old_slug: String,
+    slug: String,
+    title: String,
+    created_at: String,
+}
+
+#[derive(Serialize)]
+struct RedirectTarget {
+    id: i64,
+    title: String,
+    slug: String,
+}
+
+#[derive(Deserialize)]
+pub struct RedirectForm {
+    csrf: String,
+    #[serde(default)]
+    old_slug: String,
+    #[serde(default)]
+    content_id: i64,
+}
+
+#[derive(Deserialize)]
+pub struct RemoveRedirectForm {
+    csrf: String,
+    #[serde(default)]
+    old_slug: String,
+}
+
+#[derive(Serialize)]
 struct SettingsContext {
     csrf: String,
     settings: SiteSettings,
     timezones: Vec<TimezoneGroup>,
+    redirects: Vec<RedirectView>,
+    /// Pieces a manual redirect may point at, for the picker.
+    redirect_targets: Vec<RedirectTarget>,
     navigation: String,
     logo_url: Option<String>,
     favicon_url: Option<String>,
@@ -721,6 +755,30 @@ pub async fn settings_page(
             SettingsContext {
                 csrf: identity.csrf.clone(),
                 timezones: timezone_choices_including(&settings.timezone),
+                redirects: state
+                    .site
+                    .list_redirects()
+                    .await?
+                    .into_iter()
+                    .map(|entry| RedirectView {
+                        old_slug: entry.old_slug.to_string(),
+                        slug: entry.slug.to_string(),
+                        title: entry.title,
+                        created_at: entry.created_at.to_rfc3339_opts(SecondsFormat::Secs, true),
+                    })
+                    .collect(),
+                redirect_targets: state
+                    .content
+                    .list_all_content()
+                    .await?
+                    .into_iter()
+                    .filter(|content| !content.is_trashed())
+                    .map(|content| RedirectTarget {
+                        id: content.id.as_i64(),
+                        title: content.title,
+                        slug: content.slug.to_string(),
+                    })
+                    .collect(),
                 settings,
                 navigation,
                 logo_url,
@@ -2699,6 +2757,102 @@ pub async fn list_tags(
         .map(|tag| json!({ "name": tag.name, "count": tag.count }))
         .collect::<Vec<_>>();
     Ok(Json(tags).into_response())
+}
+
+/// Points an address readers may still hold (one carried over from another
+/// platform, say) at a piece of this site.
+pub async fn add_redirect(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<RedirectForm>,
+) -> Result<Response, WebError> {
+    if let Err(response) = authenticate(&state, &headers, Some(&form.csrf)).await? {
+        return Ok(response);
+    }
+    let old_slug = match Slug::parse(form.old_slug.trim()) {
+        Ok(slug) => slug,
+        Err(error) => {
+            return failure(
+                &state,
+                &headers,
+                StatusCode::UNPROCESSABLE_ENTITY,
+                &error.to_string(),
+            )
+            .await;
+        }
+    };
+    match state
+        .site
+        .add_redirect(
+            &old_slug,
+            ContentId::from_i64(form.content_id),
+            state.clock.now(),
+        )
+        .await
+    {
+        Ok(()) => {
+            let site = state.publish_after_commit("redirect_add").await;
+            if wants_json(&headers) {
+                Ok(Json(json!({ "ok": true, "site": site })).into_response())
+            } else {
+                Ok(redirect(
+                    StatusCode::SEE_OTHER,
+                    "/admin/settings/#redirects",
+                ))
+            }
+        }
+        Err(RepositoryError::NotFound) => {
+            failure(
+                &state,
+                &headers,
+                StatusCode::NOT_FOUND,
+                "content does not exist",
+            )
+            .await
+        }
+        Err(error) => application_error(&state, &headers, error).await,
+    }
+}
+
+pub async fn remove_redirect(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<RemoveRedirectForm>,
+) -> Result<Response, WebError> {
+    if let Err(response) = authenticate(&state, &headers, Some(&form.csrf)).await? {
+        return Ok(response);
+    }
+    let Ok(old_slug) = Slug::parse(form.old_slug.trim()) else {
+        return failure(
+            &state,
+            &headers,
+            StatusCode::NOT_FOUND,
+            "redirect does not exist",
+        )
+        .await;
+    };
+    if !state
+        .site
+        .remove_redirect(&old_slug, state.clock.now())
+        .await?
+    {
+        return failure(
+            &state,
+            &headers,
+            StatusCode::NOT_FOUND,
+            "redirect does not exist",
+        )
+        .await;
+    }
+    let site = state.publish_after_commit("redirect_remove").await;
+    if wants_json(&headers) {
+        Ok(Json(json!({ "ok": true, "site": site })).into_response())
+    } else {
+        Ok(redirect(
+            StatusCode::SEE_OTHER,
+            "/admin/settings/#redirects",
+        ))
+    }
 }
 
 /// The picker always contains the stored zone, even a legacy alias that the

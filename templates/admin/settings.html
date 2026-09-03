@@ -50,6 +50,8 @@
     <h2>{{ t["settings.design"] }}</h2>
     <p>{{ t["settings.design_note"] }}</p>
     <label data-css-field><span>{{ t["settings.css"] }}</span><textarea name="custom_css" rows="20" spellcheck="false">{{ settings.custom_css }}</textarea></label>
+    <p class="theme-preview-note">{{ t["settings.preview"] }}</p>
+    <iframe class="theme-preview" data-theme-preview src="/admin/preview/home/" title="{{ t["settings.preview"] }}" loading="lazy"></iframe>
     <details class="danger-zone"><summary>{{ t["settings.theme_reset"] }}</summary><p>{{ t["settings.theme_reset_note"] }}</p><button type="submit" class="danger-button" form="theme-reset-form">{{ t["settings.theme_reset_confirm"] }}</button></details>
     {% if settings.custom_css_backup %}<p class="theme-undo"><button type="submit" form="theme-undo-form">{{ t["settings.theme_undo"] }}</button> <small>{{ t["settings.theme_undo_note"] }}</small></p>{% endif %}
   </section>
@@ -58,7 +60,21 @@
     <p>{{ t["settings.navigation_note"] }}</p>
     <label><span>{{ t["settings.links"] }}</span><textarea name="navigation" rows="5" spellcheck="false">{{ navigation }}</textarea></label>
   </section>
+  <p class="settings-actions"><button type="submit" class="primary-button" data-settings-save>{{ t["settings.save"] }}</button></p>
 </form>
+<div class="settings-form redirects-section" id="redirects">
+  <section>
+    <h2>{{ t["settings.redirects"] }}</h2>
+    <p>{{ t["settings.redirects_note"] }}</p>
+    {% if redirects %}<table class="redirect-list"><tbody>{% for item in redirects %}<tr><td><code>/{{ item.old_slug }}/</code></td><td>→ <a href="/{{ item.slug }}/">/{{ item.slug }}/</a> <small>{{ item.title }}</small></td><td><form method="post" action="/admin/redirects/remove/"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="old_slug" value="{{ item.old_slug }}"><button type="submit" class="row-action">{{ t["settings.redirect_remove"] }}</button></form></td></tr>{% endfor %}</tbody></table>{% else %}<p class="content-empty">{{ t["settings.redirects_empty"] }}</p>{% endif %}
+    <form method="post" action="/admin/redirects/" class="redirect-add">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <label><span>{{ t["settings.redirect_from"] }}</span><input name="old_slug" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" maxlength="120" required placeholder="old-address"></label>
+      <label><span>{{ t["settings.redirect_to"] }}</span><select name="content_id" required>{% for target in redirect_targets %}<option value="{{ target.id }}">{{ target.title }} — /{{ target.slug }}/</option>{% endfor %}</select></label>
+      <button type="submit">{{ t["settings.redirect_add"] }}</button>
+    </form>
+  </section>
+</div>
 <form id="theme-reset-form" method="post" action="/admin/settings/theme/reset/" hidden><input type="hidden" name="csrf" value="{{ csrf }}"></form>
 <form id="theme-undo-form" method="post" action="/admin/settings/theme/undo/" hidden><input type="hidden" name="csrf" value="{{ csrf }}"></form>
 <div class="settings-form security-section">

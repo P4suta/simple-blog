@@ -700,6 +700,62 @@ dialog.confirm::backdrop {
   margin: 0;
 }
 
+.settings-actions {
+  margin: 1rem 0 0;
+}
+
+.theme-preview-note {
+  margin: 0.8rem 0 0.4rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.theme-preview {
+  display: block;
+  width: 100%;
+  height: 28rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fff;
+}
+
+.redirect-list {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 1rem;
+  font-size: 0.9rem;
+}
+
+.redirect-list td {
+  padding: 0.4rem 0.6rem 0.4rem 0;
+  border-bottom: 1px solid var(--line);
+  vertical-align: baseline;
+}
+
+.redirect-list small {
+  color: var(--muted);
+}
+
+.redirect-add {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.redirect-add label {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.redirect-add button {
+  justify-self: start;
+  padding: 0.4rem 0.8rem;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--ink);
+  cursor: pointer;
+}
+
 /* A control with its explanation underneath, still aligned to the row label. */
 .field-with-note {
   display: grid;

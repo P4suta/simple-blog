@@ -247,6 +247,36 @@ pub trait SiteRepository: Send + Sync {
         navigation: &[NavigationItem],
         now: DateTime<Utc>,
     ) -> Result<(), RepositoryError>;
+
+    /// Every historical address and the piece it leads to, oldest address first.
+    async fn list_redirects(&self) -> Result<Vec<RedirectEntry>, RepositoryError>;
+
+    /// Points an old address (one imported from elsewhere, say) at a piece.
+    /// `SlugTaken` when the address is active or already historical,
+    /// `NotFound` when the piece does not exist. Advances the public revision.
+    async fn add_redirect(
+        &self,
+        old_slug: &Slug,
+        content_id: ContentId,
+        now: DateTime<Utc>,
+    ) -> Result<(), RepositoryError>;
+
+    /// Forgets an old address; `false` when it was not known.
+    async fn remove_redirect(
+        &self,
+        old_slug: &Slug,
+        now: DateTime<Utc>,
+    ) -> Result<bool, RepositoryError>;
+}
+
+/// One historical address with the piece it currently leads to.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RedirectEntry {
+    pub old_slug: Slug,
+    pub content_id: ContentId,
+    pub slug: Slug,
+    pub title: String,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
