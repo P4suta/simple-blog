@@ -1405,28 +1405,11 @@ fn unsigned_count(value: i64) -> u64 {
 #[async_trait]
 impl SiteRepository for SqliteRepository {
     async fn site_settings(&self) -> Result<SiteSettings, RepositoryError> {
-        let row = sqlx::query(
-            "SELECT site_title, site_description, locale, logo_media_id, favicon_media_id,
-                    custom_css
-             FROM site_settings WHERE singleton = 1",
-        )
-        .fetch_one(&self.pool)
-        .await
-        .map_err(storage)?;
-        let locale: String = row.try_get("locale").map_err(storage)?;
-        Ok(SiteSettings {
-            site_title: row.try_get("site_title").map_err(storage)?,
-            site_description: row.try_get("site_description").map_err(storage)?,
-            locale: match locale.as_str() {
-                "en" => Locale::En,
-                "ja" => Locale::Ja,
-                "zh" => Locale::Zh,
-                _ => return Err(RepositoryError::Storage("invalid locale".into())),
-            },
-            logo_media_id: row.try_get("logo_media_id").map_err(storage)?,
-            favicon_media_id: row.try_get("favicon_media_id").map_err(storage)?,
-            custom_css: row.try_get("custom_css").map_err(storage)?,
-        })
+        let row = sqlx::query(SITE_SETTINGS_SELECT)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(storage)?;
+        settings_from_row(&row)
     }
 
     async fn navigation(&self) -> Result<Vec<NavigationItem>, RepositoryError> {
@@ -1461,7 +1444,8 @@ impl SiteRepository for SqliteRepository {
         sqlx::query(
             "UPDATE site_settings SET
                 site_title = ?, site_description = ?, locale = ?, logo_media_id = ?,
-                favicon_media_id = ?, custom_css = ?, updated_at = ?
+                favicon_media_id = ?, custom_css = ?, timezone = ?, author_name = ?,
+                custom_css_backup = ?, updated_at = ?
              WHERE singleton = 1",
         )
         .bind(&settings.site_title)
@@ -1470,6 +1454,9 @@ impl SiteRepository for SqliteRepository {
         .bind(&settings.logo_media_id)
         .bind(&settings.favicon_media_id)
         .bind(&settings.custom_css)
+        .bind(&settings.timezone)
+        .bind(&settings.author_name)
+        .bind(&settings.custom_css_backup)
         .bind(now)
         .execute(&mut *transaction)
         .await
@@ -1920,7 +1907,8 @@ async fn insert_portable_settings(
 ) -> Result<(), RepositoryError> {
     sqlx::query(
         "UPDATE site_settings SET site_title = ?, site_description = ?, locale = ?,
-                logo_media_id = ?, favicon_media_id = ?, custom_css = ?, updated_at = ?
+                logo_media_id = ?, favicon_media_id = ?, custom_css = ?, timezone = ?,
+                author_name = ?, custom_css_backup = ?, updated_at = ?
          WHERE singleton = 1",
     )
     .bind(&site.settings.site_title)
@@ -1929,6 +1917,9 @@ async fn insert_portable_settings(
     .bind(&site.settings.logo_media_id)
     .bind(&site.settings.favicon_media_id)
     .bind(&site.settings.custom_css)
+    .bind(&site.settings.timezone)
+    .bind(&site.settings.author_name)
+    .bind(&site.settings.custom_css_backup)
     .bind(site.exported_at)
     .execute(&mut **transaction)
     .await
@@ -2380,17 +2371,11 @@ async fn load_tags(pool: &SqlitePool, content_id: ContentId) -> Result<Vec<Tag>,
         .collect()
 }
 
-async fn snapshot_settings(
-    transaction: &mut Transaction<'_, Sqlite>,
-) -> Result<SiteSettings, RepositoryError> {
-    let row = sqlx::query(
-        "SELECT site_title, site_description, locale, logo_media_id, favicon_media_id,
-                custom_css
-         FROM site_settings WHERE singleton = 1",
-    )
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(storage)?;
+const SITE_SETTINGS_SELECT: &str = "SELECT site_title, site_description, locale, logo_media_id,
+            favicon_media_id, custom_css, timezone, author_name, custom_css_backup
+     FROM site_settings WHERE singleton = 1";
+
+fn settings_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<SiteSettings, RepositoryError> {
     let locale: String = row.try_get("locale").map_err(storage)?;
     Ok(SiteSettings {
         site_title: row.try_get("site_title").map_err(storage)?,
@@ -2399,7 +2384,20 @@ async fn snapshot_settings(
         logo_media_id: row.try_get("logo_media_id").map_err(storage)?,
         favicon_media_id: row.try_get("favicon_media_id").map_err(storage)?,
         custom_css: row.try_get("custom_css").map_err(storage)?,
+        timezone: row.try_get("timezone").map_err(storage)?,
+        author_name: row.try_get("author_name").map_err(storage)?,
+        custom_css_backup: row.try_get("custom_css_backup").map_err(storage)?,
     })
+}
+
+async fn snapshot_settings(
+    transaction: &mut Transaction<'_, Sqlite>,
+) -> Result<SiteSettings, RepositoryError> {
+    let row = sqlx::query(SITE_SETTINGS_SELECT)
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(storage)?;
+    settings_from_row(&row)
 }
 
 async fn snapshot_navigation(

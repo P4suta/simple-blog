@@ -487,6 +487,25 @@ a {
   color: var(--accent);
 }
 
+/* A control with its explanation underneath, still aligned to the row label. */
+.field-with-note {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.field-with-note small {
+  color: var(--muted);
+}
+
+.theme-undo {
+  margin: 0.6rem 0 0;
+  font-size: 0.9rem;
+}
+
+.theme-undo small {
+  color: var(--muted);
+}
+
 .editor-status-time {
   font-size: 0.75rem;
   color: var(--faint);

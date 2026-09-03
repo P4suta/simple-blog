@@ -1,3 +1,6 @@
+use std::str::FromStr;
+
+use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
@@ -6,6 +9,20 @@ use crate::domain::media::MediaId;
 
 const MAX_NAVIGATION_ITEMS: usize = 16;
 const MAX_CUSTOM_CSS_BYTES: usize = 64 * 1024;
+const MAX_AUTHOR_NAME_CHARS: usize = 120;
+/// Regions offered in the time zone picker; legacy aliases such as `US/*`
+/// or `Japan` still parse but are not suggested.
+const TIMEZONE_REGIONS: [&str; 9] = [
+    "Africa",
+    "America",
+    "Antarctica",
+    "Asia",
+    "Atlantic",
+    "Australia",
+    "Europe",
+    "Indian",
+    "Pacific",
+];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -52,6 +69,10 @@ pub enum ThemeValidationError {
     NavigationLabel,
     #[error("navigation destination does not match its internal or external kind")]
     NavigationDestination,
+    #[error("time zone must be an IANA zone name such as Asia/Tokyo")]
+    Timezone,
+    #[error("author name must contain at most {MAX_AUTHOR_NAME_CHARS} characters")]
+    AuthorName,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -63,19 +84,50 @@ pub struct SiteSettings {
     pub logo_media_id: Option<String>,
     pub favicon_media_id: Option<String>,
     pub custom_css: String,
+    /// IANA zone the public site renders dates in. `UTC` is the pre-0014
+    /// behaviour and is omitted from archives so they stay byte-identical.
+    #[serde(default = "default_timezone", skip_serializing_if = "is_utc")]
+    pub timezone: String,
+    /// Shown in feeds and structured data; the site title stands in while empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub author_name: String,
+    /// One-slot undo for "restore the default theme".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_css_backup: Option<String>,
+}
+
+fn default_timezone() -> String {
+    "UTC".into()
+}
+
+fn is_utc(value: &str) -> bool {
+    value == "UTC"
+}
+
+fn safe_stylesheet(css: &str) -> bool {
+    css.len() <= MAX_CUSTOM_CSS_BYTES && !css.contains(['<', '>'])
 }
 
 impl SiteSettings {
     pub fn validated(mut self) -> Result<Self, ThemeValidationError> {
         self.site_title = self.site_title.trim().to_owned();
         self.site_description = self.site_description.trim().to_owned();
+        self.author_name = self.author_name.trim().to_owned();
         if self.site_title.is_empty() || self.site_title.chars().count() > 120 {
             return Err(ThemeValidationError::SiteTitle);
         }
         if self.site_description.chars().count() > 300 {
             return Err(ThemeValidationError::SiteDescription);
         }
-        if self.custom_css.len() > MAX_CUSTOM_CSS_BYTES || self.custom_css.contains(['<', '>']) {
+        if self.author_name.chars().count() > MAX_AUTHOR_NAME_CHARS {
+            return Err(ThemeValidationError::AuthorName);
+        }
+        if !safe_stylesheet(&self.custom_css)
+            || self
+                .custom_css_backup
+                .as_deref()
+                .is_some_and(|backup| !safe_stylesheet(backup))
+        {
             return Err(ThemeValidationError::CustomCss);
         }
         for id in [&self.logo_media_id, &self.favicon_media_id]
@@ -84,8 +136,58 @@ impl SiteSettings {
         {
             MediaId::parse(id).map_err(|_| ThemeValidationError::MediaId)?;
         }
+        // Stored in canonical form so archives compare byte for byte.
+        let zone =
+            Tz::from_str(self.timezone.trim()).map_err(|_| ThemeValidationError::Timezone)?;
+        self.timezone = zone.name().to_owned();
         Ok(self)
     }
+
+    /// The zone public dates are rendered in; an unparseable stored value
+    /// falls back to UTC rather than failing a build.
+    #[must_use]
+    pub fn time_zone(&self) -> Tz {
+        self.timezone.parse().unwrap_or(Tz::UTC)
+    }
+
+    /// The name readers see as the author: the configured one, or the site
+    /// title while none is set.
+    #[must_use]
+    pub fn author(&self) -> &str {
+        if self.author_name.is_empty() {
+            &self.site_title
+        } else {
+            &self.author_name
+        }
+    }
+}
+
+/// One `<optgroup>` of the time zone picker.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct TimezoneGroup {
+    pub region: &'static str,
+    pub zones: Vec<String>,
+}
+
+/// Every canonical zone, grouped by region and sorted, with `UTC` first.
+#[must_use]
+pub fn timezone_choices() -> Vec<TimezoneGroup> {
+    let mut groups = vec![TimezoneGroup {
+        region: "UTC",
+        zones: vec!["UTC".into()],
+    }];
+    for region in TIMEZONE_REGIONS {
+        let prefix = format!("{region}/");
+        let mut zones = chrono_tz::TZ_VARIANTS
+            .iter()
+            .map(|zone| zone.name())
+            .filter(|name| name.starts_with(&prefix))
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        zones.sort_unstable();
+        groups.push(TimezoneGroup { region, zones });
+    }
+    groups
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -150,7 +252,9 @@ pub struct PageMeta {
     pub canonical_url: String,
     pub og_type: String,
     pub og_locale: String,
-    pub image_url: Option<String>,
+    pub image: Option<MetaImage>,
+    /// Utility pages (search, not found) ask crawlers to stay away.
+    pub noindex: bool,
     /// RFC 3339 instants for `article:*` metadata; posts only.
     pub published_time: Option<String>,
     pub modified_time: Option<String>,
@@ -162,6 +266,15 @@ pub struct PageMeta {
     pub alternate_feed: Option<AlternateFeed>,
     /// Serialized JSON-LD with `<`, `>` and `&` escaped, safe to inline.
     pub json_ld: Option<String>,
+}
+
+/// The social preview image with the dimensions crawlers ask for.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct MetaImage {
+    pub url: String,
+    pub width: u32,
+    pub height: u32,
+    pub alt: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]

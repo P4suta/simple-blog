@@ -50,6 +50,9 @@ fn snapshot(contents: Vec<Content>) -> SiteSnapshotV1 {
             logo_media_id: None,
             favicon_media_id: None,
             custom_css: "body { color: #222; }".into(),
+            timezone: "UTC".into(),
+            author_name: String::new(),
+            custom_css_backup: None,
         },
         navigation: Vec::new(),
         contents,
@@ -830,12 +833,25 @@ fn twitter_card_downgrades_to_summary_without_a_cover() {
         [format!("https://writing.example/media/{id}.png").as_str()]
     );
     assert_eq!(attribute(&covered, "figure.cover img", "alt"), ["Calm sea"]);
+    assert_eq!(
+        attribute(&covered, "meta[property='og:image:width']", "content"),
+        ["1200"]
+    );
+    assert_eq!(
+        attribute(&covered, "meta[property='og:image:height']", "content"),
+        ["800"]
+    );
+    assert_eq!(
+        attribute(&covered, "meta[property='og:image:alt']", "content"),
+        ["Calm sea"]
+    );
     let bare = Html::parse_document(body(&release, "/bare/"));
     assert_eq!(
         attribute(&bare, "meta[name='twitter:card']", "content"),
         ["summary"]
     );
     assert!(attribute(&bare, "meta[property='og:image']", "content").is_empty());
+    assert!(attribute(&bare, "meta[property='og:image:width']", "content").is_empty());
 }
 
 #[test]
@@ -897,4 +913,147 @@ fn search_page_links_the_versioned_index_and_explains_the_javascript_requirement
         attribute(&changed_page, "form[data-static-search]", "data-index"),
         [expected.as_str()]
     );
+}
+
+fn snapshot_in(locale: Locale, timezone: &str, contents: Vec<Content>) -> SiteSnapshotV1 {
+    let mut site = snapshot(contents);
+    site.settings.locale = locale;
+    site.settings.timezone = timezone.into();
+    site.effective_at = Utc.with_ymd_and_hms(2026, 9, 3, 0, 0, 0).unwrap();
+    site
+}
+
+fn compile_snapshot(site: &SiteSnapshotV1) -> PreparedRelease {
+    SiteCompiler::embedded()
+        .unwrap()
+        .compile(site, "https://writing.example", None)
+        .unwrap()
+}
+
+fn evening_post() -> Content {
+    let published = Utc.with_ymd_and_hms(2026, 9, 2, 23, 30, 0).unwrap();
+    let mut post = content(
+        1,
+        "Evening",
+        "evening",
+        Publication::Public {
+            publish_at: published,
+        },
+        0,
+    );
+    post.updated_at = published;
+    post
+}
+
+#[test]
+fn public_dates_render_in_the_site_zone_with_locale_patterns() {
+    let ja = compile_snapshot(&snapshot_in(Locale::Ja, "Asia/Tokyo", vec![evening_post()]));
+    let page = Html::parse_document(body(&ja, "/evening/"));
+    assert_eq!(
+        texts(&page, "time[itemprop=datePublished]"),
+        ["2026年9月3日"]
+    );
+    assert_eq!(
+        attribute(&page, "time[itemprop=datePublished]", "datetime"),
+        ["2026-09-03T08:30:00+09:00"]
+    );
+    assert_eq!(
+        attribute(&page, "meta[property='article:published_time']", "content"),
+        ["2026-09-03T08:30:00+09:00"]
+    );
+    let json_ld: serde_json::Value =
+        serde_json::from_str(&texts(&page, "script[type='application/ld+json']").remove(0))
+            .unwrap();
+    assert_eq!(json_ld["datePublished"], "2026-09-03T08:30:00+09:00");
+    let archive = Html::parse_document(body(&ja, "/archive/"));
+    assert_eq!(texts(&archive, ".archive-year h2"), ["2026年"]);
+    assert_eq!(texts(&archive, ".archive-list time"), ["9月3日"]);
+    let home = Html::parse_document(body(&ja, "/"));
+    assert_eq!(texts(&home, "article.post-card time"), ["2026年9月3日"]);
+    assert!(body(&ja, "/sitemap.xml").contains("<lastmod>2026-09-03</lastmod>"));
+    let index: serde_json::Value =
+        serde_json::from_str(body(&ja, "/assets/search-index.json")).unwrap();
+    assert_eq!(index["documents"][0]["published"], "2026年9月3日");
+
+    let en = compile_snapshot(&snapshot_in(Locale::En, "Asia/Tokyo", vec![evening_post()]));
+    let page = Html::parse_document(body(&en, "/evening/"));
+    assert_eq!(
+        texts(&page, "time[itemprop=datePublished]"),
+        ["September 3, 2026"]
+    );
+    let archive = Html::parse_document(body(&en, "/archive/"));
+    assert_eq!(texts(&archive, ".archive-year h2"), ["2026"]);
+    assert_eq!(texts(&archive, ".archive-list time"), ["Sep 3"]);
+
+    // A UTC site keeps its old dates and the `Z` suffix.
+    let utc = compile_snapshot(&snapshot_in(Locale::En, "UTC", vec![evening_post()]));
+    let page = Html::parse_document(body(&utc, "/evening/"));
+    assert_eq!(
+        texts(&page, "time[itemprop=datePublished]"),
+        ["September 2, 2026"]
+    );
+    assert_eq!(
+        attribute(&page, "time[itemprop=datePublished]", "datetime"),
+        ["2026-09-02T23:30:00Z"]
+    );
+}
+
+#[test]
+fn archive_years_follow_the_site_zone() {
+    let published = Utc.with_ymd_and_hms(2025, 12, 31, 20, 0, 0).unwrap();
+    let mut post = content(
+        1,
+        "Countdown",
+        "countdown",
+        Publication::Public {
+            publish_at: published,
+        },
+        0,
+    );
+    post.updated_at = published;
+    let release = compile_snapshot(&snapshot_in(Locale::En, "Asia/Tokyo", vec![post]));
+    let archive = Html::parse_document(body(&release, "/archive/"));
+    assert_eq!(texts(&archive, ".archive-year h2"), ["2026"]);
+}
+
+#[test]
+fn author_name_feeds_feed_json_ld_and_meta_author() {
+    let mut site = snapshot(vec![published_post(1, "Published", "published", 5)]);
+    site.settings.author_name = "Ryo".into();
+    let release = compile_snapshot(&site);
+    assert!(body(&release, "/feed.xml").contains("<author><name>Ryo</name></author>"));
+    let page = Html::parse_document(body(&release, "/published/"));
+    assert_eq!(attribute(&page, "meta[name=author]", "content"), ["Ryo"]);
+    let json_ld: serde_json::Value =
+        serde_json::from_str(&texts(&page, "script[type='application/ld+json']").remove(0))
+            .unwrap();
+    assert_eq!(json_ld["author"]["name"], "Ryo");
+    assert_eq!(json_ld["publisher"]["name"], "Ryo");
+
+    let unnamed = compile(vec![published_post(1, "Published", "published", 5)]);
+    let page = Html::parse_document(body(&unnamed, "/published/"));
+    assert_eq!(
+        attribute(&page, "meta[name=author]", "content"),
+        ["Portable writing"]
+    );
+}
+
+#[test]
+fn search_and_not_found_pages_are_noindex() {
+    let release = compile(vec![published_post(1, "Published", "published", 5)]);
+    for path in ["/search/", "/404/"] {
+        let page = Html::parse_document(body(&release, path));
+        assert_eq!(
+            attribute(&page, "meta[name=robots]", "content"),
+            ["noindex"],
+            "{path}"
+        );
+    }
+    for path in ["/", "/published/"] {
+        let page = Html::parse_document(body(&release, path));
+        assert!(
+            attribute(&page, "meta[name=robots]", "content").is_empty(),
+            "{path}"
+        );
+    }
 }

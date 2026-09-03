@@ -58,6 +58,9 @@ fn settings(title: &str) -> SiteSettings {
         logo_media_id: None,
         favicon_media_id: None,
         custom_css: String::new(),
+        timezone: "UTC".into(),
+        author_name: String::new(),
+        custom_css_backup: None,
     }
 }
 
@@ -398,5 +401,58 @@ async fn theme_refresh_updates_only_the_untouched_previous_default() {
         repository.site_settings().await.unwrap().custom_css,
         "body { color: teal; }",
         "an edited stylesheet is never clobbered"
+    );
+}
+
+#[tokio::test]
+async fn locale_settings_migration_adds_columns_with_defaults_and_round_trips() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("locale.sqlite3");
+    let pool = migration_fixture(&path, 13).await;
+    finish_migrations(&pool).await;
+    pool.close().await;
+    let repository = SqliteRepository::connect(&path).await.unwrap();
+
+    let stored = repository.site_settings().await.unwrap();
+    assert_eq!(stored.timezone, "UTC");
+    assert_eq!(stored.author_name, "");
+    assert_eq!(stored.custom_css_backup, None);
+
+    let mut updated = settings("Field Notes");
+    updated.timezone = "Asia/Tokyo".into();
+    updated.author_name = "Ryo".into();
+    updated.custom_css_backup = Some("body {}".into());
+    repository
+        .save_configuration(&updated, &[], Utc::now())
+        .await
+        .unwrap();
+    let stored = repository.site_settings().await.unwrap();
+    assert_eq!(stored.timezone, "Asia/Tokyo");
+    assert_eq!(stored.author_name, "Ryo");
+    assert_eq!(stored.custom_css_backup.as_deref(), Some("body {}"));
+}
+
+#[tokio::test]
+async fn setup_adopts_the_browser_zone_only_while_the_site_is_still_utc() {
+    let temp = tempfile::tempdir().unwrap();
+    let repository = Arc::new(
+        SqliteRepository::connect(&temp.path().join("adopt.sqlite3"))
+            .await
+            .unwrap(),
+    );
+    let site = SiteService::new(repository.clone());
+    let now = Utc::now();
+
+    assert!(!site.adopt_timezone_once("Nowhere/Land", now).await.unwrap());
+    assert!(!site.adopt_timezone_once("Etc/UTC", now).await.unwrap());
+    assert!(site.adopt_timezone_once("Asia/Tokyo", now).await.unwrap());
+    assert_eq!(
+        repository.site_settings().await.unwrap().timezone,
+        "Asia/Tokyo"
+    );
+    assert!(!site.adopt_timezone_once("Europe/Paris", now).await.unwrap());
+    assert_eq!(
+        repository.site_settings().await.unwrap().timezone,
+        "Asia/Tokyo"
     );
 }

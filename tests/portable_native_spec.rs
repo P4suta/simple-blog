@@ -34,6 +34,9 @@ fn site() -> PortableSiteV1 {
             logo_media_id: None,
             favicon_media_id: None,
             custom_css: "body { max-width: 40rem; }".into(),
+            timezone: "UTC".into(),
+            author_name: String::new(),
+            custom_css_backup: None,
         },
         navigation: vec![NavigationItem {
             id: 9,

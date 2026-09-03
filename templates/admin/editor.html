@@ -32,7 +32,8 @@
       data-msg-error-too-large="{{ t["editor.error_too_large"] }}"
       data-msg-error-rate-limited="{{ t["editor.error_rate_limited"] }}"
       data-msg-error-server="{{ t["editor.error_server"] }}"
-      data-msg-error-offline="{{ t["editor.error_offline"] }}">
+      data-msg-error-offline="{{ t["editor.error_offline"] }}"
+      data-site-zone="{{ site_zone }}">
   <input type="hidden" name="csrf" value="{{ csrf }}">
   {% if version %}<input type="hidden" name="version" value="{{ version }}">{% endif %}
   {# Implicit submission (Enter in a field) triggers the FIRST submit button; this
@@ -67,7 +68,7 @@
   <dialog class="editor-drawer" data-drawer aria-label="{{ t["editor.details"] }}">
     <label><span>{{ t["editor.kind"] }}</span><select name="kind"><option value="post"{% if content.kind == 'post' %} selected{% endif %}>Post</option><option value="page"{% if content.kind == 'page' %} selected{% endif %}>Page</option></select></label>
     <label><span>{{ t["editor.slug"] }}</span><input name="slug" value="{{ content.slug }}" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" maxlength="120" required data-slug></label>
-    <label><span>{{ t["editor.publish_at"] }}</span><input type="datetime-local" name="publish_at" value="{{ content.publish_at_input }}" data-publish-at data-publish-at-utc="{{ content.publish_at }}" data-initial="{{ content.publish_at_input }}"><small data-publish-at-hint>{{ t["editor.publish_at_hint"]|replace("{zone}", "UTC") }}</small></label>
+    <label><span>{{ t["editor.publish_at"] }}</span><input type="datetime-local" name="publish_at" value="{{ content.publish_at_input }}" data-publish-at data-publish-at-utc="{{ content.publish_at }}" data-initial="{{ content.publish_at_input }}"><small data-publish-at-hint>{{ t["editor.publish_at_hint"]|replace("{zone}", "UTC") }}</small> <small data-site-zone-hint>{{ site_zone_hint }}</small></label>
     <label><span>{{ t["editor.summary"] }}</span><textarea name="summary" maxlength="500" rows="3">{{ content.summary }}</textarea></label>
     <label><span>{{ t["editor.tags"] }}</span><input name="tags" value="{{ content.tags }}"></label>
     <section class="cover-field" data-media-target>

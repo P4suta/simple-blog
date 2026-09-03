@@ -2,7 +2,11 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use chrono::{DateTime, Duration, SecondsFormat, Utc};
+use chrono::{
+    DateTime, Datelike, Duration, SecondsFormat, Utc,
+    format::{Item, StrftimeItems},
+};
+use chrono_tz::Tz;
 use serde::Serialize;
 use thiserror::Error;
 
@@ -17,7 +21,10 @@ use crate::{
         media::MediaAsset,
         reading::{self, OutlineEntry},
         search,
-        theme::{AlternateFeed, NavigationItem, PageMeta, SiteSettings, ThemeAssets, ThemeContext},
+        theme::{
+            AlternateFeed, MetaImage, NavigationItem, PageMeta, SiteSettings, ThemeAssets,
+            ThemeContext,
+        },
     },
     i18n::{TranslationError, Translations},
     release::{PreparedRelease, ReleaseBuilder, ReleaseError, ReleaseManifest},
@@ -37,6 +44,73 @@ const OUTLINE_MIN_HEADINGS: usize = 3;
 /// date does not.
 const UPDATED_THRESHOLD_HOURS: i64 = 24;
 
+/// Renders instants the way the site's readers expect: in the site's zone,
+/// with the patterns its language uses. Built once per compile from the
+/// settings and the catalogs, so a broken pattern fails the build instead of
+/// panicking inside a template.
+struct SiteDates {
+    zone: Tz,
+    long: Vec<Item<'static>>,
+    short: Vec<Item<'static>>,
+    year: Vec<Item<'static>>,
+}
+
+impl SiteDates {
+    fn new(
+        translations: &Translations,
+        settings: &SiteSettings,
+    ) -> Result<Self, SiteCompilerError> {
+        let locale = settings.locale;
+        let pattern = |key: &'static str| {
+            StrftimeItems::new(&translations.text(locale, key))
+                .parse_to_owned()
+                .map_err(|_| SiteCompilerError::DatePattern(key))
+        };
+        Ok(Self {
+            zone: settings.time_zone(),
+            long: pattern("public.date_long")?,
+            short: pattern("public.date_short")?,
+            year: pattern("public.year")?,
+        })
+    }
+
+    fn local(&self, at: DateTime<Utc>) -> DateTime<Tz> {
+        at.with_timezone(&self.zone)
+    }
+
+    fn render(&self, items: &[Item<'static>], at: DateTime<Utc>) -> String {
+        self.local(at).format_with_items(items.iter()).to_string()
+    }
+
+    /// The full date on a page: "September 3, 2026", 2026年9月3日.
+    fn long(&self, at: DateTime<Utc>) -> String {
+        self.render(&self.long, at)
+    }
+
+    /// The date inside a year group: "Sep 3", 9月3日.
+    fn short(&self, at: DateTime<Utc>) -> String {
+        self.render(&self.short, at)
+    }
+
+    fn year_label(&self, at: DateTime<Utc>) -> String {
+        self.render(&self.year, at)
+    }
+
+    fn year(&self, at: DateTime<Utc>) -> i32 {
+        self.local(at).year()
+    }
+
+    /// `YYYY-MM-DD` in the site zone, for sitemaps.
+    fn day(&self, at: DateTime<Utc>) -> String {
+        self.local(at).format("%Y-%m-%d").to_string()
+    }
+
+    /// RFC 3339 with the site's offset; `Z` when that offset is zero.
+    fn iso(&self, at: DateTime<Utc>) -> String {
+        self.local(at).to_rfc3339_opts(SecondsFormat::Secs, true)
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PublicRedirect {
     pub from: Slug,
@@ -52,6 +126,16 @@ pub struct SiteSnapshotV1 {
     pub contents: Vec<Content>,
     pub redirects: Vec<PublicRedirect>,
     pub media: Vec<MediaAsset>,
+}
+
+/// What every page of one compile shares: the snapshot, the canonical
+/// origin, the media lookup, and the date formatter.
+#[derive(Clone, Copy)]
+struct Scope<'a> {
+    snapshot: &'a SiteSnapshotV1,
+    origin: &'a str,
+    media: &'a HashMap<&'a str, &'a MediaAsset>,
+    dates: &'a SiteDates,
 }
 
 #[derive(Clone)]
@@ -129,20 +213,26 @@ impl SiteCompiler {
         }
 
         let tags = tag_groups(&public);
-        let search_index = Self::search_index(&public)?;
+        let dates = SiteDates::new(&self.translations, &snapshot.settings)?;
+        let search_index = Self::search_index(&public, &dates)?;
         let search_index_version = fingerprint(&search_index);
-        builder = self.add_home(builder, snapshot, &origin, &posts, &media)?;
-        builder = self.add_archives(builder, snapshot, &origin, &posts, &tags, &media)?;
-        builder = self.add_contents(builder, snapshot, &origin, &public, &posts, &media)?;
-        builder = self.add_machine_files(builder, snapshot, &origin, &public, &posts, &tags)?;
+        let scope = Scope {
+            snapshot,
+            origin: &origin,
+            media: &media,
+            dates: &dates,
+        };
+        builder = self.add_home(builder, &scope, &posts)?;
+        builder = self.add_archives(builder, &scope, &posts, &tags)?;
+        builder = self.add_contents(builder, &scope, &public, &posts)?;
+        builder = self.add_machine_files(builder, &scope, &public, &posts, &tags)?;
         builder = builder.asset(
             "/assets/search-index.json",
             search_index,
             "application/json; charset=utf-8",
             None,
         )?;
-        builder =
-            self.add_static_assets(builder, snapshot, &origin, &media, &search_index_version)?;
+        builder = self.add_static_assets(builder, &scope, &search_index_version)?;
 
         let release = builder.finish()?;
         let pruned_route_count = previous.map_or(0, |previous| {
@@ -165,11 +255,15 @@ impl SiteCompiler {
     fn add_home(
         &self,
         mut builder: ReleaseBuilder,
-        snapshot: &SiteSnapshotV1,
-        origin: &str,
+        scope: &Scope<'_>,
         posts: &[Content],
-        media: &HashMap<&str, &MediaAsset>,
     ) -> Result<ReleaseBuilder, SiteCompilerError> {
+        let Scope {
+            snapshot,
+            origin,
+            dates,
+            ..
+        } = *scope;
         let locale = snapshot.settings.locale;
         let page_count = posts.len().div_ceil(HOME_PAGE_SIZE).max(1);
         for number in 1..=page_count {
@@ -194,9 +288,7 @@ impl SiteCompiler {
                 ))
             };
             let mut context = self.theme_context(
-                snapshot,
-                origin,
-                media,
+                scope,
                 PagePresentation {
                     path: &path,
                     title,
@@ -204,7 +296,10 @@ impl SiteCompiler {
                     og_type: "website",
                 },
                 CardsPage {
-                    posts: posts[start..end].iter().map(ContentCard::from).collect(),
+                    posts: posts[start..end]
+                        .iter()
+                        .map(|post| ContentCard::new(post, dates))
+                        .collect(),
                     pager: PagerView {
                         number,
                         count: page_count,
@@ -242,19 +337,18 @@ impl SiteCompiler {
     fn add_archives(
         &self,
         mut builder: ReleaseBuilder,
-        snapshot: &SiteSnapshotV1,
-        origin: &str,
+        scope: &Scope<'_>,
         posts: &[Content],
         tags: &BTreeMap<String, TagGroup<'_>>,
-        media: &HashMap<&str, &MediaAsset>,
     ) -> Result<ReleaseBuilder, SiteCompilerError> {
+        let Scope {
+            snapshot, origin, ..
+        } = *scope;
         let locale = snapshot.settings.locale;
         builder = builder.redirect("/archive", "/archive/", 308)?;
         builder = self.add_archive_page(
             builder,
-            snapshot,
-            origin,
-            media,
+            scope,
             ArchivePresentation {
                 path: "/archive/",
                 heading: self.translations.text(locale, "public.archive"),
@@ -264,16 +358,14 @@ impl SiteCompiler {
             posts.iter(),
         )?;
 
-        builder = self.add_tag_index(builder, snapshot, origin, tags, media)?;
+        builder = self.add_tag_index(builder, scope, tags)?;
         for (slug, group) in tags {
             let path = format!("/tag/{slug}/");
             let feed_href = format!("/tag/{slug}/feed.xml");
             builder = builder.redirect(&format!("/tag/{slug}"), &path, 308)?;
             builder = self.add_archive_page(
                 builder,
-                snapshot,
-                origin,
-                media,
+                scope,
                 ArchivePresentation {
                     path: &path,
                     heading: format!("#{}", group.name),
@@ -322,11 +414,10 @@ impl SiteCompiler {
     fn add_tag_index(
         &self,
         builder: ReleaseBuilder,
-        snapshot: &SiteSnapshotV1,
-        origin: &str,
+        scope: &Scope<'_>,
         tags: &BTreeMap<String, TagGroup<'_>>,
-        media: &HashMap<&str, &MediaAsset>,
     ) -> Result<ReleaseBuilder, SiteCompilerError> {
+        let Scope { snapshot, .. } = *scope;
         let locale = snapshot.settings.locale;
         let mut summaries = tags
             .iter()
@@ -343,9 +434,7 @@ impl SiteCompiler {
                 .then_with(|| left.name.cmp(&right.name))
         });
         let context = self.theme_context(
-            snapshot,
-            origin,
-            media,
+            scope,
             PagePresentation {
                 path: "/tag/",
                 title: MetaTitle::Page(self.translations.text(locale, "public.tags")),
@@ -369,12 +458,11 @@ impl SiteCompiler {
     fn add_archive_page<'a>(
         &self,
         builder: ReleaseBuilder,
-        snapshot: &SiteSnapshotV1,
-        origin: &str,
-        media: &HashMap<&str, &MediaAsset>,
+        scope: &Scope<'_>,
         presentation: ArchivePresentation<'_>,
         contents: impl Iterator<Item = &'a Content>,
     ) -> Result<ReleaseBuilder, SiteCompilerError> {
+        let Scope { dates, .. } = *scope;
         let ArchivePresentation {
             path,
             heading,
@@ -383,20 +471,20 @@ impl SiteCompiler {
         } = presentation;
         let mut years: Vec<ArchiveYear> = Vec::new();
         for content in contents {
-            let card = ContentCard::from(content);
-            let year = card.date.get(..4).unwrap_or("").to_owned();
+            let card = ContentCard::new(content, dates);
+            let published = card_instant(content);
+            let year = dates.year(published);
             match years.last_mut() {
-                Some(group) if group.year == year => group.posts.push(card),
+                Some(group) if group.year_number == year => group.posts.push(card),
                 _ => years.push(ArchiveYear {
-                    year,
+                    year_number: year,
+                    year: dates.year_label(published),
                     posts: vec![card],
                 }),
             }
         }
         let mut context = self.theme_context(
-            snapshot,
-            origin,
-            media,
+            scope,
             PagePresentation {
                 path,
                 title: MetaTitle::Page(heading.clone()),
@@ -413,12 +501,16 @@ impl SiteCompiler {
     fn add_contents(
         &self,
         mut builder: ReleaseBuilder,
-        snapshot: &SiteSnapshotV1,
-        origin: &str,
+        scope: &Scope<'_>,
         public: &[Content],
         posts: &[Content],
-        media: &HashMap<&str, &MediaAsset>,
     ) -> Result<ReleaseBuilder, SiteCompilerError> {
+        let Scope {
+            snapshot,
+            origin,
+            media,
+            dates,
+        } = *scope;
         let post_positions = posts
             .iter()
             .enumerate()
@@ -449,23 +541,26 @@ impl SiteCompiler {
                 .unwrap_or_else(|| content.summary.clone());
             let is_post = content.kind == ContentKind::Post;
             let mut context = self.theme_context(
-                snapshot,
-                origin,
-                media,
+                scope,
                 PagePresentation {
                     path: &path,
                     title,
                     description: Some(description),
                     og_type: if is_post { "article" } else { "website" },
                 },
-                self.content_page(snapshot, content, cover.clone(), older, newer),
+                self.content_page(scope, content, cover.clone(), older, newer),
             );
-            let image_url = cover.map(|cover| format!("{origin}{}", cover.original_url));
-            context.meta.image_url.clone_from(&image_url);
+            let image = cover.map(|cover| MetaImage {
+                url: format!("{origin}{}", cover.original_url),
+                width: cover.width,
+                height: cover.height,
+                alt: cover.alt_text,
+            });
+            context.meta.image.clone_from(&image);
             if is_post {
                 let published = content.publication.publish_at();
-                context.meta.published_time = published.map(iso);
-                context.meta.modified_time = Some(iso(content.updated_at));
+                context.meta.published_time = published.map(|at| dates.iso(at));
+                context.meta.modified_time = Some(dates.iso(content.updated_at));
                 context.meta.article_tags =
                     content.tags.iter().map(|tag| tag.name.clone()).collect();
             }
@@ -473,7 +568,8 @@ impl SiteCompiler {
                 snapshot,
                 origin,
                 content,
-                image_url.as_deref(),
+                image.as_ref().map(|image| image.url.as_str()),
+                dates,
             ));
             let html = self.templates.render("public/content.html", context)?;
             builder = builder
@@ -492,19 +588,22 @@ impl SiteCompiler {
 
     fn content_page(
         &self,
-        snapshot: &SiteSnapshotV1,
+        scope: &Scope<'_>,
         content: &Content,
         cover: Option<CoverView>,
         older: Option<ContentLink>,
         newer: Option<ContentLink>,
     ) -> ContentPage {
+        let Scope {
+            snapshot, dates, ..
+        } = *scope;
         let locale = snapshot.settings.locale;
         let published = content.publication.publish_at();
         let updated = published
             .filter(|published| {
                 content.updated_at - *published > Duration::hours(UPDATED_THRESHOLD_HOURS)
             })
-            .map(|_| DateView::from(content.updated_at));
+            .map(|_| DateView::new(dates, content.updated_at));
         let minutes = reading::reading_minutes(&search::html_to_text(&content.body_html));
         let reading_label = (minutes > 0).then(|| {
             self.translations.format(
@@ -523,8 +622,8 @@ impl SiteCompiler {
             title: content.title.clone(),
             summary: content.summary.clone(),
             body_html: content.body_html.clone(),
-            publish_at: published.map(iso),
-            date: published.map(|date| date.format("%Y-%m-%d").to_string()),
+            publish_at: published.map(|at| dates.iso(at)),
+            date: published.map(|at| dates.long(at)),
             updated,
             reading_label,
             outline,
@@ -569,7 +668,7 @@ impl SiteCompiler {
             FeedContext {
                 title: presentation.title,
                 subtitle: presentation.subtitle,
-                author: snapshot.settings.site_title.clone(),
+                author: snapshot.settings.author().to_owned(),
                 page_url: presentation.page_url,
                 feed_url: presentation.feed_url,
                 updated: iso(updated),
@@ -580,7 +679,7 @@ impl SiteCompiler {
 
     /// The client-side search corpus: every visible piece, folded once here
     /// so the browser never has to.
-    fn search_index(public: &[Content]) -> Result<Vec<u8>, SiteCompilerError> {
+    fn search_index(public: &[Content], dates: &SiteDates) -> Result<Vec<u8>, SiteCompilerError> {
         let documents = public
             .iter()
             .map(|content| {
@@ -590,12 +689,7 @@ impl SiteCompiler {
                     &content.title,
                     &content.summary,
                     &search::html_to_text(&content.body_html),
-                    &content
-                        .publication
-                        .publish_at()
-                        .unwrap_or(content.created_at)
-                        .format("%Y-%m-%d")
-                        .to_string(),
+                    &dates.long(card_instant(content)),
                 )
             })
             .collect::<Vec<_>>();
@@ -607,12 +701,17 @@ impl SiteCompiler {
     fn add_machine_files(
         &self,
         mut builder: ReleaseBuilder,
-        snapshot: &SiteSnapshotV1,
-        origin: &str,
+        scope: &Scope<'_>,
         public: &[Content],
         posts: &[Content],
         tags: &BTreeMap<String, TagGroup<'_>>,
     ) -> Result<ReleaseBuilder, SiteCompilerError> {
+        let Scope {
+            snapshot,
+            origin,
+            dates,
+            ..
+        } = *scope;
         let post_refs = posts.iter().collect::<Vec<_>>();
         let feed = self.render_feed(
             snapshot,
@@ -632,7 +731,7 @@ impl SiteCompiler {
             None,
         )?;
 
-        let day = |at: DateTime<Utc>| at.format("%Y-%m-%d").to_string();
+        let day = |at: DateTime<Utc>| dates.day(at);
         let latest = public.iter().map(|content| content.updated_at).max();
         let mut entries = Vec::new();
         for number in 2..=posts.len().div_ceil(HOME_PAGE_SIZE) {
@@ -694,11 +793,10 @@ impl SiteCompiler {
     fn add_static_assets(
         &self,
         mut builder: ReleaseBuilder,
-        snapshot: &SiteSnapshotV1,
-        origin: &str,
-        media: &HashMap<&str, &MediaAsset>,
+        scope: &Scope<'_>,
         search_index_version: &str,
     ) -> Result<ReleaseBuilder, SiteCompilerError> {
+        let Scope { snapshot, .. } = *scope;
         let locale = snapshot.settings.locale;
         builder = builder
             .asset(
@@ -727,10 +825,8 @@ impl SiteCompiler {
             )?
             .redirect("/search", "/search/", 308)?;
 
-        let search_context = self.theme_context(
-            snapshot,
-            origin,
-            media,
+        let mut search_context = self.theme_context(
+            scope,
             PagePresentation {
                 path: "/search/",
                 title: MetaTitle::Page(self.translations.text(locale, "public.search")),
@@ -748,6 +844,7 @@ impl SiteCompiler {
                 search_index_url: format!("/assets/search-index.json?v={search_index_version}"),
             },
         );
+        search_context.meta.noindex = true;
         let search = self
             .templates
             .render("public/search.html", search_context)?;
@@ -758,10 +855,8 @@ impl SiteCompiler {
             None,
         )?;
 
-        let not_found_context = self.theme_context(
-            snapshot,
-            origin,
-            media,
+        let mut not_found_context = self.theme_context(
+            scope,
             PagePresentation {
                 path: "/404/",
                 title: MetaTitle::Page(self.translations.text(locale, "public.not_found_title")),
@@ -773,6 +868,7 @@ impl SiteCompiler {
             },
             (),
         );
+        not_found_context.meta.noindex = true;
         let not_found = self
             .templates
             .render("public/not_found.html", not_found_context)?;
@@ -788,12 +884,16 @@ impl SiteCompiler {
 
     fn theme_context<T>(
         &self,
-        snapshot: &SiteSnapshotV1,
-        origin: &str,
-        media: &HashMap<&str, &MediaAsset>,
+        scope: &Scope<'_>,
         presentation: PagePresentation<'_>,
         page: T,
     ) -> ThemeContext<T> {
+        let Scope {
+            snapshot,
+            origin,
+            media,
+            ..
+        } = *scope;
         let PagePresentation {
             path,
             title,
@@ -829,7 +929,8 @@ impl SiteCompiler {
                 canonical_url: format!("{origin}{path}"),
                 og_type: og_type.to_owned(),
                 og_locale: snapshot.settings.locale.og_locale().to_owned(),
-                image_url: None,
+                image: None,
+                noindex: false,
                 published_time: None,
                 modified_time: None,
                 article_tags: Vec::new(),
@@ -853,6 +954,8 @@ pub enum SiteCompilerError {
     Release(#[from] ReleaseError),
     #[error("search index generation failed: {0}")]
     SearchIndex(String),
+    #[error("the date pattern in catalog key {0} is not a valid strftime string")]
+    DatePattern(&'static str),
 }
 
 #[derive(Clone)]
@@ -959,6 +1062,7 @@ fn content_json_ld(
     origin: &str,
     content: &Content,
     image_url: Option<&str>,
+    dates: &SiteDates,
 ) -> String {
     let url = format!("{origin}/{}/", content.slug);
     let mut value = serde_json::json!({
@@ -968,13 +1072,13 @@ fn content_json_ld(
         "description": content.seo_description.clone().unwrap_or_else(|| content.summary.clone()),
         "url": url,
         "mainEntityOfPage": url,
-        "dateModified": iso(content.updated_at),
+        "dateModified": dates.iso(content.updated_at),
         "inLanguage": snapshot.settings.locale.as_str(),
-        "author": { "@type": "Person", "name": snapshot.settings.site_title },
-        "publisher": { "@type": "Organization", "name": snapshot.settings.site_title },
+        "author": { "@type": "Person", "name": snapshot.settings.author() },
+        "publisher": { "@type": "Organization", "name": snapshot.settings.author() },
     });
     if let Some(published) = content.publication.publish_at() {
-        value["datePublished"] = serde_json::Value::String(iso(published));
+        value["datePublished"] = serde_json::Value::String(dates.iso(published));
     }
     if !content.tags.is_empty() {
         value["keywords"] = serde_json::Value::Array(
@@ -1016,6 +1120,9 @@ struct ArchivePage {
 
 #[derive(Serialize)]
 struct ArchiveYear {
+    /// Grouping key in the site zone; the label is what readers see.
+    #[serde(skip)]
+    year_number: i32,
     year: String,
     posts: Vec<ContentCard>,
 }
@@ -1039,21 +1146,29 @@ struct ContentCard {
     summary: String,
     publish_at: String,
     date: String,
+    date_short: String,
     tags: Vec<Tag>,
 }
 
-impl From<&Content> for ContentCard {
-    fn from(content: &Content) -> Self {
-        let published = content
-            .publication
-            .publish_at()
-            .unwrap_or(content.created_at);
+/// The instant a card is dated by: publication, or creation for the rare
+/// visible piece without one.
+fn card_instant(content: &Content) -> DateTime<Utc> {
+    content
+        .publication
+        .publish_at()
+        .unwrap_or(content.created_at)
+}
+
+impl ContentCard {
+    fn new(content: &Content, dates: &SiteDates) -> Self {
+        let published = card_instant(content);
         Self {
             title: content.title.clone(),
             slug: content.slug.to_string(),
             summary: content.summary.clone(),
-            publish_at: iso(published),
-            date: published.format("%Y-%m-%d").to_string(),
+            publish_at: dates.iso(published),
+            date: dates.long(published),
+            date_short: dates.short(published),
             tags: content.tags.clone(),
         }
     }
@@ -1065,11 +1180,11 @@ struct DateView {
     date: String,
 }
 
-impl From<DateTime<Utc>> for DateView {
-    fn from(at: DateTime<Utc>) -> Self {
+impl DateView {
+    fn new(dates: &SiteDates, at: DateTime<Utc>) -> Self {
         Self {
-            iso: iso(at),
-            date: at.format("%Y-%m-%d").to_string(),
+            iso: dates.iso(at),
+            date: dates.long(at),
         }
     }
 }

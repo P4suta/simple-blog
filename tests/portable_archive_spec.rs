@@ -50,6 +50,9 @@ fn package() -> PortablePackage {
                 logo_media_id: None,
                 favicon_media_id: None,
                 custom_css: String::new(),
+                timezone: "UTC".into(),
+                author_name: String::new(),
+                custom_css_backup: None,
             },
             navigation: Vec::new(),
             contents: vec![PortableContent {
@@ -415,4 +418,39 @@ fn trashed_scheduled_content_does_not_participate_in_the_publication_clock() {
         impossible.validate().is_err(),
         "trashed before it was created is not a valid history"
     );
+}
+
+#[test]
+fn archives_without_locale_settings_parse_and_defaults_serialize_without_them() {
+    let site = package().site;
+    let json = serde_json::to_value(&site).unwrap();
+    let settings = json["settings"].as_object().unwrap();
+    for key in ["timezone", "author_name", "custom_css_backup"] {
+        assert!(
+            !settings.contains_key(key),
+            "{key} must be omitted at its default"
+        );
+    }
+    assert_eq!(
+        serde_json::from_value::<PortableSiteV1>(json).unwrap(),
+        site
+    );
+
+    let mut tokyo = package();
+    tokyo.site.settings.timezone = "Asia/Tokyo".into();
+    tokyo.site.settings.author_name = "Ryo".into();
+    let json = serde_json::to_value(&tokyo.site).unwrap();
+    assert_eq!(json["settings"]["timezone"], "Asia/Tokyo");
+    assert_eq!(json["settings"]["author_name"], "Ryo");
+    assert_eq!(
+        serde_json::from_value::<PortableSiteV1>(json).unwrap(),
+        tokyo.site
+    );
+}
+
+#[test]
+fn packages_with_an_unknown_zone_fail_validation() {
+    let mut invalid = package();
+    invalid.site.settings.timezone = "Nowhere/Land".into();
+    assert!(invalid.validate().is_err());
 }

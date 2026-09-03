@@ -377,6 +377,7 @@ pub fn router(state: AppState) -> Router {
             post(admin::regenerate_recovery_codes),
         )
         .route("/admin/settings/theme/reset/", post(admin::reset_theme))
+        .route("/admin/settings/theme/undo/", post(admin::undo_theme_reset))
         .route(
             "/admin/settings/passkeys/remove/",
             post(admin::remove_passkey),

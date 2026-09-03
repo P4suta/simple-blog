@@ -27,6 +27,7 @@ axum = { version = "0.8.4", features = ["form", "http1", "json", "macros", "mult
 base64 = "0.23"
 blake3 = "1.8"
 chrono = { version = "0.4.41", features = ["clock", "serde"] }
+chrono-tz = { version = "0.10.4", default-features = false }
 clap = { version = "4.5.41", features = ["derive", "env"] }
 comrak = { version = "0.54", default-features = false }
 dashmap = "6.1"

@@ -23,7 +23,7 @@ use crate::{
         auth::{SecretToken, SessionIdentity, SessionSecrets, SetupPurpose, StoredPasskey},
         content::{Content, ContentDraft, ContentId, ContentKind, Publication, Slug},
         media::MediaId,
-        theme::{Locale, NavigationItem, SiteSettings},
+        theme::{Locale, NavigationItem, SiteSettings, TimezoneGroup, timezone_choices},
     },
     web::{AppState, WebError},
 };
@@ -127,6 +127,10 @@ struct EditorContext {
     cover_alt_text: String,
     revisions: Vec<RevisionItem>,
     trashed: bool,
+    /// The site's zone, named next to the scheduling control so a writer in
+    /// another zone never mistakes one for the other.
+    site_zone: String,
+    site_zone_hint: String,
 }
 
 #[derive(Serialize)]
@@ -174,6 +178,7 @@ struct ConflictVersion {
 struct SettingsContext {
     csrf: String,
     settings: SiteSettings,
+    timezones: Vec<TimezoneGroup>,
     navigation: String,
     logo_url: Option<String>,
     favicon_url: Option<String>,
@@ -274,6 +279,10 @@ pub struct SiteSettingsForm {
     custom_css: String,
     #[serde(default)]
     navigation: String,
+    #[serde(default)]
+    timezone: String,
+    #[serde(default)]
+    author_name: String,
 }
 
 struct AdminIdentity {
@@ -307,6 +316,9 @@ pub struct SetupFinishRequest {
     #[serde(default = "default_passkey_name")]
     name: String,
     credential: RegisterPublicKeyCredential,
+    /// The browser's zone, adopted once for a site still on the UTC default.
+    #[serde(default)]
+    timezone: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -441,6 +453,12 @@ pub async fn new_content(
         Ok(identity) => identity,
         Err(response) => return Ok(response),
     };
+    let site_settings = state.site.site_settings().await?;
+    let site_zone_hint = state.translations.format(
+        site_settings.locale,
+        "editor.site_zone_hint",
+        &[("zone", &site_settings.timezone)],
+    );
     let page = state
         .render_admin(
             "admin/editor.html",
@@ -455,6 +473,8 @@ pub async fn new_content(
                 cover_alt_text: String::new(),
                 revisions: Vec::new(),
                 trashed: false,
+                site_zone: site_settings.timezone.clone(),
+                site_zone_hint,
             },
         )
         .await?;
@@ -501,6 +521,7 @@ pub async fn settings_page(
             "admin/settings.html",
             SettingsContext {
                 csrf: identity.csrf.clone(),
+                timezones: timezone_choices_including(&settings.timezone),
                 settings,
                 navigation,
                 logo_url,
@@ -524,6 +545,9 @@ pub async fn reset_theme(
         return Ok(response);
     }
     let mut settings = state.site.site_settings().await?;
+    if settings.custom_css != DEFAULT_THEME_CSS {
+        settings.custom_css_backup = Some(std::mem::take(&mut settings.custom_css));
+    }
     settings.custom_css = DEFAULT_THEME_CSS.to_owned();
     let navigation = state.site.navigation().await?;
     match state
@@ -543,6 +567,45 @@ pub async fn reset_theme(
     }
 }
 
+/// Brings back the stylesheet a reset replaced. The slot holds one
+/// stylesheet, so this answers 404 once it has been used or never filled.
+pub async fn undo_theme_reset(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<CsrfForm>,
+) -> Result<Response, WebError> {
+    if let Err(response) = authenticate(&state, &headers, Some(&form.csrf)).await? {
+        return Ok(response);
+    }
+    let mut settings = state.site.site_settings().await?;
+    let Some(previous) = settings.custom_css_backup.take() else {
+        return failure(
+            &state,
+            &headers,
+            StatusCode::NOT_FOUND,
+            "there is no stylesheet to bring back",
+        )
+        .await;
+    };
+    settings.custom_css = previous;
+    let navigation = state.site.navigation().await?;
+    match state
+        .site_service
+        .update(settings, navigation, state.clock.now())
+        .await
+    {
+        Ok(()) => {
+            let site = state.publish_after_commit("theme_undo").await;
+            if wants_json(&headers) {
+                Ok(Json(json!({ "ok": true, "site": site })).into_response())
+            } else {
+                Ok(redirect(StatusCode::SEE_OTHER, "/admin/settings/"))
+            }
+        }
+        Err(error) => application_error(&state, &headers, error).await,
+    }
+}
+
 pub async fn update_settings(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -551,12 +614,14 @@ pub async fn update_settings(
     if let Err(response) = authenticate(&state, &headers, Some(&form.csrf)).await? {
         return Ok(response);
     }
-    let (settings, navigation) = match form.into_configuration() {
+    let (mut settings, navigation) = match form.into_configuration() {
         Ok(configuration) => configuration,
         Err(message) => {
             return failure(&state, &headers, StatusCode::UNPROCESSABLE_ENTITY, &message).await;
         }
     };
+    // The form never carries the theme backup; an ordinary save keeps it.
+    settings.custom_css_backup = state.site.site_settings().await?.custom_css_backup;
     match state
         .site_service
         .update(settings, navigation, state.clock.now())
@@ -623,6 +688,12 @@ pub async fn edit_content(
             .unwrap_or_default(),
         _ => String::new(),
     };
+    let site_settings = state.site.site_settings().await?;
+    let site_zone_hint = state.translations.format(
+        site_settings.locale,
+        "editor.site_zone_hint",
+        &[("zone", &site_settings.timezone)],
+    );
     let page = state
         .render_admin(
             "admin/editor.html",
@@ -633,6 +704,8 @@ pub async fn edit_content(
                 content_id: Some(raw_id),
                 version: Some(content.version),
                 trashed: content.is_trashed(),
+                site_zone: site_settings.timezone.clone(),
+                site_zone_hint,
                 content: EditorContent::from_content(&content, state.clock.now()),
                 cover_url,
                 cover_alt_text,
@@ -1237,6 +1310,17 @@ pub async fn setup_finish(
             "setup token was consumed",
         ));
     };
+    // A brand-new site takes the browser's zone so its dates are right from
+    // the first post; a failure here must never spoil a finished ceremony.
+    if context.purpose == SetupPurpose::Initial
+        && let Some(zone) = request.timezone.as_deref()
+        && let Err(error) = state
+            .site_service
+            .adopt_timezone_once(zone, state.clock.now())
+            .await
+    {
+        tracing::warn!(event = "setup.timezone.not_adopted", error = %error);
+    }
     let recovery_codes: Vec<_> = completed
         .recovery_codes
         .iter()
@@ -1661,6 +1745,9 @@ impl SiteSettingsForm {
                 logo_media_id: optional_text(&self.logo_media_id),
                 favicon_media_id: optional_text(&self.favicon_media_id),
                 custom_css: self.custom_css,
+                timezone: optional_text(&self.timezone).unwrap_or_else(|| "UTC".into()),
+                author_name: self.author_name,
+                custom_css_backup: None,
             },
             navigation,
         ))
@@ -2095,6 +2182,22 @@ fn clean_passkey_name(value: &str) -> String {
 
 fn default_passkey_name() -> String {
     "Passkey".into()
+}
+
+/// The picker always contains the stored zone, even a legacy alias that the
+/// curated regions leave out, so the select never loses its selection.
+fn timezone_choices_including(stored: &str) -> Vec<TimezoneGroup> {
+    let mut groups = timezone_choices();
+    if !groups
+        .iter()
+        .any(|group| group.zones.iter().any(|zone| zone == stored))
+    {
+        groups.push(TimezoneGroup {
+            region: "Other",
+            zones: vec![stored.to_owned()],
+        });
+    }
+    groups
 }
 
 #[cfg(test)]

@@ -1,4 +1,7 @@
-use simple_blog::domain::theme::{Locale, NavigationItem, SiteSettings, validate_navigation};
+use simple_blog::domain::theme::{
+    Locale, NavigationItem, SiteSettings, ThemeValidationError, timezone_choices,
+    validate_navigation,
+};
 
 fn settings() -> SiteSettings {
     SiteSettings {
@@ -8,6 +11,9 @@ fn settings() -> SiteSettings {
         logo_media_id: None,
         favicon_media_id: None,
         custom_css: ".prose { text-wrap: pretty; }".into(),
+        timezone: "UTC".into(),
+        author_name: String::new(),
+        custom_css_backup: None,
     }
 }
 
@@ -99,4 +105,65 @@ fn locale_maps_to_open_graph_locale() {
     assert_eq!(Locale::En.og_locale(), "en_US");
     assert_eq!(Locale::Ja.og_locale(), "ja_JP");
     assert_eq!(Locale::Zh.og_locale(), "zh_CN");
+}
+
+#[test]
+fn site_timezone_must_be_a_known_iana_zone_and_is_normalized() {
+    let mut tokyo = settings();
+    tokyo.timezone = " Asia/Tokyo ".into();
+    let validated = tokyo.validated().unwrap();
+    assert_eq!(validated.timezone, "Asia/Tokyo");
+    assert_eq!(validated.time_zone(), chrono_tz::Tz::Asia__Tokyo);
+
+    for bad in ["Mars/Olympus", ""] {
+        let mut invalid = settings();
+        invalid.timezone = bad.into();
+        assert_eq!(
+            invalid.validated().unwrap_err(),
+            ThemeValidationError::Timezone,
+            "{bad:?}"
+        );
+    }
+}
+
+#[test]
+fn author_name_falls_back_to_the_site_title() {
+    assert_eq!(settings().validated().unwrap().author(), "Quiet Notes");
+    let mut named = settings();
+    named.author_name = " Ryo ".into();
+    assert_eq!(named.validated().unwrap().author(), "Ryo");
+    let mut long = settings();
+    long.author_name = "x".repeat(121);
+    assert_eq!(
+        long.validated().unwrap_err(),
+        ThemeValidationError::AuthorName
+    );
+}
+
+#[test]
+fn theme_backup_obeys_the_custom_css_contract() {
+    let mut dangerous = settings();
+    dangerous.custom_css_backup = Some("</style><script>alert(1)</script>".into());
+    assert_eq!(
+        dangerous.validated().unwrap_err(),
+        ThemeValidationError::CustomCss
+    );
+}
+
+#[test]
+fn timezone_choices_are_grouped_by_region_without_legacy_aliases() {
+    let groups = timezone_choices();
+    assert_eq!(groups[0].region, "UTC");
+    assert_eq!(groups[0].zones, ["UTC"]);
+    let asia = groups.iter().find(|group| group.region == "Asia").unwrap();
+    assert!(asia.zones.iter().any(|zone| zone == "Asia/Tokyo"));
+    assert!(
+        asia.zones.windows(2).all(|pair| pair[0] <= pair[1]),
+        "sorted"
+    );
+    assert!(
+        groups.iter().flat_map(|group| &group.zones).all(|zone| {
+            !zone.starts_with("US/") && !zone.starts_with("Etc/") && zone != "Japan"
+        })
+    );
 }

@@ -2562,3 +2562,192 @@ async fn sessions_extend_on_use_without_changing_csrf() {
         .await;
     assert_eq!(expired.status(), StatusCode::SEE_OTHER);
 }
+
+// ---- Site zone and author ---------------------------------------------------
+
+fn settings_form_with(csrf: &str, timezone: &str, author_name: &str, custom_css: &str) -> String {
+    serde_urlencoded::to_string([
+        ("csrf", csrf),
+        ("site_title", "Field Notes"),
+        ("site_description", ""),
+        ("locale", "en"),
+        ("logo_media_id", ""),
+        ("favicon_media_id", ""),
+        ("custom_css", custom_css),
+        ("navigation", ""),
+        ("timezone", timezone),
+        ("author_name", author_name),
+    ])
+    .unwrap()
+}
+
+#[tokio::test]
+async fn settings_form_round_trips_timezone_and_author_and_rejects_unknown_zones() {
+    let harness = Harness::new().await;
+    let (cookie, csrf) = harness.session_cookie().await;
+    let page = text(
+        harness
+            .send(
+                Method::GET,
+                "/admin/settings/",
+                None,
+                Body::empty(),
+                Some(&cookie),
+            )
+            .await,
+    )
+    .await;
+    assert!(page.contains("name=\"timezone\""));
+    assert!(page.contains("<optgroup label=\"Asia\">"));
+    // minijinja escapes the slash inside attribute values.
+    assert!(page.contains("value=\"Asia&#x2f;Tokyo\""));
+    assert!(page.contains("name=\"author_name\""));
+
+    let saved = harness
+        .send(
+            Method::POST,
+            "/admin/settings/",
+            Some("application/x-www-form-urlencoded"),
+            settings_form_with(&csrf, "Asia/Tokyo", "Ryo", "body {}"),
+            Some(&cookie),
+        )
+        .await;
+    assert_eq!(saved.status(), StatusCode::SEE_OTHER);
+    let stored = harness.repository.site_settings().await.unwrap();
+    assert_eq!(stored.timezone, "Asia/Tokyo");
+    assert_eq!(stored.author_name, "Ryo");
+
+    harness
+        .contents
+        .create(
+            ContentDraft {
+                publication: Publication::Public {
+                    publish_at: Utc::now(),
+                },
+                ..draft("tokyo-time")
+            },
+            SaveIntent::Explicit,
+            Utc::now(),
+        )
+        .await
+        .unwrap();
+    harness.state.publish_now().await.unwrap();
+    let article = text(
+        harness
+            .send(Method::GET, "/tokyo-time/", None, Body::empty(), None)
+            .await,
+    )
+    .await;
+    assert!(
+        article.contains("+09:00\""),
+        "public dates carry the site offset"
+    );
+    let editor = text(
+        harness
+            .send(
+                Method::GET,
+                "/admin/content/new/",
+                None,
+                Body::empty(),
+                Some(&cookie),
+            )
+            .await,
+    )
+    .await;
+    assert!(editor.contains("data-site-zone=\"Asia&#x2f;Tokyo\""));
+    assert!(editor.contains("data-site-zone-hint"));
+
+    let rejected = harness
+        .send(
+            Method::POST,
+            "/admin/settings/",
+            Some("application/x-www-form-urlencoded"),
+            settings_form_with(&csrf, "Mars/Olympus", "Ryo", "body {}"),
+            Some(&cookie),
+        )
+        .await;
+    assert_eq!(rejected.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        harness.repository.site_settings().await.unwrap().timezone,
+        "Asia/Tokyo"
+    );
+}
+
+#[tokio::test]
+async fn theme_reset_keeps_a_one_slot_undo() {
+    let harness = Harness::new().await;
+    let (cookie, csrf) = harness.session_cookie().await;
+    let post = |path: &'static str, body: String| {
+        harness.send(
+            Method::POST,
+            path,
+            Some("application/x-www-form-urlencoded"),
+            body,
+            Some(&cookie),
+        )
+    };
+    let csrf_only = || serde_urlencoded::to_string([("csrf", csrf.as_str())]).unwrap();
+
+    assert_eq!(
+        post(
+            "/admin/settings/",
+            settings_form_with(&csrf, "UTC", "", "body { color: teal; }"),
+        )
+        .await
+        .status(),
+        StatusCode::SEE_OTHER
+    );
+    let nothing_to_undo = post("/admin/settings/theme/undo/", csrf_only()).await;
+    assert_eq!(nothing_to_undo.status(), StatusCode::NOT_FOUND);
+
+    assert_eq!(
+        post("/admin/settings/theme/reset/", csrf_only())
+            .await
+            .status(),
+        StatusCode::SEE_OTHER
+    );
+    let stored = harness.repository.site_settings().await.unwrap();
+    assert_eq!(
+        stored.custom_css_backup.as_deref(),
+        Some("body { color: teal; }")
+    );
+    assert_eq!(
+        stored.custom_css,
+        include_str!("../static/default-theme.css")
+    );
+
+    // A plain settings save keeps the backup around.
+    assert_eq!(
+        post(
+            "/admin/settings/",
+            settings_form_with(&csrf, "UTC", "", ".a { margin: 0; }"),
+        )
+        .await
+        .status(),
+        StatusCode::SEE_OTHER
+    );
+    assert_eq!(
+        harness
+            .repository
+            .site_settings()
+            .await
+            .unwrap()
+            .custom_css_backup
+            .as_deref(),
+        Some("body { color: teal; }")
+    );
+
+    let undone = post("/admin/settings/theme/undo/", csrf_only()).await;
+    assert_eq!(undone.status(), StatusCode::SEE_OTHER);
+    assert_eq!(undone.headers()[header::LOCATION], "/admin/settings/");
+    let stored = harness.repository.site_settings().await.unwrap();
+    assert_eq!(stored.custom_css, "body { color: teal; }");
+    assert_eq!(stored.custom_css_backup, None);
+    let stylesheet = text(
+        harness
+            .send(Method::GET, "/assets/site.css", None, Body::empty(), None)
+            .await,
+    )
+    .await;
+    assert_eq!(stylesheet, "body { color: teal; }");
+}

@@ -371,6 +371,8 @@ setup?.querySelector<HTMLButtonElement>("[data-passkey-action]")?.addEventListen
       flow_id: start.flow_id,
       name,
       credential: credentialJSON(credential),
+      // Offered once: a fresh site adopts the browser's zone for its dates.
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     });
     showRecoveryCodes(completed.recovery_codes, setup.dataset);
   } catch (reason) {
@@ -568,6 +570,21 @@ if (editor) {
   const shortcuts = editor.querySelector<HTMLElement>("[data-shortcuts]");
   const trashed = editor.dataset.trashed === "true";
   const language = document.documentElement.lang;
+  const siteZone = editor.dataset.siteZone ?? "";
+  const browserZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+  // A scheduled instant in the writer's zone, and in the site's when they differ.
+  const describeInstant = (iso: string): string => {
+    const instant = new Date(iso);
+    let label = instant.toLocaleString(language || undefined);
+    if (siteZone && siteZone !== browserZone) {
+      try {
+        label += ` (${siteZone}: ${instant.toLocaleString(language || undefined, { timeZone: siteZone })})`;
+      } catch {
+        /* an unknown zone name: the writer's own reading is enough */
+      }
+    }
+    return label;
+  };
   const failures = failureMessages(editor.dataset);
   const msg = {
     saved: editor.dataset.msgSaved ?? "Saved",
@@ -623,7 +640,7 @@ if (editor) {
     statusTime.hidden = status !== "scheduled";
     if (publishAtUtc) {
       statusTime.setAttribute("datetime", publishAtUtc);
-      statusTime.textContent = new Date(publishAtUtc).toLocaleString(language || undefined);
+      statusTime.textContent = describeInstant(publishAtUtc);
       publishAt.value = isoToLocalDateTime(publishAtUtc);
       publishAt.dataset.publishAtUtc = publishAtUtc;
     } else {
@@ -635,9 +652,7 @@ if (editor) {
     refreshPublishLabel();
   };
   if (statusTime.getAttribute("datetime")) {
-    statusTime.textContent = new Date(statusTime.getAttribute("datetime")!).toLocaleString(
-      language || undefined,
-    );
+    statusTime.textContent = describeInstant(statusTime.getAttribute("datetime")!);
   }
 
   // Mod-K wraps the selection as a markdown link, or drops in a template.

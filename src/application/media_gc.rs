@@ -91,6 +91,9 @@ mod tests {
             logo_media_id: Some(live.clone()),
             favicon_media_id: None,
             custom_css: String::new(),
+            timezone: "UTC".into(),
+            author_name: String::new(),
+            custom_css_backup: None,
         };
         let revisions = HashSet::from([historical.clone()]);
 

@@ -20,3 +20,4 @@ Each ADR uses: `Status`, `Context`, `Decision`, and `Consequences`.
 | [0012](0012-domain-first-official-hosting.md) | Domain-first official hosting | Accepted |
 | [0013](0013-dependency-free-static-highlighting.md) | Dependency-free deterministic static highlighting | Accepted |
 | [0014](0014-recoverable-trash.md) | Recoverable trash is durable content state | Accepted |
+| [0015](0015-site-local-time.md) | The site has a local time | Accepted |

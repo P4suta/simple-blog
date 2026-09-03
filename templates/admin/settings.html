@@ -25,6 +25,8 @@
     <label class="row"><span>{{ t["settings.site_title"] }}</span><input name="site_title" value="{{ settings.site_title }}" maxlength="120" required></label>
     <label class="row"><span>{{ t["settings.site_description"] }}</span><textarea name="site_description" maxlength="300" rows="2">{{ settings.site_description }}</textarea></label>
     <label class="row"><span>{{ t["settings.language"] }}</span><select name="locale"><option value="en"{% if settings.locale == 'en' %} selected{% endif %}>English</option><option value="ja"{% if settings.locale == 'ja' %} selected{% endif %}>日本語</option><option value="zh"{% if settings.locale == 'zh' %} selected{% endif %}>中文</option></select></label>
+    <label class="row"><span>{{ t["settings.timezone"] }}</span><span class="field-with-note"><select name="timezone">{% for group in timezones %}<optgroup label="{{ group.region }}">{% for zone in group.zones %}<option value="{{ zone }}"{% if zone == settings.timezone %} selected{% endif %}>{{ zone }}</option>{% endfor %}</optgroup>{% endfor %}</select><small>{{ t["settings.timezone_note"] }}</small></span></label>
+    <label class="row"><span>{{ t["settings.author_name"] }}</span><input name="author_name" value="{{ settings.author_name }}" maxlength="120" placeholder="{{ settings.site_title }}"></label>
     <section class="cover-field row" data-media-target>
       <span>{{ t["settings.logo"] }}</span>
       <div class="media-slot">
@@ -49,6 +51,7 @@
     <p>{{ t["settings.design_note"] }}</p>
     <label data-css-field><span>{{ t["settings.css"] }}</span><textarea name="custom_css" rows="20" spellcheck="false">{{ settings.custom_css }}</textarea></label>
     <details class="danger-zone"><summary>{{ t["settings.theme_reset"] }}</summary><p>{{ t["settings.theme_reset_note"] }}</p><button type="submit" class="danger-button" form="theme-reset-form">{{ t["settings.theme_reset_confirm"] }}</button></details>
+    {% if settings.custom_css_backup %}<p class="theme-undo"><button type="submit" form="theme-undo-form">{{ t["settings.theme_undo"] }}</button> <small>{{ t["settings.theme_undo_note"] }}</small></p>{% endif %}
   </section>
   <section>
     <h2>{{ t["settings.navigation"] }}</h2>
@@ -57,6 +60,7 @@
   </section>
 </form>
 <form id="theme-reset-form" method="post" action="/admin/settings/theme/reset/" hidden><input type="hidden" name="csrf" value="{{ csrf }}"></form>
+<form id="theme-undo-form" method="post" action="/admin/settings/theme/undo/" hidden><input type="hidden" name="csrf" value="{{ csrf }}"></form>
 <div class="settings-form security-section">
   <section>
     <h2>{{ t["settings.security"] }}</h2>
