@@ -439,7 +439,7 @@ pub fn router(state: AppState) -> Router {
         .config
         .max_upload_bytes
         .saturating_add(MULTIPART_ENVELOPE_BYTES);
-    Router::new()
+    let pages: Router<AppState> = Router::new()
         .route("/healthz", get(public::health))
         .route("/likes/{id}", post(public::like_toggle))
         .route("/media/{filename}", get(public::media_file))
@@ -458,9 +458,6 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/preview/home/", get(admin::preview_home))
         .route("/admin/tags/", get(admin::list_tags))
         .route("/admin/share/{token}/", get(admin::shared_preview))
-        .route("/admin/assets/theme.css", get(admin::theme_css))
-        .route("/admin/assets/prefs.js", get(admin::admin_prefs_js))
-        .route("/admin/assets/article.js", get(admin::admin_article_js))
         .route("/admin/login/", get(admin::login_page))
         .route("/admin/logout/", post(admin::logout))
         .route("/admin/setup/", get(admin::setup_page))
@@ -512,19 +509,8 @@ pub fn router(state: AppState) -> Router {
                 .layer(DefaultBodyLimit::max(upload_envelope)),
         )
         .route("/admin/media/{id}/", post(admin::update_media))
-        .route("/admin/media/{id}/delete/", post(admin::delete_media))
-        .route("/admin/auth/setup/start", post(admin::setup_start))
-        .route("/admin/auth/setup/finish", post(admin::setup_finish))
-        .route("/admin/auth/login/start", post(admin::login_start))
-        .route("/admin/auth/login/finish", post(admin::login_finish))
-        .route("/admin/auth/recovery", post(admin::recovery_login))
-        .route("/admin/auth/passkeys/start", post(admin::passkey_add_start))
-        .route(
-            "/admin/auth/passkeys/finish",
-            post(admin::passkey_add_finish),
-        )
-        .route("/admin/assets/admin.css", get(admin::admin_css))
-        .route("/admin/assets/admin.js", get(admin::admin_js))
+        .route("/admin/media/{id}/delete/", post(admin::delete_media));
+    admin_service_routes(pages)
         .fallback(public::release_site)
         .with_state(state.clone())
         .layer(CompressionLayer::new())
@@ -536,6 +522,27 @@ pub fn router(state: AppState) -> Router {
         ))
         .layer(middleware::from_fn_with_state(state, perimeter))
         .layer(middleware::from_fn(observability::request_trace))
+}
+
+/// Embedded assets and the passkey ceremonies, kept apart so the page routes
+/// above read as one table.
+fn admin_service_routes(router: Router<AppState>) -> Router<AppState> {
+    router
+        .route("/admin/assets/theme.css", get(admin::theme_css))
+        .route("/admin/assets/prefs.js", get(admin::admin_prefs_js))
+        .route("/admin/assets/article.js", get(admin::admin_article_js))
+        .route("/admin/assets/admin.css", get(admin::admin_css))
+        .route("/admin/assets/admin.js", get(admin::admin_js))
+        .route("/admin/auth/setup/start", post(admin::setup_start))
+        .route("/admin/auth/setup/finish", post(admin::setup_finish))
+        .route("/admin/auth/login/start", post(admin::login_start))
+        .route("/admin/auth/login/finish", post(admin::login_finish))
+        .route("/admin/auth/recovery", post(admin::recovery_login))
+        .route("/admin/auth/passkeys/start", post(admin::passkey_add_start))
+        .route(
+            "/admin/auth/passkeys/finish",
+            post(admin::passkey_add_finish),
+        )
 }
 
 const DEFAULT_CSP: &str = "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
