@@ -26,6 +26,7 @@ fn slug_rejects_reserved_or_unsafe_segments() {
         "../escape",
         "archive",
         "feed.xml",
+        "feed.json",
         "page",
         "tag",
     ] {

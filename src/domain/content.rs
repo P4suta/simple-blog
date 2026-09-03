@@ -7,6 +7,7 @@ use thiserror::Error;
 const RESERVED_SLUGS: &[&str] = &[
     "admin",
     "archive",
+    "feed.json",
     "feed.xml",
     "healthz",
     "media",

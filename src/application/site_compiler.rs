@@ -1,6 +1,6 @@
 //! Pure public-site compilation shared by every host adapter.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use chrono::{
     DateTime, Datelike, Duration, SecondsFormat, Utc,
@@ -32,6 +32,7 @@ use crate::{
 };
 
 const LIKE_JS: &str = include_str!("../../static/like.js");
+const ARTICLE_JS: &str = include_str!("../../static/article.js");
 const PREFS_JS: &str = include_str!("../../static/prefs.js");
 const SEARCH_JS: &str = include_str!("../../static/search.js");
 
@@ -44,6 +45,9 @@ const OUTLINE_MIN_HEADINGS: usize = 3;
 /// An "updated" date is shown only when it says something the publication
 /// date does not.
 const UPDATED_THRESHOLD_HOURS: i64 = 24;
+/// Related posts under an article: those sharing the most tags, newest first.
+const RELATED_LIMIT: usize = 3;
+const JSON_FEED_VERSION: &str = "https://jsonfeed.org/version/1.1";
 
 /// Renders instants the way the site's readers expect: in the site's zone,
 /// with the patterns its language uses. Built once per compile from the
@@ -292,7 +296,7 @@ impl SiteCompiler {
             media: &media,
             dates: &dates,
         };
-        let mut context = self.content_context(&scope, content, None, None);
+        let mut context = self.content_context(&scope, content, None, None, Vec::new());
         assets.apply(&mut context.assets, &mut context.meta);
         Ok(self.templates.render("public/content.html", context)?)
     }
@@ -473,7 +477,11 @@ impl SiteCompiler {
                         ),
                     }),
                 },
-                group.contents.iter().copied(),
+                group
+                    .contents
+                    .iter()
+                    .copied()
+                    .filter(|content| content.kind == ContentKind::Post),
             )?;
             let tag_posts = group
                 .contents
@@ -514,7 +522,11 @@ impl SiteCompiler {
             .map(|(slug, group)| TagSummary {
                 name: group.name.clone(),
                 slug: slug.clone(),
-                count: group.contents.len(),
+                count: group
+                    .contents
+                    .iter()
+                    .filter(|content| content.kind == ContentKind::Post)
+                    .count(),
             })
             .collect::<Vec<_>>();
         summaries.sort_by(|left, right| {
@@ -610,7 +622,10 @@ impl SiteCompiler {
                         (older.map(content_link), newer.map(content_link))
                     });
             let path = format!("/{}/", content.slug);
-            let context = self.content_context(scope, content, older, newer);
+            let related = post_positions
+                .get(&content.id.as_i64())
+                .map_or_else(Vec::new, |index| related_posts(posts, *index, scope.dates));
+            let context = self.content_context(scope, content, older, newer, related);
             let html = self.templates.render("public/content.html", context)?;
             builder = builder
                 .asset_with_metadata(
@@ -634,6 +649,7 @@ impl SiteCompiler {
         content: &Content,
         older: Option<ContentLink>,
         newer: Option<ContentLink>,
+        related: Vec<RelatedView>,
     ) -> ThemeContext<ContentPage> {
         let Scope {
             snapshot,
@@ -664,7 +680,7 @@ impl SiteCompiler {
                 description: Some(description),
                 og_type: if is_post { "article" } else { "website" },
             },
-            self.content_page(scope, content, cover.clone(), older, newer),
+            self.content_page(scope, content, cover.clone(), older, newer, related),
         );
         let image = cover.map(|cover| MetaImage {
             url: format!("{origin}{}", cover.original_url),
@@ -696,6 +712,7 @@ impl SiteCompiler {
         cover: Option<CoverView>,
         older: Option<ContentLink>,
         newer: Option<ContentLink>,
+        related: Vec<RelatedView>,
     ) -> ContentPage {
         let Scope {
             snapshot,
@@ -736,8 +753,10 @@ impl SiteCompiler {
             tags: content.tags.clone(),
             cover,
             like_js_version: fingerprint(LIKE_JS),
+            article_js_version: fingerprint(ARTICLE_JS),
             older: older.map(NeighborView::from),
             newer: newer.map(NeighborView::from),
+            related,
         }
     }
 
@@ -836,6 +855,12 @@ impl SiteCompiler {
             "application/atom+xml; charset=utf-8",
             None,
         )?;
+        builder = builder.asset(
+            "/feed.json",
+            json_feed(snapshot, origin, posts, dates)?,
+            "application/feed+json; charset=utf-8",
+            None,
+        )?;
 
         let day = |at: DateTime<Utc>| dates.day(at);
         let latest = public.iter().map(|content| content.updated_at).max();
@@ -914,6 +939,12 @@ impl SiteCompiler {
             .asset(
                 "/assets/like.js",
                 LIKE_JS.as_bytes().to_vec(),
+                "text/javascript; charset=utf-8",
+                None,
+            )?
+            .asset(
+                "/assets/article.js",
+                ARTICLE_JS.as_bytes().to_vec(),
                 "text/javascript; charset=utf-8",
                 None,
             )?
@@ -1314,8 +1345,125 @@ struct ContentPage {
     tags: Vec<Tag>,
     cover: Option<CoverView>,
     like_js_version: String,
+    article_js_version: String,
     older: Option<NeighborView>,
     newer: Option<NeighborView>,
+    related: Vec<RelatedView>,
+}
+
+#[derive(Serialize)]
+struct RelatedView {
+    slug: String,
+    title: String,
+    publish_at: String,
+    date: String,
+}
+
+/// Posts sharing the most tags with `posts[index]`, ties broken by the
+/// list's own order (newest first). Pages are neither source nor candidate.
+fn related_posts(posts: &[Content], index: usize, dates: &SiteDates) -> Vec<RelatedView> {
+    let own = posts[index]
+        .tags
+        .iter()
+        .map(|tag| tag.slug.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut scored = posts
+        .iter()
+        .enumerate()
+        .filter(|(position, _)| *position != index)
+        .filter_map(|(position, candidate)| {
+            let shared = candidate
+                .tags
+                .iter()
+                .filter(|tag| own.contains(tag.slug.as_str()))
+                .count();
+            (shared > 0).then_some((shared, position, candidate))
+        })
+        .collect::<Vec<_>>();
+    scored.sort_by(|left, right| right.0.cmp(&left.0).then(left.1.cmp(&right.1)));
+    scored
+        .into_iter()
+        .take(RELATED_LIMIT)
+        .map(|(_, _, candidate)| RelatedView {
+            slug: candidate.slug.to_string(),
+            title: candidate.title.clone(),
+            publish_at: dates.iso(card_instant(candidate)),
+            date: dates.long(card_instant(candidate)),
+        })
+        .collect()
+}
+
+#[derive(Serialize)]
+struct JsonFeed {
+    version: &'static str,
+    title: String,
+    home_page_url: String,
+    feed_url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    language: &'static str,
+    authors: Vec<JsonFeedAuthor>,
+    items: Vec<JsonFeedItem>,
+}
+
+#[derive(Serialize)]
+struct JsonFeedAuthor {
+    name: String,
+}
+
+#[derive(Serialize)]
+struct JsonFeedItem {
+    id: String,
+    url: String,
+    title: String,
+    content_html: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    summary: String,
+    date_published: String,
+    date_modified: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tags: Vec<String>,
+}
+
+/// JSON Feed 1.1 with the same entries as the Atom feed. Built from structs,
+/// so field order is fixed and no template escaping is involved.
+fn json_feed(
+    snapshot: &SiteSnapshotV1,
+    origin: &str,
+    posts: &[Content],
+    dates: &SiteDates,
+) -> Result<Vec<u8>, SiteCompilerError> {
+    let settings = &snapshot.settings;
+    let feed = JsonFeed {
+        version: JSON_FEED_VERSION,
+        title: settings.site_title.clone(),
+        home_page_url: format!("{origin}/"),
+        feed_url: format!("{origin}/feed.json"),
+        description: (!settings.site_description.is_empty())
+            .then(|| settings.site_description.clone()),
+        language: settings.locale.as_str(),
+        authors: vec![JsonFeedAuthor {
+            name: settings.author().to_owned(),
+        }],
+        items: posts
+            .iter()
+            .take(FEED_ENTRY_LIMIT)
+            .map(|post| {
+                let url = format!("{origin}/{}/", post.slug);
+                JsonFeedItem {
+                    id: url.clone(),
+                    url,
+                    title: post.title.clone(),
+                    content_html: post.body_html.clone(),
+                    summary: post.summary.clone(),
+                    date_published: dates.iso(card_instant(post)),
+                    date_modified: dates.iso(post.updated_at),
+                    tags: post.tags.iter().map(|tag| tag.name.clone()).collect(),
+                }
+            })
+            .collect(),
+    };
+    serde_json::to_vec(&feed).map_err(|error| SiteCompilerError::SearchIndex(error.to_string()))
 }
 
 #[derive(Clone, Serialize)]

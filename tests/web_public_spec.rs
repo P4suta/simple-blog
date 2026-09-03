@@ -324,7 +324,13 @@ async fn archive_tag_feed_and_sitemap_share_the_publication_policy() {
         .await
         .unwrap();
 
-    for path in ["/archive/", "/tag/rust/", "/feed.xml", "/sitemap.xml"] {
+    for path in [
+        "/archive/",
+        "/tag/rust/",
+        "/feed.xml",
+        "/feed.json",
+        "/sitemap.xml",
+    ] {
         let response = harness.request(path).await;
         assert_eq!(response.status(), StatusCode::OK, "{path}");
         let body = body_text(response).await;
@@ -417,16 +423,22 @@ async fn adjacent_posts_link_and_invalidate_cached_pages() {
         .iter()
         .enumerate()
     {
+        // Distinct tags: related-post sections must not couple these pages,
+        // or the "unaffected page keeps its validator" check below has no
+        // unaffected page to look at.
         harness
             .service
             .create(
-                draft(
-                    &format!("Post {index}"),
-                    slug,
-                    Publication::Public {
-                        publish_at: now + Duration::minutes(i64::try_from(index).unwrap()),
-                    },
-                ),
+                ContentDraft {
+                    tags: vec![(*slug).to_owned()],
+                    ..draft(
+                        &format!("Post {index}"),
+                        slug,
+                        Publication::Public {
+                            publish_at: now + Duration::minutes(i64::try_from(index).unwrap()),
+                        },
+                    )
+                },
                 SaveIntent::Explicit,
                 now,
             )
@@ -450,13 +462,16 @@ async fn adjacent_posts_link_and_invalidate_cached_pages() {
     harness
         .service
         .create(
-            draft(
-                "Post 3",
-                "fourth-post",
-                Publication::Public {
-                    publish_at: now + Duration::minutes(3),
-                },
-            ),
+            ContentDraft {
+                tags: vec!["fourth-post".to_owned()],
+                ..draft(
+                    "Post 3",
+                    "fourth-post",
+                    Publication::Public {
+                        publish_at: now + Duration::minutes(3),
+                    },
+                )
+            },
             SaveIntent::Explicit,
             now,
         )
@@ -608,4 +623,18 @@ async fn home_pages_and_tag_index_resolve_through_the_release() {
         tag_feed.headers()[header::CONTENT_TYPE],
         "application/atom+xml; charset=utf-8"
     );
+}
+
+#[tokio::test]
+async fn article_script_is_served_immutable() {
+    let harness = Harness::new().await;
+    let script = harness.request("/assets/article.js").await;
+    assert_eq!(script.status(), StatusCode::OK);
+    assert!(
+        script.headers()[header::CACHE_CONTROL]
+            .to_str()
+            .unwrap()
+            .contains("immutable")
+    );
+    assert!(body_text(script).await.contains("copy-code"));
 }

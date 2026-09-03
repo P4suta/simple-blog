@@ -25,6 +25,7 @@
   {% if meta.prev_url %}<link rel="prev" href="{{ meta.prev_url }}">{% endif %}
   {% if meta.next_url %}<link rel="next" href="{{ meta.next_url }}">{% endif %}
   <link rel="alternate" type="application/atom+xml" title="{{ site.site_title }}" href="/feed.xml">
+  <link rel="alternate" type="application/feed+json" title="{{ site.site_title }}" href="/feed.json">
   {% if meta.alternate_feed %}<link rel="alternate" type="application/atom+xml" title="{{ meta.alternate_feed.title }}" href="{{ meta.alternate_feed.href }}">{% endif %}
   <link rel="stylesheet" href="{{ assets.css_url }}">
   {# Synchronous on purpose: a saved reader preference (measure, text size,
