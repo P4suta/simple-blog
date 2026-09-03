@@ -1,0 +1,12 @@
+{% extends "admin/base.html" %}
+{% block title %}{{ t["admin.title.share_link"] }}{% endblock %}
+{% block content %}
+<section class="conflict share-page">
+  <p class="kicker">{{ t["editor.share"] }}</p>
+  <h1>{{ t["share.heading"] }}</h1>
+  <p>{{ t["share.note"] }}</p>
+  <p class="share-url"><output>{{ url }}</output></p>
+  <p><small>{{ expires_note }}</small></p>
+  <a class="primary-button" href="/admin/content/{{ content_id }}/edit/">{{ t["share.back"] }}</a>
+</section>
+{% endblock %}

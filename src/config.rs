@@ -13,6 +13,7 @@ use uuid::Uuid;
 const DEFAULT_DATA_DIR: &str = "./data";
 const DEFAULT_BIND: &str = "127.0.0.1:8080";
 const DEFAULT_PUBLIC_URL: &str = "http://localhost:8080";
+const DEFAULT_BACKUP_RETENTION: usize = 14;
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -21,6 +22,10 @@ pub struct Config {
     pub public_url: Url,
     pub trusted_proxies: Vec<IpAddr>,
     pub max_upload_bytes: usize,
+    /// How many scheduled backup archives `serve` keeps; zero disables the
+    /// scheduler (archives requested from the settings page are always
+    /// written).
+    pub backup_retention: usize,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -31,6 +36,7 @@ pub struct ConfigFile {
     pub public_url: Option<String>,
     pub trusted_proxies: Option<Vec<IpAddr>>,
     pub max_upload_bytes: Option<usize>,
+    pub backup_retention: Option<usize>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -40,6 +46,7 @@ pub struct Overrides {
     pub public_url: Option<String>,
     pub trusted_proxies: Option<Vec<IpAddr>>,
     pub max_upload_bytes: Option<usize>,
+    pub backup_retention: Option<usize>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -57,6 +64,10 @@ pub enum ConfigError {
     PublicUrl(String),
     #[error("invalid max upload size")]
     MaxUpload,
+    #[error("invalid backup retention (a whole number of archives): {0:?}")]
+    BackupRetention(String),
+    #[error("invalid trusted proxy address: {0:?}")]
+    TrustedProxy(String),
     #[error("could not read configuration at {path}: {source}")]
     Read {
         path: PathBuf,
@@ -101,19 +112,15 @@ impl Config {
             .or(file.public_url)
             .unwrap_or_else(|| DEFAULT_PUBLIC_URL.to_owned());
         let public_url = parse_origin(&public_url)?;
-        let trusted_proxies = sources
-            .cli
-            .trusted_proxies
-            .or_else(|| {
-                env.get("SIMPLE_BLOG_TRUSTED_PROXIES").map(|value| {
-                    value
-                        .split(',')
-                        .filter_map(|item| item.trim().parse().ok())
-                        .collect()
-                })
-            })
-            .or(file.trusted_proxies)
-            .unwrap_or_default();
+        // A mistyped proxy address must fail loudly: silently dropping it
+        // would key rate limiting on the proxy itself without any warning.
+        let trusted_proxies = match sources.cli.trusted_proxies {
+            Some(list) => list,
+            None => match env.get("SIMPLE_BLOG_TRUSTED_PROXIES") {
+                Some(value) => parse_proxy_list(value)?,
+                None => file.trusted_proxies.unwrap_or_default(),
+            },
+        };
         let max_upload_bytes = sources
             .cli
             .max_upload_bytes
@@ -126,6 +133,16 @@ impl Config {
         if max_upload_bytes == 0 {
             return Err(ConfigError::MaxUpload);
         }
+        let backup_retention = match sources.cli.backup_retention {
+            Some(value) => value,
+            None => match env.get("SIMPLE_BLOG_BACKUP_RETENTION") {
+                Some(value) => value
+                    .trim()
+                    .parse()
+                    .map_err(|_| ConfigError::BackupRetention(value.clone()))?,
+                None => file.backup_retention.unwrap_or(DEFAULT_BACKUP_RETENTION),
+            },
+        };
 
         Ok(Self {
             data_dir,
@@ -133,6 +150,7 @@ impl Config {
             public_url,
             trusted_proxies,
             max_upload_bytes,
+            backup_retention,
         })
     }
 
@@ -184,6 +202,7 @@ impl Config {
             public_url: Some(self.public_url.to_string()),
             trusted_proxies: Some(self.trusted_proxies.clone()),
             max_upload_bytes: Some(self.max_upload_bytes),
+            backup_retention: Some(self.backup_retention),
         };
         let contents = toml::to_string_pretty(&file)?;
         std::fs::create_dir_all(&self.data_dir).map_err(|source| ConfigError::Write {
@@ -210,6 +229,18 @@ impl Config {
         }
         Ok(())
     }
+}
+
+fn parse_proxy_list(value: &str) -> Result<Vec<IpAddr>, ConfigError> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(|item| {
+            item.parse()
+                .map_err(|_| ConfigError::TrustedProxy(item.to_owned()))
+        })
+        .collect()
 }
 
 fn read_optional_file(path: &Path) -> Result<Option<ConfigFile>, ConfigError> {

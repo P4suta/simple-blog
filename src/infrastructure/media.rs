@@ -93,19 +93,49 @@ impl LocalMediaService {
             if referenced.contains(asset.id.as_str()) {
                 continue;
             }
-            self.repository.delete_media(&asset.id).await?;
-            let filenames = std::iter::once(&asset.original_filename)
-                .chain(asset.variants.iter().map(|variant| &variant.filename));
-            for filename in filenames {
-                match std::fs::remove_file(self.directory.join(filename)) {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(MediaError::File(error.to_string())),
-                }
-            }
+            self.remove_asset(&asset).await?;
             removed += 1;
         }
         Ok(removed)
+    }
+
+    /// Deletes one asset the owner chose to drop; `false` when it does not
+    /// exist. The caller decides whether anything still shows it.
+    pub async fn delete_asset(&self, id: &MediaId) -> Result<bool, MediaError> {
+        let Some(asset) = self.repository.find_media(id).await? else {
+            return Ok(false);
+        };
+        self.remove_asset(&asset).await?;
+        Ok(true)
+    }
+
+    async fn remove_asset(&self, asset: &MediaAsset) -> Result<(), MediaError> {
+        self.repository.delete_media(&asset.id).await?;
+        let filenames = std::iter::once(&asset.original_filename)
+            .chain(asset.variants.iter().map(|variant| &variant.filename));
+        for filename in filenames {
+            match std::fs::remove_file(self.directory.join(filename)) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(MediaError::File(error.to_string())),
+            }
+        }
+        Ok(())
+    }
+
+    /// Replaces an asset's alternative text after the same validation the
+    /// upload applied; `false` when no such asset exists.
+    pub async fn update_alt_text(
+        &self,
+        id: &MediaId,
+        alt_text: &str,
+        now: DateTime<Utc>,
+    ) -> Result<bool, MediaError> {
+        let alt_text = clean_text(alt_text, 500, "alt text")?;
+        self.repository
+            .update_media_alt_text(id, &alt_text, now)
+            .await
+            .map_err(MediaError::from)
     }
 
     pub async fn store(

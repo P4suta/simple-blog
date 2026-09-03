@@ -2,7 +2,10 @@
 
 pub mod auth;
 pub mod content;
+pub mod diff;
 pub mod hosting;
+pub mod html;
 pub mod media;
+pub mod reading;
 pub mod search;
 pub mod theme;

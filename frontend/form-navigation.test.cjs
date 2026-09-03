@@ -3,7 +3,11 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const { postFormAsNavigation } = require("./form-navigation.ts");
+const {
+  conflictNavigationParameters,
+  isConflictPage,
+  postFormAsNavigation,
+} = require("./form-navigation.ts");
 const documentStreamCall =
   /document\s*(?:\.|\?\.)\s*(?:open|write|writeln)\s*(?:\?\.)?\s*\(/;
 
@@ -87,7 +91,38 @@ test("editor conflict handling uses native navigation instead of an HTML string 
   const source = fs.readFileSync(path.join(__dirname, "admin.ts"), "utf8");
 
   assert.doesNotMatch(source, documentStreamCall);
-  assert.match(source, /postFormAsNavigation\(document, editor\.action, parameters\)/);
+  assert.match(
+    source,
+    /postFormAsNavigation\(\s*document,\s*editor\.action,\s*conflictNavigationParameters\(parameters\),?\s*\)/,
+  );
+  assert.match(source, /isConflictPage\(response\.status, response\.headers\.get\("content-type"\)\)/);
+});
+
+test("only the server's HTML conflict page may replace the editor", () => {
+  assert.equal(isConflictPage(409, "text/html; charset=utf-8"), true);
+  assert.equal(isConflictPage(409, "TEXT/HTML"), true);
+  // A taken slug is also a 409, but as plain text: the writer's draft must stay.
+  assert.equal(isConflictPage(409, "text/plain; charset=utf-8"), false);
+  assert.equal(isConflictPage(409, null), false);
+  assert.equal(isConflictPage(200, "text/html"), false);
+  assert.equal(isConflictPage(500, "text/html"), false);
+});
+
+test("the replayed conflict request asks for the explicit HTML outcome", () => {
+  const original = new URLSearchParams([
+    ["csrf", "opaque"],
+    ["tags", "rust"],
+    ["tags", "cms"],
+    ["intent", "autosave"],
+  ]);
+
+  const replay = conflictNavigationParameters(original);
+
+  assert.equal(replay.get("intent"), "explicit");
+  assert.deepEqual(replay.getAll("tags"), ["rust", "cms"]);
+  assert.equal(replay.get("csrf"), "opaque");
+  // The live autosave parameters are left untouched for the editor's own use.
+  assert.equal(original.get("intent"), "autosave");
 });
 
 test("document stream guard recognizes direct and optional calls", () => {

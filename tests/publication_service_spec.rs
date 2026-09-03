@@ -217,3 +217,22 @@ async fn body_for(
     let object_id = manifest.routes[path].object_id().unwrap();
     String::from_utf8(store.object(object_id).await.unwrap()).unwrap()
 }
+
+#[test]
+fn retry_schedule_grows_from_five_seconds_to_a_five_minute_cap() {
+    use simple_blog::application::publication::{RetrySchedule, SiteState};
+
+    let schedule = RetrySchedule::DEFAULT;
+    assert_eq!(schedule.delay(0), std::time::Duration::from_secs(5));
+    assert_eq!(schedule.delay(1), std::time::Duration::from_secs(30));
+    assert_eq!(schedule.delay(2), std::time::Duration::from_secs(300));
+    assert_eq!(schedule.delay(40), std::time::Duration::from_secs(300));
+    assert_eq!(
+        serde_json::to_string(&SiteState::Pending).unwrap(),
+        "\"pending\""
+    );
+    assert_eq!(
+        serde_json::to_string(&SiteState::Current).unwrap(),
+        "\"current\""
+    );
+}

@@ -1,4 +1,5 @@
 {% extends "admin/base.html" %}
+{% block title %}{{ t["admin.title.conflict"] }}{% endblock %}
 {% block content %}
 <section class="conflict" role="alert"><p class="kicker">{{ t["conflict.kicker"] }}</p><h1>{{ t["conflict.heading"] }}</h1><p>{{ t["conflict.note"] }}</p>
 <div class="conflict-grid"><article><h2>{{ t["conflict.current"] }}</h2><h3>{{ current.title }}</h3><pre>{{ current.body_markdown }}</pre></article><article><h2>{{ t["conflict.submitted"] }}</h2><h3>{{ submitted.title }}</h3><pre>{{ submitted.body_markdown }}</pre></article></div><a class="primary-button" href="/admin/content/{{ current.id }}/edit/">{{ t["conflict.open_current"] }}</a></section>

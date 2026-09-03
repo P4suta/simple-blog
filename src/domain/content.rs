@@ -7,9 +7,11 @@ use thiserror::Error;
 const RESERVED_SLUGS: &[&str] = &[
     "admin",
     "archive",
+    "feed.json",
     "feed.xml",
     "healthz",
     "media",
+    "page",
     "robots.txt",
     "search",
     "sitemap.xml",
@@ -67,6 +69,38 @@ impl Slug {
         Self(now.format("%Y%m%d-%H%M%S").to_string())
     }
 
+    /// The address a title suggests: transliterated and hyphenated when the
+    /// script allows it, a reserved word given a suffix, and the clock for
+    /// the rest. CJK titles take the clock deliberately: the transliterator
+    /// would read 日本語 with Chinese readings and produce an address nobody
+    /// recognises, and a date is at least honest.
+    #[must_use]
+    pub fn from_title(title: &str, now: DateTime<Utc>) -> Self {
+        if title.chars().any(is_cjk) {
+            return Self::timestamped(now);
+        }
+        let mut candidate = slug::slugify(title);
+        candidate.truncate(120);
+        let candidate = candidate.trim_matches('-');
+        if candidate.is_empty() {
+            return Self::timestamped(now);
+        }
+        Self::parse(candidate)
+            .or_else(|_| Self::parse(format!("{candidate}-post")))
+            .unwrap_or_else(|_| Self::timestamped(now))
+    }
+
+    /// `{slug}-{n}` for resolving a collision, trimmed to fit the limit.
+    #[must_use]
+    pub fn numbered(&self, n: u32) -> Self {
+        let suffix = format!("-{n}");
+        let room = 120_usize.saturating_sub(suffix.len());
+        let mut base = self.0.clone();
+        base.truncate(room);
+        let base = base.trim_end_matches('-');
+        Self::parse(format!("{base}{suffix}")).unwrap_or_else(|_| self.clone())
+    }
+
     /// Whether this slug has the shape produced by [`Slug::timestamped`] or
     /// [`Slug::timestamped_precise`].
     #[must_use]
@@ -84,6 +118,17 @@ impl Slug {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+}
+
+/// Han, kana and hangul: scripts a Latin transliteration misrepresents.
+const fn is_cjk(character: char) -> bool {
+    matches!(character,
+        '\u{3040}'..='\u{30FF}'
+        | '\u{3400}'..='\u{4DBF}'
+        | '\u{4E00}'..='\u{9FFF}'
+        | '\u{AC00}'..='\u{D7AF}'
+        | '\u{F900}'..='\u{FAFF}'
+        | '\u{FF66}'..='\u{FF9F}')
 }
 
 impl fmt::Display for Slug {
@@ -168,6 +213,12 @@ impl Publication {
             Self::Draft => None,
             Self::Public { publish_at } => Some(*publish_at),
         }
+    }
+
+    /// Public, but not yet visible: the entry is waiting for its boundary.
+    #[must_use]
+    pub fn is_scheduled_at(&self, now: DateTime<Utc>) -> bool {
+        matches!(self, Self::Public { publish_at } if *publish_at > now)
     }
 }
 
@@ -263,9 +314,19 @@ pub struct Content {
     pub version: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Set while the piece sits in the trash (ADR 0014). Omitted from the
+    /// serialized form when empty, so revision snapshots and portable
+    /// archives without trashed content stay byte-identical to older ones.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<DateTime<Utc>>,
 }
 
 impl Content {
+    #[must_use]
+    pub const fn is_trashed(&self) -> bool {
+        self.deleted_at.is_some()
+    }
+
     #[must_use]
     pub fn to_draft(&self) -> ContentDraft {
         ContentDraft {

@@ -33,6 +33,22 @@ impl MediaRepository for FailingMediaRepository {
     async fn delete_media(&self, _id: &MediaId) -> Result<(), MediaRepositoryError> {
         Ok(())
     }
+
+    async fn mime_type_for_filename(
+        &self,
+        _filename: &str,
+    ) -> Result<Option<String>, MediaRepositoryError> {
+        Ok(None)
+    }
+
+    async fn update_media_alt_text(
+        &self,
+        _id: &MediaId,
+        _alt_text: &str,
+        _now: chrono::DateTime<Utc>,
+    ) -> Result<bool, MediaRepositoryError> {
+        Ok(false)
+    }
 }
 
 async fn harness(

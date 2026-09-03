@@ -11,4 +11,11 @@
 </article>
 {% else %}<p class="empty">{{ t["public.empty_home"] }}</p>{% endfor %}
 </section>
+{% if page.posts %}
+<nav class="post-nav pager" aria-label="{{ t["public.pager"] }}">
+  {% if page.pager.newer_url %}<a class="post-nav-newer" rel="prev" href="{{ page.pager.newer_url }}">← {{ t["public.pager_newer"] }}</a>{% endif %}
+  {% if page.pager.status %}<span class="pager-status">{{ page.pager.status }}</span>{% endif %}
+  {% if page.pager.older_url %}<a class="post-nav-older" rel="next" href="{{ page.pager.older_url }}">{{ t["public.pager_older"] }} →</a>{% elif page.pager.archive_url %}<a class="post-nav-older" href="{{ page.pager.archive_url }}">{{ t["public.archive"] }} →</a>{% endif %}
+</nav>
+{% endif %}
 {% endblock %}

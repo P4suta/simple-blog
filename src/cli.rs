@@ -13,7 +13,7 @@ use crate::{
     infrastructure::{entropy::SystemEntropy, sqlite::SqliteRepository},
     materialize::ReleaseMaterializer,
     operations::{
-        BackupService, Doctor, Exporter, MigrationCoordinator, PortableMigrationService,
+        BackupService, Doctor, Exporter, Importer, MigrationCoordinator, PortableMigrationService,
         RestoreService,
     },
     portable::PortableArchive,
@@ -53,6 +53,14 @@ enum Command {
     Export {
         #[arg(long, value_name = "DIRECTORY")]
         output: Option<PathBuf>,
+    },
+    /// Reads Markdown files (an `export` directory, or plain files under
+    /// posts/ and pages/) into this site.
+    Import {
+        directory: PathBuf,
+        /// Replace pieces whose slug already exists instead of skipping them.
+        #[arg(long)]
+        force: bool,
     },
     Migrate {
         #[command(subcommand)]
@@ -103,6 +111,7 @@ impl Cli {
                 Ok(())
             }
             Command::Export { output } => export(overrides, output).await,
+            Command::Import { directory, force } => import(overrides, directory, force).await,
             Command::Migrate { command } => match command {
                 MigrateCommand::Export { output } => migrate_export(overrides, output).await,
                 MigrateCommand::Import { archive, force } => {
@@ -147,6 +156,7 @@ impl Command {
             Self::Backup { .. } => "backup",
             Self::Restore { .. } => "restore",
             Self::Export { .. } => "export",
+            Self::Import { .. } => "import",
             Self::Migrate { .. } => "migrate",
             Self::Doctor { .. } => "doctor",
             Self::Owner { .. } => "owner",
@@ -178,7 +188,11 @@ async fn init(overrides: Overrides) -> Result<()> {
         .issue_setup_token(SetupPurpose::Initial, Utc::now())
         .await
         .context("could not issue setup token")?;
-    println!("{}", setup_url(&config.public_url, token.expose())?);
+    println!(
+        "Initialized {}.\nNo owner passkey is registered yet. Open this link within 15 minutes to register one:\n{}\nThen start the site with `simple-blog serve`; it prints a fresh link if this one expires.",
+        config.data_dir.display(),
+        setup_url(&config.public_url, token.expose())?
+    );
     Ok(())
 }
 
@@ -235,23 +249,53 @@ async fn serve(overrides: Overrides) -> Result<()> {
             .await
             .context("could not open SQLite")?,
     );
-    let state = AppState::new(config, repository).context("could not build web application")?;
-    let initial = state
-        .publish_now()
+    let public_url = config.public_url.clone();
+    if repository
+        .owner_handle()
         .await
-        .context("could not build initial public release")?;
-    tracing::info!(
-        event = "server.initial_release.ready",
-        release_id = %initial.release_id,
-        public_revision = initial.public_revision,
-        disposition = ?initial.disposition
-    );
+        .context("could not inspect owner state")?
+        .is_none()
+    {
+        // A fresh installation started with `serve` alone must still be
+        // claimable: print the same one-time setup link `init` would.
+        let token = AuthService::new(repository.clone(), Arc::new(SystemEntropy))
+            .issue_setup_token(SetupPurpose::Initial, Utc::now())
+            .await
+            .context("could not issue setup token")?;
+        println!(
+            "No owner passkey is registered yet. Open this link within 15 minutes to register one:\n{}",
+            setup_url(&public_url, token.expose())?
+        );
+    }
+    let state = AppState::new(config, repository).context("could not build web application")?;
+    // A broken release store at boot is not fatal: the scheduler keeps
+    // retrying with backoff, and the dashboard says the site is pending.
+    match state.publish_now().await {
+        Ok(initial) => tracing::info!(
+            event = "server.initial_release.ready",
+            release_id = %initial.release_id,
+            public_revision = initial.public_revision,
+            disposition = ?initial.disposition
+        ),
+        Err(error) => tracing::error!(
+            event = "server.initial_release.deferred",
+            error_code = error.code(),
+            phase = error.phase(),
+            error = %error
+        ),
+    }
     let app = router(state.clone());
     let listener = TcpListener::bind(bind)
         .await
         .with_context(|| format!("could not bind {bind}"))?;
     tracing::info!(%bind, "simple-blog is listening");
+    println!("Site:  {public_url}\nAdmin: {public_url}admin/");
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let backup_rx = shutdown_tx.subscribe();
+    let backup_state = state.clone();
+    let backups = tokio::spawn(async move {
+        backup_state.run_backup_scheduler(backup_rx).await;
+    });
     let scheduler = tokio::spawn(async move {
         state.run_publication_scheduler(shutdown_rx).await;
     });
@@ -269,6 +313,7 @@ async fn serve(overrides: Overrides) -> Result<()> {
     scheduler
         .await
         .context("publication scheduler task failed")?;
+    backups.await.context("backup scheduler task failed")?;
     server.context("web server failed")
 }
 
@@ -282,6 +327,43 @@ async fn backup(overrides: Overrides, output: Option<PathBuf>) -> Result<()> {
         .await
         .context("could not create backup")?;
     println!("{}", archive.display());
+    Ok(())
+}
+
+async fn import(overrides: Overrides, directory: PathBuf, force: bool) -> Result<()> {
+    let config = Config::load(overrides).context("could not load configuration")?;
+    ensure_initialized(&config)?;
+    let repository = Arc::new(
+        open_database(&config)
+            .await
+            .context("could not open SQLite")?,
+    );
+    let report = Importer::import(&config, &repository, &directory, force, Utc::now())
+        .await
+        .with_context(|| format!("could not import {}", directory.display()))?;
+    println!(
+        "imported {} piece(s), {} media file(s)",
+        report.imported.len(),
+        report.media
+    );
+    for slug in &report.imported {
+        println!("  /{slug}/");
+    }
+    if !report.skipped.is_empty() {
+        println!("skipped {}:", report.skipped.len());
+        for (file, reason) in &report.skipped {
+            println!("  {file}: {reason}");
+        }
+    }
+    // Everything imported is visible only once a release carries it. The
+    // pieces are already saved at this point, so a publishing problem is
+    // reported as such rather than as a failed import.
+    let state = AppState::new(config, repository)
+        .context("the import is saved, but the site could not be prepared for publishing")?;
+    state
+        .publish_now()
+        .await
+        .context("the import is saved, but the site could not be published")?;
     Ok(())
 }
 

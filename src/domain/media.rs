@@ -32,6 +32,14 @@ impl MediaId {
     }
 }
 
+/// The media identity a public `/media/…` path names, when it names one
+/// (a complete lowercase digest right after the prefix).
+#[must_use]
+pub fn media_id_from_path(path: &str) -> Option<MediaId> {
+    let rest = path.strip_prefix("/media/")?;
+    MediaId::parse(rest.get(..64)?).ok()
+}
+
 impl fmt::Display for MediaId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.0)
@@ -77,4 +85,25 @@ pub struct MediaAsset {
     pub animated: bool,
     pub variants: Vec<MediaVariant>,
     pub created_at: DateTime<Utc>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn media_id_from_path_accepts_only_media_urls_with_a_full_lowercase_id() {
+        let id = "b".repeat(64);
+        assert_eq!(
+            media_id_from_path(&format!("/media/{id}.webp"))
+                .unwrap()
+                .as_str(),
+            id
+        );
+        assert!(media_id_from_path(&format!("/media/{id}-480w.webp")).is_some());
+        assert!(media_id_from_path(&format!("/images/{id}.webp")).is_none());
+        assert!(media_id_from_path(&format!("/media/{}", "B".repeat(64))).is_none());
+        assert!(media_id_from_path(&format!("/media/{}", "c".repeat(63))).is_none());
+        assert!(media_id_from_path("/media/é").is_none());
+    }
 }

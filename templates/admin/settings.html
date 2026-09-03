@@ -1,4 +1,5 @@
 {% extends "admin/base.html" %}
+{% block title %}{{ t["admin.title.settings"] }}{% endblock %}
 {% block header %}{% endblock %}
 {% block content %}
 <header class="editor-bar settings-bar">
@@ -8,14 +9,24 @@
 <h1 class="settings-title">{{ t["settings.heading"] }}</h1>
 <form class="settings-form" method="post" action="/admin/settings/" data-settings
       data-msg-saved="{{ t["editor.saved"] }}"
+      data-msg-saved-pending="{{ t["editor.saved_pending"] }}"
       data-msg-saving="{{ t["editor.saving"] }}"
-      data-msg-unsaved="{{ t["editor.unsaved"] }}">
+      data-msg-unsaved="{{ t["editor.unsaved"] }}"
+      data-msg-upload-failed="{{ t["editor.upload_failed"] }}"
+      data-msg-error-session="{{ t["editor.error_session"] }}"
+      data-msg-error-invalid="{{ t["editor.error_invalid"] }}"
+      data-msg-error-too-large="{{ t["editor.error_too_large"] }}"
+      data-msg-error-rate-limited="{{ t["editor.error_rate_limited"] }}"
+      data-msg-error-server="{{ t["editor.error_server"] }}"
+      data-msg-error-offline="{{ t["editor.error_offline"] }}">
   <input type="hidden" name="csrf" value="{{ csrf }}">
   <section>
     <h2>{{ t["settings.site"] }}</h2>
     <label class="row"><span>{{ t["settings.site_title"] }}</span><input name="site_title" value="{{ settings.site_title }}" maxlength="120" required></label>
     <label class="row"><span>{{ t["settings.site_description"] }}</span><textarea name="site_description" maxlength="300" rows="2">{{ settings.site_description }}</textarea></label>
     <label class="row"><span>{{ t["settings.language"] }}</span><select name="locale"><option value="en"{% if settings.locale == 'en' %} selected{% endif %}>English</option><option value="ja"{% if settings.locale == 'ja' %} selected{% endif %}>日本語</option><option value="zh"{% if settings.locale == 'zh' %} selected{% endif %}>中文</option></select></label>
+    <label class="row"><span>{{ t["settings.timezone"] }}</span><span class="field-with-note"><select name="timezone">{% for group in timezones %}<optgroup label="{{ group.region }}">{% for zone in group.zones %}<option value="{{ zone }}"{% if zone == settings.timezone %} selected{% endif %}>{{ zone }}</option>{% endfor %}</optgroup>{% endfor %}</select><small>{{ t["settings.timezone_note"] }}</small></span></label>
+    <label class="row"><span>{{ t["settings.author_name"] }}</span><input name="author_name" value="{{ settings.author_name }}" maxlength="120" placeholder="{{ settings.site_title }}"></label>
     <section class="cover-field row" data-media-target>
       <span>{{ t["settings.logo"] }}</span>
       <div class="media-slot">
@@ -39,28 +50,58 @@
     <h2>{{ t["settings.design"] }}</h2>
     <p>{{ t["settings.design_note"] }}</p>
     <label data-css-field><span>{{ t["settings.css"] }}</span><textarea name="custom_css" rows="20" spellcheck="false">{{ settings.custom_css }}</textarea></label>
+    <p class="theme-preview-note">{{ t["settings.preview"] }}</p>
+    <iframe class="theme-preview" data-theme-preview src="/admin/preview/home/" title="{{ t["settings.preview"] }}" loading="lazy"></iframe>
+    <details class="danger-zone"><summary>{{ t["settings.theme_reset"] }}</summary><p>{{ t["settings.theme_reset_note"] }}</p><button type="submit" class="danger-button" form="theme-reset-form">{{ t["settings.theme_reset_confirm"] }}</button></details>
+    {% if settings.custom_css_backup %}<p class="theme-undo"><button type="submit" form="theme-undo-form">{{ t["settings.theme_undo"] }}</button> <small>{{ t["settings.theme_undo_note"] }}</small></p>{% endif %}
   </section>
   <section>
     <h2>{{ t["settings.navigation"] }}</h2>
     <p>{{ t["settings.navigation_note"] }}</p>
     <label><span>{{ t["settings.links"] }}</span><textarea name="navigation" rows="5" spellcheck="false">{{ navigation }}</textarea></label>
   </section>
+  <p class="settings-actions"><button type="submit" class="primary-button" data-settings-save>{{ t["settings.save"] }}</button></p>
 </form>
+<div class="settings-form redirects-section" id="redirects">
+  <section>
+    <h2>{{ t["settings.redirects"] }}</h2>
+    <p>{{ t["settings.redirects_note"] }}</p>
+    {% if redirects %}<table class="redirect-list"><tbody>{% for item in redirects %}<tr><td><code>/{{ item.old_slug }}/</code></td><td>→ <a href="/{{ item.slug }}/">/{{ item.slug }}/</a> <small>{{ item.title }}</small></td><td><form method="post" action="/admin/redirects/remove/"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="old_slug" value="{{ item.old_slug }}"><button type="submit" class="row-action">{{ t["settings.redirect_remove"] }}</button></form></td></tr>{% endfor %}</tbody></table>{% else %}<p class="content-empty">{{ t["settings.redirects_empty"] }}</p>{% endif %}
+    <form method="post" action="/admin/redirects/" class="redirect-add">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <label><span>{{ t["settings.redirect_from"] }}</span><input name="old_slug" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" maxlength="120" required placeholder="old-address"></label>
+      <label><span>{{ t["settings.redirect_to"] }}</span><select name="content_id" required>{% for target in redirect_targets %}<option value="{{ target.id }}">{{ target.title }} — /{{ target.slug }}/</option>{% endfor %}</select></label>
+      <button type="submit">{{ t["settings.redirect_add"] }}</button>
+    </form>
+  </section>
+</div>
+<form id="theme-reset-form" method="post" action="/admin/settings/theme/reset/" hidden><input type="hidden" name="csrf" value="{{ csrf }}"></form>
+<form id="theme-undo-form" method="post" action="/admin/settings/theme/undo/" hidden><input type="hidden" name="csrf" value="{{ csrf }}"></form>
 <div class="settings-form security-section">
   <section>
     <h2>{{ t["settings.security"] }}</h2>
-    {% if not reauth_ok %}<p>{{ t["settings.reauth"] }} <a href="/admin/login/">{{ t["settings.reauth_link"] }}</a></p>{% endif %}
+    {% if not reauth_ok %}<p>{{ t["settings.reauth"] }} <a href="/admin/login/?next=/admin/settings/">{{ t["settings.reauth_link"] }}</a></p>{% endif %}
     <h3>{{ t["settings.passkeys"] }}</h3>
     <ul>{% for passkey in passkeys %}<li><span>{{ passkey.name }}</span><form method="post" action="/admin/settings/passkeys/remove/"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="credential_id" value="{{ passkey.credential_id }}"><button type="submit">{{ t["settings.passkey_remove"] }}</button></form></li>{% endfor %}</ul>
-    <div data-passkey-add class="passkey-add">
+    {% if reauth_ok %}<div data-passkey-add class="passkey-add">
       <label><span>{{ t["settings.passkey_name"] }}</span><input data-passkey-name value="New device" maxlength="80"></label>
       <button class="primary-button" type="button" data-passkey-action>{{ t["settings.passkey_add"] }}</button>
       <p data-auth-error role="alert"></p>
-    </div>
+    </div>{% endif %}
     <h3>{{ t["settings.recovery"] }}</h3>
     <div class="recovery-row">
       <p>{{ t["settings.recovery_note"] }}</p>
       <form method="post" action="/admin/settings/recovery-codes/"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="primary-button" type="submit">{{ t["settings.recovery_regenerate"] }}</button></form>
+    </div>
+    <h3>{{ t["settings.session"] }}</h3>
+    <div class="recovery-row">
+      <p>{{ t["settings.logout_note"] }}</p>
+      <form method="post" action="/admin/logout/"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="primary-button" type="submit">{{ t["admin.logout"] }}</button></form>
+    </div>
+    <h3>{{ t["settings.backup"] }}</h3>
+    <div class="recovery-row">
+      <p>{{ t["settings.backup_note"] }}</p>
+      {% if reauth_ok %}<form method="post" action="/admin/backup/"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="primary-button" type="submit">{{ t["settings.backup_download"] }}</button></form>{% endif %}
     </div>
   </section>
 </div>

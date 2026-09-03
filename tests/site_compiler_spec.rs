@@ -1,6 +1,6 @@
 use chrono::{Duration, TimeZone, Utc};
 use simple_blog::{
-    application::site_compiler::{PublicRedirect, SiteCompiler, SiteSnapshotV1},
+    application::site_compiler::{PreviewAssets, PublicRedirect, SiteCompiler, SiteSnapshotV1},
     domain::{
         content::{Content, ContentId, ContentKind, Publication, Slug, Tag},
         theme::{Locale, NavigationItem, SiteSettings},
@@ -35,6 +35,7 @@ fn content(
         version: 1,
         created_at,
         updated_at: created_at + Duration::minutes(updated_offset),
+        deleted_at: None,
     }
 }
 
@@ -49,6 +50,9 @@ fn snapshot(contents: Vec<Content>) -> SiteSnapshotV1 {
             logo_media_id: None,
             favicon_media_id: None,
             custom_css: "body { color: #222; }".into(),
+            timezone: "UTC".into(),
+            author_name: String::new(),
+            custom_css_backup: None,
         },
         navigation: Vec::new(),
         contents,
@@ -103,7 +107,9 @@ fn compiler_emits_the_complete_public_surface_without_non_visible_content() {
         "/",
         "/published/",
         "/archive/",
+        "/tag/",
         "/tag/rust/",
+        "/tag/rust/feed.xml",
         "/search/",
         "/feed.xml",
         "/sitemap.xml",
@@ -371,4 +377,923 @@ fn incremental_compiler_prunes_content_tag_and_redirect_routes_absent_from_the_s
             "stale route survived incremental compilation: {removed}"
         );
     }
+}
+use scraper::{Html, Selector};
+use simple_blog::domain::media::{MediaAsset, MediaId, MediaVariant};
+
+fn tagged(mut content: Content, names: &[&str]) -> Content {
+    content.tags = names
+        .iter()
+        .map(|name| Tag {
+            name: (*name).to_owned(),
+            slug: Slug::parse(name.to_lowercase()).unwrap(),
+        })
+        .collect();
+    content
+}
+
+fn published_post(id: i64, title: &str, slug: &str, minutes_ago: i64) -> Content {
+    let now = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
+    content(
+        id,
+        title,
+        slug,
+        Publication::Public {
+            publish_at: now - Duration::minutes(minutes_ago),
+        },
+        1,
+    )
+}
+
+fn compile(contents: Vec<Content>) -> PreparedRelease {
+    SiteCompiler::embedded()
+        .unwrap()
+        .compile(&snapshot(contents), "https://writing.example", None)
+        .unwrap()
+}
+
+fn attribute<'a>(document: &'a Html, selector: &str, name: &str) -> Vec<&'a str> {
+    let selector = Selector::parse(selector).unwrap();
+    document
+        .select(&selector)
+        .filter_map(|element| element.value().attr(name))
+        .collect()
+}
+
+fn texts(document: &Html, selector: &str) -> Vec<String> {
+    let selector = Selector::parse(selector).unwrap();
+    document
+        .select(&selector)
+        .map(|element| element.text().collect::<String>().trim().to_owned())
+        .collect()
+}
+
+#[test]
+fn not_found_and_index_pages_are_localized() {
+    let mut site = snapshot(vec![published_post(1, "掲載", "posted", 5)]);
+    site.settings.locale = Locale::Ja;
+    let release = SiteCompiler::embedded()
+        .unwrap()
+        .compile(&site, "https://writing.example", None)
+        .unwrap();
+
+    let not_found = body(&release, "/404/");
+    assert!(not_found.contains("ページが見つかりません"));
+    assert!(not_found.contains("ホームへ戻る"));
+    assert!(!not_found.contains("Return home"));
+    assert!(not_found.contains("<title>ページが見つかりません — Portable writing</title>"));
+
+    let archive = Html::parse_document(body(&release, "/archive/"));
+    assert_eq!(
+        attribute(&archive, "meta[name=description]", "content"),
+        ["公開済みの文章を年ごとに。"]
+    );
+    assert_eq!(
+        attribute(&archive, "header.site-header nav", "aria-label"),
+        Vec::<&str>::new()
+    );
+    let tag = Html::parse_document(body(&release, "/tag/rust/"));
+    assert_eq!(
+        attribute(&tag, "meta[name=description]", "content"),
+        ["「Rust」のタグが付いた文章。"]
+    );
+    let search = Html::parse_document(body(&release, "/search/"));
+    assert_eq!(
+        attribute(&search, "meta[name=description]", "content"),
+        ["記事とページを検索。"]
+    );
+    let with_navigation = {
+        let mut site = site;
+        site.navigation.push(NavigationItem {
+            id: 1,
+            label: "About".into(),
+            destination: "/about/".into(),
+            is_external: false,
+            position: 0,
+        });
+        SiteCompiler::embedded()
+            .unwrap()
+            .compile(&site, "https://writing.example", None)
+            .unwrap()
+    };
+    let home = Html::parse_document(body(&with_navigation, "/"));
+    assert_eq!(
+        attribute(&home, "header.site-header nav", "aria-label"),
+        ["メイン"]
+    );
+}
+
+#[test]
+fn feed_is_valid_atom_with_author_categories_and_alternate_links() {
+    let release = compile(vec![tagged(
+        published_post(1, "Published", "published", 60),
+        &["Rust", "Writing"],
+    )]);
+    let feed = body(&release, "/feed.xml");
+
+    let author = feed
+        .find("<author><name>Portable writing</name></author>")
+        .unwrap();
+    let entry = feed.find("<entry>").unwrap();
+    assert!(author < entry, "the feed-level author precedes every entry");
+    assert!(feed.contains("<subtitle>A site generated by the shared core</subtitle>"));
+    assert!(feed.contains("<category term=\"rust\" label=\"Rust\"/>"));
+    assert!(feed.contains("<category term=\"writing\" label=\"Writing\"/>"));
+    assert!(feed.contains("rel=\"alternate\" type=\"text/html\""));
+    assert!(feed.contains("https:&#x2f;&#x2f;writing.example&#x2f;published&#x2f;"));
+}
+
+#[test]
+fn every_tag_has_its_own_feed_with_autodiscovery() {
+    let mut page = published_post(2, "About", "about", 30);
+    page.kind = ContentKind::Page;
+    let release = compile(vec![
+        tagged(published_post(1, "Post", "post", 60), &["Rust"]),
+        tagged(page, &["Rust"]),
+    ]);
+
+    let ReleaseRoute::Asset { content_type, .. } = &release.manifest.routes["/tag/rust/feed.xml"]
+    else {
+        panic!("tag feed must be an asset")
+    };
+    assert_eq!(content_type, "application/atom+xml; charset=utf-8");
+    let feed = body(&release, "/tag/rust/feed.xml");
+    assert!(feed.contains("<id>https:&#x2f;&#x2f;writing.example&#x2f;tag&#x2f;rust&#x2f;</id>"));
+    assert!(feed.contains("<title>Portable writing — #Rust</title>"));
+    assert!(feed.contains("Post"));
+    assert!(
+        !feed.contains("<title>About</title>"),
+        "pages stay out of tag feeds"
+    );
+    let tag_page = body(&release, "/tag/rust/");
+    assert!(
+        !tag_page.contains("About"),
+        "pages stay out of tag pages as well: tags are a post's concern"
+    );
+    let document = Html::parse_document(tag_page);
+    let alternates = attribute(
+        &document,
+        "link[rel=alternate][type='application/atom+xml']",
+        "href",
+    );
+    assert_eq!(alternates, ["/feed.xml", "/tag/rust/feed.xml"]);
+
+    let mut without = snapshot(vec![published_post(1, "Post", "post", 60)]);
+    without.contents[0].tags.clear();
+    without.public_revision = 18;
+    let incremental = SiteCompiler::embedded()
+        .unwrap()
+        .compile(&without, "https://writing.example", Some(&release.manifest))
+        .unwrap();
+    assert!(
+        !incremental
+            .manifest
+            .routes
+            .contains_key("/tag/rust/feed.xml")
+    );
+    assert!(!incremental.manifest.routes.contains_key("/tag/rust/"));
+}
+
+#[test]
+fn tag_index_lists_every_tag_by_count_then_name() {
+    let release = compile(vec![
+        tagged(published_post(1, "One", "one", 10), &["Rust", "Zig"]),
+        tagged(
+            published_post(2, "Two", "two", 20),
+            &["Rust", "Zig", "Axum"],
+        ),
+        tagged(published_post(3, "Three", "three", 30), &["Rust", "Zig"]),
+    ]);
+
+    assert!(matches!(
+        release.manifest.routes["/tag"],
+        ReleaseRoute::Redirect { status: 308, .. }
+    ));
+    let index = Html::parse_document(body(&release, "/tag/"));
+    assert_eq!(
+        attribute(&index, "table.tag-list a", "href"),
+        ["/tag/rust/", "/tag/zig/", "/tag/axum/"]
+    );
+    assert_eq!(
+        texts(&index, "table.tag-list td:last-child"),
+        ["3", "3", "1"]
+    );
+    assert_eq!(texts(&index, "h1"), ["Tags"]);
+    assert!(attribute(&index, "footer.site-footer a", "href").contains(&"/tag/"));
+
+    let empty = compile(vec![{
+        let mut post = published_post(1, "Untagged", "untagged", 10);
+        post.tags.clear();
+        post
+    }]);
+    assert!(body(&empty, "/tag/").contains("No tags yet."));
+}
+
+#[test]
+fn sitemap_covers_index_and_tag_pages_with_last_modified_dates() {
+    let posts = (1..=21)
+        .map(|id| published_post(id, &format!("Post {id}"), &format!("post-{id}"), id))
+        .collect();
+    let release = compile(posts);
+    let sitemap = body(&release, "/sitemap.xml");
+
+    for path in [
+        "&#x2f;archive&#x2f;",
+        "&#x2f;tag&#x2f;</loc>",
+        "&#x2f;tag&#x2f;rust&#x2f;",
+        "&#x2f;page&#x2f;2&#x2f;",
+        "&#x2f;post-21&#x2f;",
+    ] {
+        assert!(sitemap.contains(path), "sitemap lacks {path}");
+    }
+    assert!(sitemap.contains(
+        "<url><loc>https:&#x2f;&#x2f;writing.example&#x2f;</loc><lastmod>2026-09-01</lastmod></url>"
+    ));
+}
+
+#[test]
+fn home_is_paginated_in_twenties_with_rel_links() {
+    let posts = (1..=45)
+        .map(|id| published_post(id, &format!("Post {id}"), &format!("post-{id}"), id))
+        .collect();
+    let release = compile(posts);
+
+    for path in ["/", "/page/2/", "/page/3/"] {
+        assert!(release.manifest.routes.contains_key(path), "missing {path}");
+    }
+    assert!(!release.manifest.routes.contains_key("/page/4/"));
+    for redirect in ["/page/1/", "/page/1", "/page/2", "/page/3"] {
+        assert!(
+            matches!(
+                release.manifest.routes[redirect],
+                ReleaseRoute::Redirect { status: 308, .. }
+            ),
+            "{redirect} must redirect"
+        );
+    }
+
+    let first = Html::parse_document(body(&release, "/"));
+    assert_eq!(texts(&first, "article.post-card h2").len(), 20);
+    assert_eq!(attribute(&first, "link[rel=next]", "href"), ["/page/2/"]);
+    assert!(attribute(&first, "link[rel=prev]", "href").is_empty());
+    assert_eq!(
+        attribute(&first, "nav.pager a[rel=next]", "href"),
+        ["/page/2/"]
+    );
+    assert_eq!(texts(&first, "nav.pager .pager-status"), ["Page 1 of 3"]);
+    assert!(attribute(&first, "script[type='application/ld+json']", "type").len() == 1);
+
+    let second = Html::parse_document(body(&release, "/page/2/"));
+    assert_eq!(attribute(&second, "link[rel=prev]", "href"), ["/"]);
+    assert_eq!(attribute(&second, "link[rel=next]", "href"), ["/page/3/"]);
+    assert_eq!(attribute(&second, "nav.pager a[rel=prev]", "href"), ["/"]);
+    assert_eq!(
+        attribute(&second, "link[rel=canonical]", "href"),
+        ["https://writing.example/page/2/"]
+    );
+    assert_eq!(texts(&second, "title"), ["Page 2 — Portable writing"]);
+    assert_eq!(
+        attribute(&second, "meta[name=description]", "content"),
+        ["A site generated by the shared core"]
+    );
+    assert!(attribute(&second, "script[type='application/ld+json']", "type").is_empty());
+
+    let third = Html::parse_document(body(&release, "/page/3/"));
+    assert_eq!(texts(&third, "article.post-card h2").len(), 5);
+    assert!(attribute(&third, "link[rel=next]", "href").is_empty());
+    assert_eq!(
+        attribute(&third, "nav.pager a.post-nav-older", "href"),
+        ["/archive/"]
+    );
+}
+
+#[test]
+fn home_with_at_most_twenty_posts_has_no_page_routes_but_links_the_archive() {
+    let release = compile(vec![
+        published_post(1, "One", "one", 1),
+        published_post(2, "Two", "two", 2),
+    ]);
+
+    assert!(!release.manifest.routes.contains_key("/page/2/"));
+    assert!(matches!(
+        release.manifest.routes["/page/1/"],
+        ReleaseRoute::Redirect { status: 308, .. }
+    ));
+    let home = Html::parse_document(body(&release, "/"));
+    assert!(texts(&home, "nav.pager .pager-status").is_empty());
+    assert_eq!(attribute(&home, "nav.pager a", "href"), ["/archive/"]);
+}
+
+#[test]
+fn posts_carry_article_metadata_updated_dates_and_json_ld() {
+    let now = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
+    let mut revised = tagged(
+        published_post(1, "Revised", "revised", 3 * 24 * 60),
+        &["Rust"],
+    );
+    revised.updated_at = now - Duration::hours(1);
+    let mut fresh = published_post(2, "Fresh", "fresh", 120);
+    fresh.updated_at = now - Duration::minutes(90);
+    let mut page = published_post(3, "About", "about", 30);
+    page.kind = ContentKind::Page;
+    let release = compile(vec![revised, fresh, page]);
+
+    let revised = Html::parse_document(body(&release, "/revised/"));
+    assert_eq!(
+        attribute(
+            &revised,
+            "meta[property='article:published_time']",
+            "content"
+        ),
+        ["2026-08-30T12:00:00Z"]
+    );
+    assert_eq!(
+        attribute(
+            &revised,
+            "meta[property='article:modified_time']",
+            "content"
+        ),
+        ["2026-09-02T11:00:00Z"]
+    );
+    assert_eq!(
+        attribute(&revised, "meta[property='article:tag']", "content"),
+        ["Rust"]
+    );
+    assert_eq!(
+        attribute(&revised, "meta[property='og:site_name']", "content"),
+        ["Portable writing"]
+    );
+    assert_eq!(
+        attribute(&revised, "meta[property='og:locale']", "content"),
+        ["en_US"]
+    );
+    assert_eq!(
+        attribute(&revised, "time[itemprop=dateModified]", "datetime"),
+        ["2026-09-02T11:00:00Z"]
+    );
+    let meta_line = texts(&revised, ".article-meta").remove(0);
+    assert!(meta_line.contains("Updated"), "{meta_line}");
+    assert!(meta_line.contains("min read"), "{meta_line}");
+    let json_ld: serde_json::Value =
+        serde_json::from_str(&texts(&revised, "script[type='application/ld+json']").remove(0))
+            .unwrap();
+    assert_eq!(json_ld["@type"], "BlogPosting");
+    assert_eq!(json_ld["headline"], "Revised");
+    assert_eq!(json_ld["datePublished"], "2026-08-30T12:00:00Z");
+    assert_eq!(json_ld["author"]["name"], "Portable writing");
+    assert_eq!(json_ld["keywords"][0], "Rust");
+
+    let fresh = Html::parse_document(body(&release, "/fresh/"));
+    assert!(attribute(&fresh, "time[itemprop=dateModified]", "datetime").is_empty());
+
+    let page = Html::parse_document(body(&release, "/about/"));
+    assert!(attribute(&page, "meta[property='article:published_time']", "content").is_empty());
+    assert_eq!(
+        attribute(&page, "meta[property='og:type']", "content"),
+        ["website"]
+    );
+
+    let home = Html::parse_document(body(&release, "/"));
+    let site_json: serde_json::Value =
+        serde_json::from_str(&texts(&home, "script[type='application/ld+json']").remove(0))
+            .unwrap();
+    assert_eq!(site_json["@type"], "WebSite");
+    assert!(
+        site_json["potentialAction"]["target"]
+            .as_str()
+            .unwrap()
+            .ends_with("/search/?q={search_term_string}")
+    );
+}
+
+#[test]
+fn json_ld_cannot_break_out_of_its_script_element() {
+    let mut hostile = published_post(1, "</script><script>alert(1)</script>", "hostile", 5);
+    hostile.summary = "& < >".into();
+    // The fixture builder interpolates the title into body_html; in production
+    // that field is sanitizer output, so keep the body inert here.
+    hostile.body_html = "<p>safe</p>".into();
+    let release = compile(vec![hostile]);
+    let page = body(&release, "/hostile/");
+
+    assert!(!page.contains("<script>alert"));
+    let block = page
+        .split("<script type=\"application/ld+json\">")
+        .nth(1)
+        .unwrap()
+        .split("</script>")
+        .next()
+        .unwrap();
+    assert!(block.contains("\\u003c/script"));
+    assert!(!block.contains('<'));
+    let parsed: serde_json::Value = serde_json::from_str(block).unwrap();
+    assert_eq!(parsed["headline"], "</script><script>alert(1)</script>");
+}
+
+#[test]
+fn twitter_card_downgrades_to_summary_without_a_cover() {
+    let now = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
+    let id = MediaId::parse("a".repeat(64)).unwrap();
+    let asset = MediaAsset {
+        id: id.clone(),
+        original_name: "cover.png".into(),
+        original_filename: format!("{id}.png"),
+        mime_type: "image/png".into(),
+        extension: "png".into(),
+        width: 1200,
+        height: 800,
+        byte_size: 1234,
+        alt_text: "Calm sea".into(),
+        caption: String::new(),
+        animated: false,
+        variants: vec![MediaVariant {
+            width: 480,
+            height: 320,
+            byte_size: 100,
+            filename: format!("{id}-480w.webp"),
+        }],
+        created_at: now,
+    };
+    let mut with_cover = published_post(1, "Covered", "covered", 5);
+    with_cover.cover_media_id = Some(id.to_string());
+    let mut site = snapshot(vec![with_cover, published_post(2, "Bare", "bare", 10)]);
+    site.media.push(asset);
+    let release = SiteCompiler::embedded()
+        .unwrap()
+        .compile(&site, "https://writing.example", None)
+        .unwrap();
+
+    let covered = Html::parse_document(body(&release, "/covered/"));
+    assert_eq!(
+        attribute(&covered, "meta[name='twitter:card']", "content"),
+        ["summary_large_image"]
+    );
+    assert_eq!(
+        attribute(&covered, "meta[property='og:image']", "content"),
+        [format!("https://writing.example/media/{id}.png").as_str()]
+    );
+    assert_eq!(attribute(&covered, "figure.cover img", "alt"), ["Calm sea"]);
+    assert_eq!(
+        attribute(&covered, "meta[property='og:image:width']", "content"),
+        ["1200"]
+    );
+    assert_eq!(
+        attribute(&covered, "meta[property='og:image:height']", "content"),
+        ["800"]
+    );
+    assert_eq!(
+        attribute(&covered, "meta[property='og:image:alt']", "content"),
+        ["Calm sea"]
+    );
+    let bare = Html::parse_document(body(&release, "/bare/"));
+    assert_eq!(
+        attribute(&bare, "meta[name='twitter:card']", "content"),
+        ["summary"]
+    );
+    assert!(attribute(&bare, "meta[property='og:image']", "content").is_empty());
+    assert!(attribute(&bare, "meta[property='og:image:width']", "content").is_empty());
+}
+
+#[test]
+fn content_pages_carry_a_table_of_contents_only_for_three_or_more_headings() {
+    let mut long = published_post(1, "Long", "long", 5);
+    long.body_html = "<h2 id=\"user-content-intro\"><a href=\"#user-content-intro\" class=\"anchor\" aria-label=\"Intro\"></a>Intro</h2><p>a</p>\
+        <h3 id=\"user-content-detail\"><a href=\"#user-content-detail\" class=\"anchor\"></a>Detail <em>one</em></h3><p>b</p>\
+        <h2 id=\"user-content-second\"><a href=\"#user-content-second\" class=\"anchor\"></a>Second</h2><p>c</p>"
+        .into();
+    let mut short = published_post(2, "Short", "short", 10);
+    short.body_html =
+        "<h2 id=\"user-content-only\">Only</h2><p>x</p><h2 id=\"user-content-two\">Two</h2>".into();
+    let release = compile(vec![long, short]);
+
+    let long = body(&release, "/long/");
+    let document = Html::parse_document(long);
+    assert_eq!(
+        attribute(&document, "nav.toc ol li a", "href"),
+        [
+            "#user-content-intro",
+            "#user-content-detail",
+            "#user-content-second"
+        ]
+    );
+    assert_eq!(
+        texts(&document, "nav.toc > ol > li > a"),
+        ["Intro", "Second"]
+    );
+    assert_eq!(texts(&document, "nav.toc ol ol a"), ["Detail one"]);
+    assert_eq!(attribute(&document, "nav.toc", "aria-label"), ["Contents"]);
+    assert!(long.find("<nav class=\"toc\"").unwrap() < long.find("<div class=\"prose\"").unwrap());
+
+    let short = Html::parse_document(body(&release, "/short/"));
+    assert!(attribute(&short, "nav.toc", "aria-label").is_empty());
+}
+
+#[test]
+fn search_page_links_the_versioned_index_and_explains_the_javascript_requirement() {
+    let release = compile(vec![published_post(1, "Published", "published", 5)]);
+    let index = body(&release, "/assets/search-index.json");
+    let expected = format!(
+        "/assets/search-index.json?v={}",
+        &blake3::hash(index.as_bytes()).to_hex()[..8]
+    );
+    let page = Html::parse_document(body(&release, "/search/"));
+    assert_eq!(
+        attribute(&page, "form[data-static-search]", "data-index"),
+        [expected.as_str()]
+    );
+    let noscript = body(&release, "/search/");
+    assert!(noscript.contains("<noscript>"));
+    assert!(noscript.contains("JavaScript"));
+    assert!(noscript.contains("href=\"/archive/\""));
+
+    // A different index means a different URL, so no cache can serve a stale one.
+    let changed = compile(vec![published_post(1, "Renamed", "published", 5)]);
+    let changed_page = Html::parse_document(body(&changed, "/search/"));
+    assert_ne!(
+        attribute(&changed_page, "form[data-static-search]", "data-index"),
+        [expected.as_str()]
+    );
+}
+
+fn snapshot_in(locale: Locale, timezone: &str, contents: Vec<Content>) -> SiteSnapshotV1 {
+    let mut site = snapshot(contents);
+    site.settings.locale = locale;
+    site.settings.timezone = timezone.into();
+    site.effective_at = Utc.with_ymd_and_hms(2026, 9, 3, 0, 0, 0).unwrap();
+    site
+}
+
+fn compile_snapshot(site: &SiteSnapshotV1) -> PreparedRelease {
+    SiteCompiler::embedded()
+        .unwrap()
+        .compile(site, "https://writing.example", None)
+        .unwrap()
+}
+
+fn evening_post() -> Content {
+    let published = Utc.with_ymd_and_hms(2026, 9, 2, 23, 30, 0).unwrap();
+    let mut post = content(
+        1,
+        "Evening",
+        "evening",
+        Publication::Public {
+            publish_at: published,
+        },
+        0,
+    );
+    post.updated_at = published;
+    post
+}
+
+#[test]
+fn public_dates_render_in_the_site_zone_with_locale_patterns() {
+    let ja = compile_snapshot(&snapshot_in(Locale::Ja, "Asia/Tokyo", vec![evening_post()]));
+    let page = Html::parse_document(body(&ja, "/evening/"));
+    assert_eq!(
+        texts(&page, "time[itemprop=datePublished]"),
+        ["2026年9月3日"]
+    );
+    assert_eq!(
+        attribute(&page, "time[itemprop=datePublished]", "datetime"),
+        ["2026-09-03T08:30:00+09:00"]
+    );
+    assert_eq!(
+        attribute(&page, "meta[property='article:published_time']", "content"),
+        ["2026-09-03T08:30:00+09:00"]
+    );
+    let json_ld: serde_json::Value =
+        serde_json::from_str(&texts(&page, "script[type='application/ld+json']").remove(0))
+            .unwrap();
+    assert_eq!(json_ld["datePublished"], "2026-09-03T08:30:00+09:00");
+    let archive = Html::parse_document(body(&ja, "/archive/"));
+    assert_eq!(texts(&archive, ".archive-year h2"), ["2026年"]);
+    assert_eq!(texts(&archive, ".archive-list time"), ["9月3日"]);
+    let home = Html::parse_document(body(&ja, "/"));
+    assert_eq!(texts(&home, "article.post-card time"), ["2026年9月3日"]);
+    assert!(body(&ja, "/sitemap.xml").contains("<lastmod>2026-09-03</lastmod>"));
+    let index: serde_json::Value =
+        serde_json::from_str(body(&ja, "/assets/search-index.json")).unwrap();
+    assert_eq!(index["documents"][0]["published"], "2026年9月3日");
+
+    let en = compile_snapshot(&snapshot_in(Locale::En, "Asia/Tokyo", vec![evening_post()]));
+    let page = Html::parse_document(body(&en, "/evening/"));
+    assert_eq!(
+        texts(&page, "time[itemprop=datePublished]"),
+        ["September 3, 2026"]
+    );
+    let archive = Html::parse_document(body(&en, "/archive/"));
+    assert_eq!(texts(&archive, ".archive-year h2"), ["2026"]);
+    assert_eq!(texts(&archive, ".archive-list time"), ["Sep 3"]);
+
+    // A UTC site keeps its old dates and the `Z` suffix.
+    let utc = compile_snapshot(&snapshot_in(Locale::En, "UTC", vec![evening_post()]));
+    let page = Html::parse_document(body(&utc, "/evening/"));
+    assert_eq!(
+        texts(&page, "time[itemprop=datePublished]"),
+        ["September 2, 2026"]
+    );
+    assert_eq!(
+        attribute(&page, "time[itemprop=datePublished]", "datetime"),
+        ["2026-09-02T23:30:00Z"]
+    );
+}
+
+#[test]
+fn archive_years_follow_the_site_zone() {
+    let published = Utc.with_ymd_and_hms(2025, 12, 31, 20, 0, 0).unwrap();
+    let mut post = content(
+        1,
+        "Countdown",
+        "countdown",
+        Publication::Public {
+            publish_at: published,
+        },
+        0,
+    );
+    post.updated_at = published;
+    let release = compile_snapshot(&snapshot_in(Locale::En, "Asia/Tokyo", vec![post]));
+    let archive = Html::parse_document(body(&release, "/archive/"));
+    assert_eq!(texts(&archive, ".archive-year h2"), ["2026"]);
+}
+
+#[test]
+fn author_name_feeds_feed_json_ld_and_meta_author() {
+    let mut site = snapshot(vec![published_post(1, "Published", "published", 5)]);
+    site.settings.author_name = "Ryo".into();
+    let release = compile_snapshot(&site);
+    assert!(body(&release, "/feed.xml").contains("<author><name>Ryo</name></author>"));
+    let page = Html::parse_document(body(&release, "/published/"));
+    assert_eq!(attribute(&page, "meta[name=author]", "content"), ["Ryo"]);
+    let json_ld: serde_json::Value =
+        serde_json::from_str(&texts(&page, "script[type='application/ld+json']").remove(0))
+            .unwrap();
+    assert_eq!(json_ld["author"]["name"], "Ryo");
+    assert_eq!(json_ld["publisher"]["name"], "Ryo");
+
+    let unnamed = compile(vec![published_post(1, "Published", "published", 5)]);
+    let page = Html::parse_document(body(&unnamed, "/published/"));
+    assert_eq!(
+        attribute(&page, "meta[name=author]", "content"),
+        ["Portable writing"]
+    );
+}
+
+#[test]
+fn search_and_not_found_pages_are_noindex() {
+    let release = compile(vec![published_post(1, "Published", "published", 5)]);
+    for path in ["/search/", "/404/"] {
+        let page = Html::parse_document(body(&release, path));
+        assert_eq!(
+            attribute(&page, "meta[name=robots]", "content"),
+            ["noindex"],
+            "{path}"
+        );
+    }
+    for path in ["/", "/published/"] {
+        let page = Html::parse_document(body(&release, path));
+        assert!(
+            attribute(&page, "meta[name=robots]", "content").is_empty(),
+            "{path}"
+        );
+    }
+}
+
+#[test]
+fn body_images_get_dimensions_lazy_loading_srcset_and_figure_captions() {
+    use simple_blog::{
+        application::ports::MarkdownRenderer as _, infrastructure::markdown::ComrakMarkdownRenderer,
+    };
+
+    let now = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
+    let id = MediaId::parse("a".repeat(64)).unwrap();
+    let asset = MediaAsset {
+        id: id.clone(),
+        original_name: "sunset.png".into(),
+        original_filename: format!("{id}.webp"),
+        mime_type: "image/webp".into(),
+        extension: "webp".into(),
+        width: 1600,
+        height: 900,
+        byte_size: 1234,
+        alt_text: "Blue & calm".into(),
+        caption: String::new(),
+        animated: false,
+        variants: vec![
+            MediaVariant {
+                width: 480,
+                height: 270,
+                byte_size: 100,
+                filename: format!("{id}-480w.webp"),
+            },
+            MediaVariant {
+                width: 960,
+                height: 540,
+                byte_size: 200,
+                filename: format!("{id}-960w.webp"),
+            },
+        ],
+        created_at: now,
+    };
+    let markdown = format!(
+        "![](/media/{id}.webp \"Sunset\")\n\nText ![inline](/media/{id}.webp) more.\n\n```\n<img src=\"/media/{id}.webp\">\n```\n"
+    );
+    let mut post = published_post(1, "Pictures", "pictures", 5);
+    post.body_markdown = markdown.clone();
+    post.body_html = ComrakMarkdownRenderer::default().render(&markdown).html;
+    let mut site = snapshot(vec![post]);
+    site.media.push(asset);
+    let release = compile_snapshot(&site);
+
+    let page = body(&release, "/pictures/");
+    let figure = format!(
+        "<figure><picture><source type=\"image/webp\" srcset=\"/media/{id}-480w.webp 480w, /media/{id}-960w.webp 960w\" sizes=\"(max-width: 700px) 100vw, 640px\"><img src=\"/media/{id}.webp\" alt=\"Blue &amp; calm\" width=\"1600\" height=\"900\" loading=\"lazy\" decoding=\"async\"></picture><figcaption>Sunset</figcaption></figure>"
+    );
+    assert!(page.contains(&figure), "{page}");
+    let inline_start = page
+        .find("<p>Text <picture>")
+        .expect("inline image keeps its paragraph");
+    let inline = &page[inline_start..];
+    assert!(inline.contains("alt=\"inline\" width=\"1600\" height=\"900\" loading=\"lazy\""));
+    assert!(!inline[..inline.find("</p>").unwrap()].contains("<figure>"));
+    assert!(
+        page.contains("&lt;img src=\"/media/"),
+        "code blocks stay literal"
+    );
+
+    // Feeds and the search corpus keep the undecorated body.
+    assert!(!body(&release, "/feed.xml").contains("<picture"));
+    assert!(!body(&release, "/assets/search-index.json").contains("srcset"));
+}
+
+#[test]
+fn content_preview_renders_the_public_template_with_admin_assets_and_noindex() {
+    let compiler = SiteCompiler::embedded().unwrap();
+    let site = snapshot(Vec::new());
+    let piece = content(1, "Draft piece", "draft-piece", Publication::Draft, 1);
+    let html = compiler
+        .render_content_preview(
+            &site,
+            &piece,
+            "https://writing.example",
+            PreviewAssets {
+                css_url: "/admin/assets/theme.css?v=x".into(),
+                prefs_js_url: "/admin/assets/prefs.js?v=y".into(),
+                article_js_url: "/admin/assets/article.js?v=test".into(),
+            },
+        )
+        .unwrap();
+    assert!(html.contains("<article class=\"prose-shell\""));
+    assert!(html.contains("<h1 itemprop=\"headline\">Draft piece</h1>"));
+    assert!(html.contains("name=\"robots\" content=\"noindex\""));
+    assert!(html.contains("&#x2f;admin&#x2f;assets&#x2f;theme.css?v=x"));
+    assert!(html.contains("&#x2f;admin&#x2f;assets&#x2f;prefs.js?v=y"));
+    assert!(!html.contains("like.js"));
+    assert!(!html.contains("post-nav"));
+
+    let release = compile(vec![published_post(1, "Published", "published", 5)]);
+    let page = body(&release, "/published/");
+    assert!(page.contains("&#x2f;assets&#x2f;site.css?v="));
+    assert!(page.contains("like.js"));
+    assert!(!page.contains("noindex"));
+
+    let home = compiler
+        .render_home_preview(
+            &snapshot(vec![published_post(2, "Latest", "latest", 5)]),
+            "https://writing.example",
+            PreviewAssets {
+                css_url: "/admin/assets/theme.css?v=x".into(),
+                prefs_js_url: "/admin/assets/prefs.js?v=y".into(),
+                article_js_url: "/admin/assets/article.js?v=test".into(),
+            },
+        )
+        .unwrap();
+    assert!(home.contains("Latest"));
+    assert!(home.contains("noindex"));
+    assert!(home.contains("&#x2f;admin&#x2f;assets&#x2f;theme.css?v=x"));
+}
+
+#[test]
+fn related_posts_rank_by_shared_tags_then_recency_and_exclude_pages() {
+    let a = tagged(published_post(1, "A", "a", 10), &["Rust", "Zig", "Axum"]);
+    let b = tagged(published_post(2, "B", "b", 20), &["Rust", "Zig"]);
+    let c = tagged(published_post(3, "C", "c", 30), &["Rust"]);
+    let d = tagged(published_post(4, "D", "d", 5), &["Zig", "Axum"]);
+    let e = tagged(published_post(5, "E", "e", 1), &["Go"]);
+    let f = tagged(published_post(6, "F", "f", 40), &["Rust"]);
+    let mut page = tagged(published_post(7, "P", "p", 2), &["Rust"]);
+    page.kind = ContentKind::Page;
+    let release = compile(vec![a, b, c, d, e, f, page]);
+
+    let a = Html::parse_document(body(&release, "/a/"));
+    assert_eq!(
+        attribute(&a, "section.related li a", "href"),
+        ["/d/", "/b/", "/c/"],
+        "two shared tags beat one; ties go to the newer piece; the limit is three"
+    );
+    assert_eq!(
+        attribute(&a, "section.related", "aria-label"),
+        ["Related posts"]
+    );
+    let e = Html::parse_document(body(&release, "/e/"));
+    assert!(attribute(&e, "section.related", "aria-label").is_empty());
+    let p = Html::parse_document(body(&release, "/p/"));
+    assert!(attribute(&p, "section.related", "aria-label").is_empty());
+}
+
+#[test]
+fn tag_pages_list_posts_only_while_the_tag_index_counts_them() {
+    let post = tagged(published_post(1, "Post", "post", 5), &["Rust"]);
+    let mut page = tagged(published_post(2, "About", "about", 3), &["Rust"]);
+    page.kind = ContentKind::Page;
+    let release = compile(vec![post, page]);
+    let tag_page = Html::parse_document(body(&release, "/tag/rust/"));
+    assert_eq!(texts(&tag_page, ".archive-list a"), ["Post"]);
+    let index = Html::parse_document(body(&release, "/tag/"));
+    assert_eq!(texts(&index, ".tag-list td:last-child"), ["1"]);
+}
+
+#[test]
+fn content_pages_load_the_article_script_with_copy_labels() {
+    let release = compile(vec![published_post(1, "Published", "published", 5)]);
+    let ReleaseRoute::Asset { content_type, .. } = &release.manifest.routes["/assets/article.js"]
+    else {
+        panic!("article script is an asset")
+    };
+    assert_eq!(content_type, "text/javascript; charset=utf-8");
+    let page = body(&release, "/published/");
+    let version = &blake3::hash(include_bytes!("../static/article.js")).to_hex()[..8];
+    assert!(page.contains(&format!("&#x2f;assets&#x2f;article.js?v={version}")));
+    let document = Html::parse_document(page);
+    assert_eq!(
+        attribute(&document, "div.prose", "data-label-copy"),
+        ["Copy"]
+    );
+    assert_eq!(
+        attribute(&document, "div.prose", "data-label-copied"),
+        ["Copied"]
+    );
+    assert!(!body(&release, "/").contains("article.js"));
+    assert!(!body(&release, "/archive/").contains("article.js"));
+
+    let mut ja = snapshot(vec![published_post(1, "Published", "published", 5)]);
+    ja.settings.locale = Locale::Ja;
+    let ja = compile_snapshot(&ja);
+    let document = Html::parse_document(body(&ja, "/published/"));
+    assert_eq!(
+        attribute(&document, "div.prose", "data-label-copy"),
+        ["コピー"]
+    );
+}
+
+#[test]
+fn json_feed_is_version_1_1_with_items_authors_and_site_dates() {
+    let mut site = snapshot(vec![tagged(
+        published_post(1, "Published", "published", 60),
+        &["Rust"],
+    )]);
+    site.settings.author_name = "Ryo".into();
+    let release = compile_snapshot(&site);
+    let ReleaseRoute::Asset { content_type, .. } = &release.manifest.routes["/feed.json"] else {
+        panic!("feed.json is an asset")
+    };
+    assert_eq!(content_type, "application/feed+json; charset=utf-8");
+    let feed: serde_json::Value = serde_json::from_str(body(&release, "/feed.json")).unwrap();
+    assert_eq!(feed["version"], "https://jsonfeed.org/version/1.1");
+    assert_eq!(feed["title"], "Portable writing");
+    assert_eq!(feed["home_page_url"], "https://writing.example/");
+    assert_eq!(feed["feed_url"], "https://writing.example/feed.json");
+    assert_eq!(feed["language"], "en");
+    assert_eq!(feed["description"], "A site generated by the shared core");
+    assert_eq!(feed["authors"][0]["name"], "Ryo");
+    let item = &feed["items"][0];
+    assert_eq!(item["id"], "https://writing.example/published/");
+    assert_eq!(item["url"], "https://writing.example/published/");
+    assert_eq!(item["title"], "Published");
+    assert!(
+        item["content_html"]
+            .as_str()
+            .unwrap()
+            .contains("Body for Published")
+    );
+    assert_eq!(item["tags"][0], "Rust");
+    assert_eq!(item["date_published"], "2026-09-02T11:00:00Z");
+    assert_eq!(item["summary"], "Summary for Published");
+
+    let home = Html::parse_document(body(&release, "/"));
+    assert_eq!(
+        attribute(
+            &home,
+            "link[rel=alternate][type='application/feed+json']",
+            "href"
+        ),
+        ["/feed.json"]
+    );
+
+    let many = compile(
+        (1..=51)
+            .map(|n| published_post(n, "N", &format!("n-{n}"), n))
+            .collect(),
+    );
+    let feed: serde_json::Value = serde_json::from_str(body(&many, "/feed.json")).unwrap();
+    assert_eq!(feed["items"].as_array().unwrap().len(), 50);
 }

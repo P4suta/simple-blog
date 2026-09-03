@@ -89,8 +89,29 @@ body {
   line-height: 1.9;
   font-kerning: normal;
   line-break: strict;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
   hanging-punctuation: allow-end;
+  text-autospace: normal;
+  text-spacing-trim: space-first;
+}
+
+/* Only unbreakable runs may break anywhere: long links and code. */
+a,
+code,
+pre {
+  overflow-wrap: anywhere;
+}
+
+/* The system face is right for Latin; for 日本語 and 中文 the browser needs
+   to be told which families carry the script well. */
+:lang(ja) body {
+  font-family: system-ui, "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP",
+    "Noto Sans CJK JP", "Yu Gothic", Meiryo, sans-serif;
+}
+
+:lang(zh) body {
+  font-family: system-ui, "PingFang SC", "Hiragino Sans GB", "Noto Sans SC",
+    "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
 }
 
 p {
@@ -164,6 +185,16 @@ sup {
   line-height: 1;
 }
 
+/* Aozora-style ruby from the renderer: small readings above the base. */
+ruby {
+  ruby-position: over;
+}
+
+rt {
+  font-size: 0.5em;
+  line-height: 1;
+}
+
 /* Dates and other figures align in columns */
 time {
   font-variant-numeric: tabular-nums;
@@ -187,12 +218,40 @@ figcaption {
   opacity: 0.7;
 }
 
+/* Body images the release wraps in figures: full measure, block-level. */
+.prose figure {
+  margin-inline: 0;
+}
+
+.prose figure img {
+  display: block;
+}
+
+.prose figcaption {
+  font-size: 0.85em;
+  margin-block-start: 0.4em;
+  opacity: 0.7;
+}
+
 pre {
   overflow-x: auto;
   line-height: 1.6;
   tab-size: 4;
   padding: 0.9em 1.1em;
   border: 1px solid;
+}
+
+/* The copy button the article script adds: a native button in the corner. */
+.prose pre {
+  position: relative;
+}
+
+.copy-code {
+  position: absolute;
+  inset-block-start: 0.4em;
+  inset-inline-end: 0.4em;
+  font: inherit;
+  font-size: 0.8em;
 }
 
 pre,
@@ -397,6 +456,21 @@ thead th {
   opacity: 0.7;
 }
 
+/* Tag index: name and count, counts right-aligned in tabular figures. */
+.tag-list {
+  margin-block: 0;
+}
+
+.tag-list td {
+  padding-block: 0.3em;
+}
+
+.tag-list td:last-child {
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
+}
+
 /* ---- Search ------------------------------------------------------------ */
 
 .search-form {
@@ -443,6 +517,19 @@ thead th {
   margin-block: 0;
 }
 
+/* Publication date, an update date when it says something new, and the
+   reading estimate: one quiet line above the title. */
+.article-meta {
+  margin-block: 0;
+  font-size: 0.85em;
+  opacity: 0.7;
+}
+
+.article-meta time {
+  font-size: inherit;
+  opacity: 1;
+}
+
 .cover {
   margin-block: 2em;
 }
@@ -484,6 +571,23 @@ thead th {
   text-decoration: none;
 }
 
+/* ---- Table of contents ------------------------------------------------ */
+/* A plain nested list of the piece's own headings; no control, no script. */
+
+.toc {
+  margin-block: 2em;
+  font-size: 0.9em;
+}
+
+.toc ol {
+  margin-block: 0;
+  padding-inline-start: 1.6em;
+}
+
+.toc li {
+  margin-block: 0.1em;
+}
+
 /* ---- Older / newer navigation ----------------------------------------- */
 
 .post-nav {
@@ -497,6 +601,31 @@ thead th {
   font-size: 0.9em;
 }
 
+/* ---- Related posts ------------------------------------------------------- */
+/* Pieces sharing the most tags, as a short list under the article. */
+
+.related {
+  margin-block-start: 3em;
+  padding-block-start: 1em;
+  border-block-start: 1px solid;
+}
+
+.related h2 {
+  font-size: 1rem;
+  margin-block: 0 0.4em;
+}
+
+.related ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.related time {
+  font-size: 0.85em;
+  opacity: 0.7;
+}
+
 /* One quarter-strength color is applied after every border shorthand and
    longhand, so none of those declarations can reset it to currentcolor. */
 hr,
@@ -505,6 +634,7 @@ blockquote,
 pre,
 .site-footer,
 .post-nav,
+.related,
 .prose .footnotes {
   border-color: color-mix(in srgb, currentcolor 25%, transparent);
 }
@@ -512,6 +642,12 @@ pre,
 .post-nav-older {
   margin-inline-start: auto;
   text-align: end;
+}
+
+/* The home pager reuses the article navigation; its page count is a figure. */
+.pager-status {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
 }
 
 /* ---- Likes ------------------------------------------------------------ */
@@ -551,4 +687,37 @@ pre,
 
 .skip-link:focus {
   position: static;
+}
+
+/* Keyboard focus is always visible, in the text's own color. */
+:focus-visible {
+  outline: 2px solid;
+  outline-offset: 2px;
+}
+
+/* ---- Print ------------------------------------------------------------ */
+/* On paper only the writing remains: no controls, no navigation, and code
+   wraps instead of running off the page. */
+
+@media print {
+  .skip-link,
+  .site-header nav,
+  .site-footer nav,
+  .prefs,
+  .like,
+  .post-nav,
+  .related,
+  .copy-code,
+  .search-form {
+    display: none;
+  }
+
+  body {
+    max-width: none;
+    padding: 0;
+  }
+
+  pre {
+    white-space: pre-wrap;
+  }
 }

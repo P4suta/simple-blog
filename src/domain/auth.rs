@@ -4,6 +4,8 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::domain::content::ContentId;
+
 /// A raw bearer capability. It deliberately has no `Debug` implementation.
 #[derive(Clone, Eq, PartialEq)]
 pub struct SecretToken(String);
@@ -71,6 +73,16 @@ impl SetupPurpose {
             _ => None,
         }
     }
+}
+
+/// A stored preview capability: the hash of the bearer token and the piece
+/// it opens.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreviewLinkRecord {
+    pub token_hash: SecretHash,
+    pub content_id: ContentId,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
 }
 
 #[derive(Clone)]

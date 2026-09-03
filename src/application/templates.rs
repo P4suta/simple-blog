@@ -19,6 +19,89 @@ pub enum TemplateError {
     Render(String),
 }
 
+/// Every template the binary embeds, by the name templates refer to each
+/// other with. Adding a file means adding a line here.
+const TEMPLATES: &[(&str, &str)] = &[
+    (
+        "public/base.html",
+        include_str!("../../templates/public/base.html"),
+    ),
+    (
+        "public/home.html",
+        include_str!("../../templates/public/home.html"),
+    ),
+    (
+        "public/content.html",
+        include_str!("../../templates/public/content.html"),
+    ),
+    (
+        "public/archive.html",
+        include_str!("../../templates/public/archive.html"),
+    ),
+    (
+        "public/tags.html",
+        include_str!("../../templates/public/tags.html"),
+    ),
+    (
+        "public/not_found.html",
+        include_str!("../../templates/public/not_found.html"),
+    ),
+    (
+        "public/search.html",
+        include_str!("../../templates/public/search.html"),
+    ),
+    (
+        "admin/base.html",
+        include_str!("../../templates/admin/base.html"),
+    ),
+    (
+        "admin/dashboard.html",
+        include_str!("../../templates/admin/dashboard.html"),
+    ),
+    (
+        "admin/editor.html",
+        include_str!("../../templates/admin/editor.html"),
+    ),
+    (
+        "admin/media.html",
+        include_str!("../../templates/admin/media.html"),
+    ),
+    (
+        "admin/share_link.html",
+        include_str!("../../templates/admin/share_link.html"),
+    ),
+    (
+        "admin/error.html",
+        include_str!("../../templates/admin/error.html"),
+    ),
+    (
+        "admin/conflict.html",
+        include_str!("../../templates/admin/conflict.html"),
+    ),
+    (
+        "admin/settings.html",
+        include_str!("../../templates/admin/settings.html"),
+    ),
+    (
+        "admin/recovery_codes.html",
+        include_str!("../../templates/admin/recovery_codes.html"),
+    ),
+    (
+        "admin/revision.html",
+        include_str!("../../templates/admin/revision.html"),
+    ),
+    (
+        "admin/login.html",
+        include_str!("../../templates/admin/login.html"),
+    ),
+    (
+        "admin/setup.html",
+        include_str!("../../templates/admin/setup.html"),
+    ),
+    ("feed.xml", include_str!("../../templates/feed.xml")),
+    ("sitemap.xml", include_str!("../../templates/sitemap.xml")),
+];
+
 impl Templates {
     pub fn embedded() -> Result<Self, TemplateError> {
         let mut environment = Environment::new();
@@ -35,70 +118,7 @@ impl Templates {
                 AutoEscape::None
             }
         });
-        for (name, source) in [
-            (
-                "public/base.html",
-                include_str!("../../templates/public/base.html"),
-            ),
-            (
-                "public/home.html",
-                include_str!("../../templates/public/home.html"),
-            ),
-            (
-                "public/content.html",
-                include_str!("../../templates/public/content.html"),
-            ),
-            (
-                "public/archive.html",
-                include_str!("../../templates/public/archive.html"),
-            ),
-            (
-                "public/not_found.html",
-                include_str!("../../templates/public/not_found.html"),
-            ),
-            (
-                "public/search.html",
-                include_str!("../../templates/public/search.html"),
-            ),
-            (
-                "admin/base.html",
-                include_str!("../../templates/admin/base.html"),
-            ),
-            (
-                "admin/dashboard.html",
-                include_str!("../../templates/admin/dashboard.html"),
-            ),
-            (
-                "admin/editor.html",
-                include_str!("../../templates/admin/editor.html"),
-            ),
-            (
-                "admin/conflict.html",
-                include_str!("../../templates/admin/conflict.html"),
-            ),
-            (
-                "admin/settings.html",
-                include_str!("../../templates/admin/settings.html"),
-            ),
-            (
-                "admin/recovery_codes.html",
-                include_str!("../../templates/admin/recovery_codes.html"),
-            ),
-            (
-                "admin/revision.html",
-                include_str!("../../templates/admin/revision.html"),
-            ),
-            (
-                "admin/login.html",
-                include_str!("../../templates/admin/login.html"),
-            ),
-            (
-                "admin/setup.html",
-                include_str!("../../templates/admin/setup.html"),
-            ),
-            ("feed.xml", include_str!("../../templates/feed.xml")),
-            ("sitemap.xml", include_str!("../../templates/sitemap.xml")),
-        ] {
+        for (name, source) in TEMPLATES {
             environment
                 .add_template(name, source)
                 .map_err(|error| TemplateError::Setup(error.to_string()))?;

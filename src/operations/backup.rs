@@ -2,6 +2,7 @@ use std::{
     collections::BTreeMap,
     fs::File,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use chrono::{DateTime, Utc};
@@ -16,9 +17,49 @@ use crate::{
     operations::{BackupManifest, OperationError, checksum_file},
 };
 
+/// When `serve` writes archives on its own: a first one shortly after boot
+/// (so a site that is restarted daily still gets one) and then at a fixed
+/// interval.
+#[derive(Clone, Copy, Debug)]
+pub struct BackupCadence {
+    pub initial: Duration,
+    pub every: Duration,
+}
+
+impl BackupCadence {
+    pub const DEFAULT: Self = Self {
+        initial: Duration::from_secs(10 * 60),
+        every: Duration::from_secs(24 * 60 * 60),
+    };
+}
+
 pub struct BackupService;
 
 impl BackupService {
+    /// Deletes the oldest `simple-blog-*.tar.zst` archives so that at most
+    /// `keep` remain, answering what was removed. Names embed their creation
+    /// time, so name order is age order; anything else in the folder (a
+    /// safety backup from a migration, a hand-named archive) is left alone.
+    pub fn prune(config: &Config, keep: usize) -> Result<Vec<PathBuf>, OperationError> {
+        let directory = config.backup_dir();
+        if !directory.is_dir() {
+            return Ok(Vec::new());
+        }
+        let mut archives = std::fs::read_dir(&directory)?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.is_file() && is_scheduled_archive(path))
+            .collect::<Vec<_>>();
+        archives.sort();
+        archives.reverse();
+        let mut removed = Vec::new();
+        for path in archives.into_iter().skip(keep) {
+            std::fs::remove_file(&path)?;
+            removed.push(path);
+        }
+        Ok(removed)
+    }
+
     pub async fn create(
         config: &Config,
         repository: &SqliteRepository,
@@ -148,6 +189,12 @@ fn append_bytes<W: std::io::Write>(
     header.set_cksum();
     archive.append_data(&mut header, name, bytes)?;
     Ok(())
+}
+
+fn is_scheduled_archive(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("simple-blog-") && name.ends_with(".tar.zst"))
 }
 
 fn database(error: impl std::fmt::Display) -> OperationError {

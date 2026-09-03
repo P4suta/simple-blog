@@ -85,6 +85,32 @@ impl ContentService {
         .await
     }
 
+    #[tracing::instrument(name = "content.trash", skip(self), fields(content_id = %id), err)]
+    pub async fn move_to_trash(
+        &self,
+        id: ContentId,
+        expected_version: i64,
+        now: DateTime<Utc>,
+    ) -> Result<Content, RepositoryError> {
+        self.repository
+            .move_to_trash(id, expected_version, now)
+            .await
+    }
+
+    #[tracing::instrument(name = "content.restore", skip(self), fields(content_id = %id), err)]
+    pub async fn restore_from_trash(
+        &self,
+        id: ContentId,
+        now: DateTime<Utc>,
+    ) -> Result<Content, RepositoryError> {
+        self.repository.restore_from_trash(id, now).await
+    }
+
+    #[tracing::instrument(name = "content.delete", skip(self), fields(content_id = %id), err)]
+    pub async fn delete_permanently(&self, id: ContentId) -> Result<(), RepositoryError> {
+        self.repository.delete_permanently(id).await
+    }
+
     pub fn preview(&self, markdown: &str) -> Result<RenderedMarkdown, RepositoryError> {
         if markdown.len() > MAX_MARKDOWN_BYTES {
             return Err(RepositoryError::Validation(

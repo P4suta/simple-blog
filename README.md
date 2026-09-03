@@ -12,7 +12,9 @@ A writing-focused, single-owner CMS with a host-neutral Rust Core.
 - Dynamic CMS/admin with immutable, content-addressed public releases
 - Markdown as the canonical content source, rendered to sanitized HTML
 - Passkey-only owner authentication
-- Exact scheduled publishing, revisions, redirects, media variants, feeds, search, and backups
+- Exact scheduled publishing, revisions, redirects, media variants, Atom and JSON feeds, instant search, and backups
+- Dates in the site's own time zone and language; a real preview of drafts through the public theme, shareable by short-lived links
+- Markdown import and export, backups from the settings page, and a daily backup schedule with rotation
 - Atomic release activation and incremental reuse of unchanged generated objects
 - Complete `.simple-blog` migration archives for conforming host adapters
 - Structured tracing, stable diagnostic codes, deep `doctor` checks, fault injection, and failure-path tests
@@ -26,7 +28,9 @@ cargo run --locked -- init
 cargo run --locked -- serve
 ```
 
-`init` prints a short-lived setup URL for registering the first owner passkey. Data is stored in `./data` by default.
+`init` prints a short-lived setup URL for registering the first owner passkey; `serve` prints the same link on start while no owner is registered, and always prints the site and admin addresses. Data is stored in `./data` by default.
+
+`rust-toolchain.toml` pins current stable for day-to-day work; CI separately proves the declared MSRV in `Cargo.toml`.
 
 Build or materialize the currently visible static release without introducing Git into the writing workflow:
 
@@ -43,6 +47,23 @@ cargo run --locked -- migrate import site.simple-blog
 ```
 
 The existing installation must be absent for import unless `--force` is supplied. A forced native import preserves the previous directory for recovery.
+
+Move writing, not installations, as Markdown. `export` writes `posts/`, `pages/`, and `media/`; `import` reads that folder back, or any folder of plain `.md` files (titled from their first heading), into the current site:
+
+```sh
+cargo run --locked -- export --output ./writing
+cargo run --locked -- import ./writing
+cargo run --locked -- import ./writing --force   # replace pieces whose address already exists
+```
+
+Backups are complete archives (`.tar.zst`) that `restore` reads. The settings page creates and downloads one on demand; `serve` also writes one ten minutes after start and every 24 hours, keeping the newest fourteen. `backup_retention = 0` in `config.toml` (or `SIMPLE_BLOG_BACKUP_RETENTION=0`) switches the schedule off:
+
+```sh
+cargo run --locked -- backup
+cargo run --locked -- --data-dir ./restored restore ./data/backups/simple-blog-20260903-120000.tar.zst
+```
+
+The site's time zone is adopted from the browser when the first passkey is registered and can be changed in the settings; every public date, archive year, and feed timestamp follows it.
 
 ## Verify
 

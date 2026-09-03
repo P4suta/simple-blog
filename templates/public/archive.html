@@ -6,7 +6,7 @@
   <h2>{{ group.year }}</h2>
   <table class="archive-list">
     <tbody>
-{% for post in group.posts %}      <tr><td><time datetime="{{ post.publish_at }}">{{ post.date }}</time></td><td><a href="/{{ post.slug }}/">{{ post.title }}</a></td></tr>
+{% for post in group.posts %}      <tr><td><time datetime="{{ post.publish_at }}">{{ post.date_short }}</time></td><td><a href="/{{ post.slug }}/">{{ post.title }}</a></td></tr>
 {% endfor %}
     </tbody>
   </table>

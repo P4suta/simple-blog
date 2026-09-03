@@ -1,0 +1,14 @@
+{% extends "public/base.html" %}
+{% block content %}
+<header class="page-header"><h1>{{ t["public.tags"] }}</h1></header>
+{% if page.tags %}
+<table class="tag-list">
+  <tbody>
+{% for tag in page.tags %}    <tr><td><a href="/tag/{{ tag.slug }}/">{{ tag.name }}</a></td><td>{{ tag.count }}</td></tr>
+{% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p>{{ t["public.empty_tags"] }}</p>
+{% endif %}
+{% endblock %}

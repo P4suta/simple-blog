@@ -15,7 +15,8 @@ fn help_exposes_the_v01_operational_surface() {
     assert!(output.status.success());
     let help = String::from_utf8(output.stdout).unwrap();
     for command in [
-        "init", "build", "serve", "backup", "restore", "export", "migrate", "doctor", "owner",
+        "init", "build", "serve", "backup", "restore", "export", "import", "migrate", "doctor",
+        "owner",
     ] {
         assert!(help.contains(command), "missing {command}");
     }
@@ -166,6 +167,8 @@ fn init_to_doctor_and_backup_works_with_only_the_release_binary_contract() {
     );
     let stdout = String::from_utf8(init.stdout).unwrap();
     assert!(stdout.contains("/admin/setup/?token="));
+    assert!(stdout.contains("within 15 minutes"), "{stdout}");
+    assert!(stdout.contains("simple-blog serve"), "{stdout}");
     assert!(data.join("simple-blog.sqlite3").is_file());
     assert!(data.join("config.toml").is_file());
     assert!(data.join("media").is_dir());
@@ -455,4 +458,64 @@ async fn every_operational_database_open_applies_pending_migrations_after_a_safe
         .filter(|name| name.starts_with("simple-blog-pre-migration-"))
         .collect::<Vec<_>>();
     assert_eq!(safety_backups.len(), 1);
+}
+#[test]
+fn serve_prints_the_setup_link_while_no_owner_exists_and_the_admin_address() {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+
+    let temp = tempfile::tempdir().unwrap();
+    let data_dir = temp.path().join("fresh");
+    let mut child = binary()
+        .args([
+            "--data-dir",
+            data_dir.to_str().unwrap(),
+            "--bind",
+            "127.0.0.1:0",
+            "serve",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if sender.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let mut lines = Vec::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while std::time::Instant::now() < deadline {
+        match receiver.recv_timeout(std::time::Duration::from_secs(1)) {
+            Ok(line) => {
+                lines.push(line);
+                if lines.iter().any(|line| line.starts_with("Admin: ")) {
+                    break;
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+
+    let output = lines.join("\n");
+    assert!(
+        output.contains("No owner passkey is registered yet"),
+        "{output}"
+    );
+    assert!(
+        output.contains("http://localhost:8080/admin/setup/?token="),
+        "{output}"
+    );
+    assert!(
+        output.contains("Admin: http://localhost:8080/admin/"),
+        "{output}"
+    );
+    assert!(output.contains("Site:  http://localhost:8080/"), "{output}");
 }

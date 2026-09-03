@@ -316,6 +316,7 @@ async fn static_search_page_is_query_independent_and_client_semantics_are_tested
     assert!(html.contains("data-search-results"));
     assert!(html.contains("data-search-results"));
     assert!(html.contains("data-search-results aria-label=\"Search\" hidden"));
+    assert!(html.contains("data-index=\"&#x2f;assets&#x2f;search-index.json?v="));
 
     // The release resolver intentionally discards the query string. Hostile
     // query handling is exercised by frontend/search.test.cjs, which executes

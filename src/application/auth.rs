@@ -21,6 +21,9 @@ use crate::{
 
 const SETUP_TOKEN_TTL_MINUTES: i64 = 15;
 const SESSION_TTL_DAYS: i64 = 7;
+/// A session is renewed once it has less than this much life left, which
+/// means the writer has been away for at least a day since the last renewal.
+const SESSION_RENEWAL_THRESHOLD_DAYS: i64 = 6;
 const RECOVERY_CODE_COUNT: usize = 10;
 
 #[derive(Clone)]
@@ -297,6 +300,38 @@ impl AuthService {
             .into()
     }
 
+    /// Whether a session should be renewed on this page load. Renewal is
+    /// rate-limited by the threshold so cookies are not rewritten on every
+    /// request.
+    #[must_use]
+    pub fn needs_renewal(identity: &SessionIdentity, now: DateTime<Utc>) -> bool {
+        identity.expires_at - now < Duration::days(SESSION_RENEWAL_THRESHOLD_DAYS)
+    }
+
+    /// Slides a live session's expiry a full lifetime ahead of `now`, keeping
+    /// its tokens so open editors keep their CSRF value. Answers the new
+    /// expiry, or `None` when the session is gone.
+    pub async fn extend_session(
+        &self,
+        session_token: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Option<DateTime<Utc>>, AuthError> {
+        let expires_at = now + Duration::days(SESSION_TTL_DAYS);
+        let extended = self
+            .repository
+            .extend_session(hash_secret(session_token), expires_at, now)
+            .await?;
+        Ok(extended.then_some(expires_at))
+    }
+
+    /// Ends the presented session. Returns whether a session was actually
+    /// revoked, so a replayed logout is visible as a no-op rather than an error.
+    pub async fn logout(&self, session_token: &str) -> Result<bool, AuthError> {
+        self.repository
+            .revoke_session(hash_secret(session_token))
+            .await
+    }
+
     pub async fn rotate_session(
         &self,
         current_token: &str,
@@ -367,7 +402,10 @@ fn new_session(
     Ok((SessionSecrets { session, csrf }, record))
 }
 
-fn random_token(entropy: &dyn EntropySource, byte_count: usize) -> Result<SecretToken, AuthError> {
+pub(crate) fn random_token(
+    entropy: &dyn EntropySource,
+    byte_count: usize,
+) -> Result<SecretToken, AuthError> {
     let mut bytes = vec![0_u8; byte_count];
     entropy
         .fill(&mut bytes)

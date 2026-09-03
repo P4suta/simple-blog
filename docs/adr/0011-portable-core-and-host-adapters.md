@@ -24,4 +24,5 @@ Every compiler input is a complete public snapshot. Incremental compilation may 
 - Host migration is a CMS operation, not a source-control exercise.
 - A new adapter is incomplete until it passes the shared fixtures and round-trip migration contract.
 - Adapter-specific caches and sessions may be rebuilt or invalidated; durable user state may not be omitted.
+- An optional field added to format version 1 is omitted when empty, so older archives and archives without that state stay byte-identical; a binary that predates the field still rejects archives carrying it (see ADR 0014).
 - Changing the site's domain is a separate future migration protocol, not an accidental side effect of host migration.

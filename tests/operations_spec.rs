@@ -12,7 +12,8 @@ use simple_blog::{
         markdown::ComrakMarkdownRenderer, media::LocalMediaService, sqlite::SqliteRepository,
     },
     operations::{
-        BackupService, Doctor, Exporter, MigrationCoordinator, OperationError, RestoreService,
+        BackupService, Doctor, Exporter, Importer, MigrationCoordinator, OperationError,
+        RestoreService,
     },
     release::{FilesystemReleaseStore, ReleaseBuilder, ReleasePublisher},
 };
@@ -474,4 +475,199 @@ async fn failed_migration_leaves_a_restorable_safety_backup_and_no_snapshot() {
         .unwrap();
     assert_eq!(marker, "before-failure");
     snapshot.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn export_then_import_round_trips_every_field() {
+    let source = tempfile::tempdir().unwrap();
+    let (config, repository) = seeded(&source).await;
+    let media = LocalMediaService::new(config.media_dir(), repository.clone(), 1024 * 1024);
+    let asset = media
+        .store("pixel.gif", gif(), "pixel", "", Utc::now())
+        .await
+        .unwrap();
+    let content = ContentService::new(
+        repository.clone(),
+        Arc::new(ComrakMarkdownRenderer::default()),
+    );
+    content
+        .create(
+            ContentDraft {
+                kind: ContentKind::Page,
+                title: "About: the colon survives".into(),
+                slug: Slug::parse("about").unwrap(),
+                summary: "Who writes here".into(),
+                body_markdown: format!("![pixel](/media/{})", asset.original_filename),
+                tags: vec!["Meta".into()],
+                cover_media_id: Some(asset.id.to_string()),
+                seo_title: None,
+                seo_description: Some("An about page".into()),
+                publication: Publication::Draft,
+            },
+            SaveIntent::Explicit,
+            Utc::now(),
+        )
+        .await
+        .unwrap();
+    let output = source.path().join("portable-export");
+    Exporter::export(&config, repository.as_ref(), &output, Utc::now())
+        .await
+        .unwrap();
+
+    let destination = tempfile::tempdir().unwrap();
+    let target_config = config_for(destination.path());
+    std::fs::create_dir_all(target_config.media_dir()).unwrap();
+    let target = Arc::new(
+        SqliteRepository::connect(&target_config.database_path())
+            .await
+            .unwrap(),
+    );
+    let report = Importer::import(&target_config, &target, &output, false, Utc::now())
+        .await
+        .unwrap();
+    assert_eq!(
+        report.imported,
+        vec!["portable-post".to_owned(), "about".to_owned()],
+        "posts are read before pages"
+    );
+    assert!(report.skipped.is_empty(), "{:?}", report.skipped);
+    assert_eq!(report.media, 1);
+
+    let mut pieces = target.list_all_content().await.unwrap();
+    pieces.sort_by(|a, b| a.slug.as_str().cmp(b.slug.as_str()));
+    let about = &pieces[0];
+    assert_eq!(about.title, "About: the colon survives");
+    assert_eq!(about.kind, ContentKind::Page);
+    assert_eq!(about.summary, "Who writes here");
+    assert_eq!(about.tags[0].name, "Meta");
+    assert_eq!(about.cover_media_id.as_deref(), Some(asset.id.as_str()));
+    assert_eq!(about.seo_description.as_deref(), Some("An about page"));
+    assert_eq!(about.publication, Publication::Draft);
+    assert!(
+        target.find_media(&asset.id).await.unwrap().is_some(),
+        "the same bytes get the same identity, so references keep working"
+    );
+    let post = &pieces[1];
+    assert_eq!(post.title, "Portable post");
+    assert_eq!(post.seo_title.as_deref(), Some("Portable SEO"));
+    assert!(matches!(post.publication, Publication::Public { .. }));
+    assert_eq!(post.body_markdown, "# Canonical Markdown\n\nBody.\n");
+
+    // A second import skips what exists unless told to replace it.
+    let again = Importer::import(&target_config, &target, &output, false, Utc::now())
+        .await
+        .unwrap();
+    assert!(again.imported.is_empty());
+    assert_eq!(again.skipped.len(), 2);
+    assert!(again.skipped[0].1.contains("--force"));
+    std::fs::write(
+        output.join("posts/portable-post.md"),
+        "---\ntitle: \"Portable post, revised\"\nslug: portable-post\nkind: post\nstatus: public\n---\nNew body.\n",
+    )
+    .unwrap();
+    let forced = Importer::import(&target_config, &target, &output, true, Utc::now())
+        .await
+        .unwrap();
+    assert!(forced.imported.contains(&"portable-post".to_owned()));
+    let revised = target
+        .find_public_by_slug(&Slug::parse("portable-post").unwrap(), Utc::now())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(revised.title, "Portable post, revised");
+    assert_eq!(revised.body_markdown, "New body.\n");
+}
+
+#[tokio::test]
+async fn plain_markdown_files_become_drafts_titled_from_the_first_heading() {
+    let source = tempfile::tempdir().unwrap();
+    let folder = source.path().join("notes");
+    std::fs::create_dir_all(folder.join("posts")).unwrap();
+    std::fs::write(
+        folder.join("posts/2026-09-03-morning.md"),
+        "# A morning note\n\nCoffee first.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        folder.join("posts/Second Thoughts.md"),
+        "No heading here.\n",
+    )
+    .unwrap();
+    std::fs::write(folder.join("posts/README.txt"), "not markdown").unwrap();
+    let destination = tempfile::tempdir().unwrap();
+    let config = config_for(destination.path());
+    let repository = Arc::new(
+        SqliteRepository::connect(&config.database_path())
+            .await
+            .unwrap(),
+    );
+
+    let report = Importer::import(&config, &repository, &folder, false, Utc::now())
+        .await
+        .unwrap();
+    assert_eq!(
+        report.imported,
+        vec![
+            "2026-09-03-morning".to_owned(),
+            "second-thoughts".to_owned()
+        ]
+    );
+    let mut pieces = repository.list_all_content().await.unwrap();
+    pieces.sort_by(|a, b| a.slug.as_str().cmp(b.slug.as_str()));
+    assert_eq!(pieces[0].title, "A morning note");
+    assert_eq!(pieces[0].publication, Publication::Draft);
+    assert_eq!(pieces[1].title, "Second Thoughts");
+    assert_eq!(pieces[1].kind, ContentKind::Post);
+
+    let missing = Importer::import(
+        &config,
+        &repository,
+        &folder.join("nowhere"),
+        false,
+        Utc::now(),
+    )
+    .await;
+    assert!(matches!(missing, Err(OperationError::InvalidData(_))));
+}
+
+fn config_for(data_dir: &std::path::Path) -> Config {
+    config(data_dir)
+}
+
+#[tokio::test]
+async fn backup_rotation_keeps_the_newest_n() {
+    let temp = tempfile::tempdir().unwrap();
+    let (config, repository) = seeded(&temp).await;
+    let base = chrono::DateTime::parse_from_rfc3339("2026-09-03T01:00:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    for hour in 0..3 {
+        BackupService::create(
+            &config,
+            repository.as_ref(),
+            None,
+            base + chrono::Duration::hours(hour),
+        )
+        .await
+        .unwrap();
+    }
+    std::fs::write(config.backup_dir().join("notes.txt"), "left alone").unwrap();
+
+    let removed = BackupService::prune(&config, 2).unwrap();
+    assert_eq!(removed.len(), 1);
+    assert!(removed[0].ends_with("simple-blog-20260903-010000.tar.zst"));
+    let mut remaining = std::fs::read_dir(config.backup_dir())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect::<Vec<_>>();
+    remaining.sort();
+    assert_eq!(
+        remaining,
+        vec![
+            "notes.txt",
+            "simple-blog-20260903-020000.tar.zst",
+            "simple-blog-20260903-030000.tar.zst",
+        ]
+    );
+    assert!(BackupService::prune(&config, 5).unwrap().is_empty());
 }

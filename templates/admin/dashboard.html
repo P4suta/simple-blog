@@ -1,8 +1,36 @@
 {% extends "admin/base.html" %}
+{% block title %}{{ t["admin.title.dashboard"] }}{% endblock %}
 {% block content %}
 <header class="admin-page-head"><h1>{{ t["dashboard.heading"] }}</h1><a class="primary-button" href="/admin/content/new/">{{ t["dashboard.new"] }}</a></header>
-<div class="content-table" role="list">
-{% for item in contents %}<a role="listitem" href="/admin/content/{{ item.id }}/edit/"><span><strong>{{ item.title }}</strong><small>/{{ item.slug }}/</small></span><span class="engagement"><span class="metric">{{ item.views }} {{ t["dashboard.views"] }}</span><span class="metric">{{ item.likes }} {{ t["dashboard.likes"] }}</span></span><span class="status status-{{ item.status }}">{{ t["status." ~ item.status] }}</span></a>{% else %}<p>{{ t["dashboard.empty"] }}</p>{% endfor %}
+{% if site_pending %}<div class="publish-banner" role="status"><p>{{ t["dashboard.site_pending"] }}</p><form method="post" action="/admin/publish/"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="primary-button">{{ t["dashboard.publish_now"] }}</button></form></div>
+{% endif %}<div class="dashboard-tools">
+  <nav class="dashboard-filters" aria-label="{{ t["dashboard.filters"] }}">
+    {% for key in ["all", "draft", "scheduled", "public", "trash"] %}<a data-filter="{{ key }}" href="/admin/?status={{ key }}{% if q %}&amp;q={{ q_query }}{% endif %}{{ sort_query }}"{% if key == filter %} aria-current="page"{% endif %}>{{ t["dashboard.filter_" ~ key] }} <span class="count">{{ counts[key] }}</span></a>{% endfor %}
+  </nav>
+  <form class="dashboard-search" method="get" action="/admin/" role="search">
+    <input type="hidden" name="status" value="{{ filter }}">
+    {% if sort != 'updated' %}<input type="hidden" name="sort" value="{{ sort }}">{% endif %}
+    <input type="search" name="q" value="{{ q }}" placeholder="{{ t["dashboard.search_placeholder"] }}" aria-label="{{ t["dashboard.search_placeholder"] }}" maxlength="120">
+    <button type="submit">{{ t["dashboard.search"] }}</button>
+  </form>
+  <form class="dashboard-sort" method="get" action="/admin/">
+    <input type="hidden" name="status" value="{{ filter }}">
+    {% if q %}<input type="hidden" name="q" value="{{ q }}">{% endif %}
+    <label>{{ t["dashboard.sort"] }} <select name="sort" data-sort>{% for key in ["updated", "published", "title"] %}<option value="{{ key }}"{% if key == sort %} selected{% endif %}>{{ t["dashboard.sort_" ~ key] }}</option>{% endfor %}</select></label>
+    <button type="submit" data-sort-apply>{{ t["dashboard.sort_apply"] }}</button>
+  </form>
 </div>
-<p class="dashboard-links"><a href="/" target="_blank" rel="noopener">{{ t["dashboard.view_site"] }}</a><a href="/admin/settings/">{{ t["dashboard.settings"] }}</a></p>
+{% if contents %}<ul class="content-table">
+{% for item in contents %}{% if item.trashed %}<li class="content-row content-row-trashed">
+  <a href="/admin/content/{{ item.id }}/edit/"><span><strong>{{ item.title }}</strong><small>/{{ item.slug }}/</small></span></a>
+  <span class="dates"><span class="date-label">{{ t["dashboard.trashed_at"] }}</span> <time datetime="{{ item.deleted_at }}" data-local-time>{{ item.deleted_at }}</time></span>
+  <form method="post" action="/admin/content/{{ item.id }}/restore/"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="row-action">{{ t["dashboard.restore"] }}</button></form>
+  <details class="danger-zone row-danger"><summary>{{ t["dashboard.delete_permanently"] }}</summary><form method="post" action="/admin/content/{{ item.id }}/delete/"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="danger-button">{{ t["dashboard.delete_confirm"] }}</button></form></details>
+  <span class="status status-trashed">{{ t["status.trashed"] }}</span>
+</li>
+{% else %}<li><a href="/admin/content/{{ item.id }}/edit/"><span><strong>{{ item.title }}</strong><small>/{{ item.slug }}/</small></span><span class="dates"><time datetime="{{ item.updated_at }}" data-local-time>{{ item.updated_at }}</time>{% if item.publish_at %}<span class="date-label">{% if item.status == 'scheduled' %}{{ t["dashboard.publishes"] }}{% else %}{{ t["dashboard.published"] }}{% endif %}</span> <time datetime="{{ item.publish_at }}" data-local-time>{{ item.publish_at }}</time>{% endif %}</span><span class="engagement"><span class="metric">{{ item.views }} {{ t["dashboard.views"] }}</span><span class="metric">{{ item.likes }} {{ t["dashboard.likes"] }}</span></span><span class="status status-{{ item.status }}">{{ t["status." ~ item.status] }}</span></a></li>
+{% endif %}{% endfor %}</ul>{% else %}<p class="content-empty">{{ t[empty_key] }}</p>{% endif %}
+{% if page_count > 1 %}<nav class="dashboard-pager" aria-label="{{ t["dashboard.pager"] }}">{% if prev_url %}<a href="{{ prev_url }}" rel="prev">← {{ t["dashboard.prev"] }}</a>{% else %}<span></span>{% endif %}<span>{{ page_of }}</span>{% if next_url %}<a href="{{ next_url }}" rel="next">{{ t["dashboard.next"] }} →</a>{% else %}<span></span>{% endif %}</nav>{% endif %}
+{% if can_empty_trash %}<details class="danger-zone dashboard-empty-trash"><summary>{{ t["dashboard.empty_trash_action"] }}</summary><form method="post" action="/admin/trash/empty/"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="danger-button">{{ t["dashboard.empty_trash_confirm"] }}</button></form></details>{% endif %}
+<p class="dashboard-links"><a href="/" target="_blank" rel="noopener">{{ t["dashboard.view_site"] }}</a><a href="/admin/media/">{{ t["dashboard.media"] }}</a><a href="/admin/settings/">{{ t["dashboard.settings"] }}</a></p>
 {% endblock %}

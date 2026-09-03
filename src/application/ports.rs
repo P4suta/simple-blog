@@ -1,11 +1,15 @@
 //! Small capability-oriented ports keep external libraries out of the domain.
 
+use std::collections::HashSet;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use thiserror::Error;
 
 use crate::application::site_compiler::SiteSnapshotV1;
-use crate::domain::auth::{SecretHash, SessionRecord, SetupPurpose, StoredPasskey};
+use crate::domain::auth::{
+    PreviewLinkRecord, SecretHash, SessionRecord, SetupPurpose, StoredPasskey,
+};
 use crate::domain::content::{
     Content, ContentDraft, ContentId, ContentKind, ContentRevision, SaveIntent, Slug, Tag,
 };
@@ -113,6 +117,10 @@ pub trait ContentRepository: Send + Sync {
 
     async fn list_all_public(&self, now: DateTime<Utc>) -> Result<Vec<Content>, RepositoryError>;
 
+    /// Every piece, trashed ones included: the trash is still durable state
+    /// (media it references must survive garbage collection, and the
+    /// dashboard lists it). Callers that need only live content filter on
+    /// [`Content::is_trashed`].
     async fn list_all_content(&self) -> Result<Vec<Content>, RepositoryError>;
 
     /// The chronologically adjacent public posts (older, newer) around one
@@ -123,6 +131,48 @@ pub trait ContentRepository: Send + Sync {
         publish_at: DateTime<Utc>,
         now: DateTime<Utc>,
     ) -> Result<(Option<ContentLink>, Option<ContentLink>), RepositoryError>;
+
+    /// Moves content to the trash: it leaves every public query and the
+    /// publication clock, but keeps its slug reserved and its media
+    /// referenced. `expected_version` guards against a concurrent editor tab.
+    /// Already trashed content is returned unchanged.
+    async fn move_to_trash(
+        &self,
+        id: ContentId,
+        expected_version: i64,
+        now: DateTime<Utc>,
+    ) -> Result<Content, RepositoryError>;
+
+    /// Returns trashed content to exactly the publication state it had
+    /// before. Live content is returned unchanged.
+    async fn restore_from_trash(
+        &self,
+        id: ContentId,
+        now: DateTime<Utc>,
+    ) -> Result<Content, RepositoryError>;
+
+    /// Hard-deletes content that is already in the trash; revisions, tags,
+    /// redirects, engagement and the search row go with it. Live or absent
+    /// content answers `NotFound`, so a stale page can never destroy
+    /// restored work.
+    async fn delete_permanently(&self, id: ContentId) -> Result<(), RepositoryError>;
+
+    /// Every tag in use, most used first, then by name.
+    async fn list_tag_usage(&self) -> Result<Vec<TagUsage>, RepositoryError>;
+}
+
+/// A tag and how many pieces carry it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TagUsage {
+    pub name: String,
+    pub count: u64,
+}
+
+/// Media identities still mentioned by stored revision snapshots, so a sweep
+/// keeps what history may restore.
+#[async_trait]
+pub trait RevisionMediaReferences: Send + Sync {
+    async fn revision_media_ids(&self) -> Result<HashSet<String>, RepositoryError>;
 }
 
 /// A minimal reference to another content item.
@@ -197,6 +247,36 @@ pub trait SiteRepository: Send + Sync {
         navigation: &[NavigationItem],
         now: DateTime<Utc>,
     ) -> Result<(), RepositoryError>;
+
+    /// Every historical address and the piece it leads to, oldest address first.
+    async fn list_redirects(&self) -> Result<Vec<RedirectEntry>, RepositoryError>;
+
+    /// Points an old address (one imported from elsewhere, say) at a piece.
+    /// `SlugTaken` when the address is active or already historical,
+    /// `NotFound` when the piece does not exist. Advances the public revision.
+    async fn add_redirect(
+        &self,
+        old_slug: &Slug,
+        content_id: ContentId,
+        now: DateTime<Utc>,
+    ) -> Result<(), RepositoryError>;
+
+    /// Forgets an old address; `false` when it was not known.
+    async fn remove_redirect(
+        &self,
+        old_slug: &Slug,
+        now: DateTime<Utc>,
+    ) -> Result<bool, RepositoryError>;
+}
+
+/// One historical address with the piece it currently leads to.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RedirectEntry {
+    pub old_slug: Slug,
+    pub content_id: ContentId,
+    pub slug: Slug,
+    pub title: String,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -256,6 +336,25 @@ pub trait MediaRepository: Send + Sync {
     async fn find_media(&self, id: &MediaId) -> Result<Option<MediaAsset>, MediaRepositoryError>;
     async fn list_media(&self) -> Result<Vec<MediaAsset>, MediaRepositoryError>;
     async fn delete_media(&self, id: &MediaId) -> Result<(), MediaRepositoryError>;
+
+    /// Replaces the alternative text of one asset; `false` when it does not
+    /// exist. Alternative text is rendered into released pages, so the
+    /// implementation advances the public revision in the same transaction.
+    async fn update_media_alt_text(
+        &self,
+        id: &MediaId,
+        alt_text: &str,
+        now: DateTime<Utc>,
+    ) -> Result<bool, MediaRepositoryError>;
+
+    /// The MIME type of one publicly servable file name — an original
+    /// (`{id}.{extension}`) or a generated variant — without listing the
+    /// whole media table on every image request. `None` means the file is
+    /// not referenced by any media record and must not be served.
+    async fn mime_type_for_filename(
+        &self,
+        filename: &str,
+    ) -> Result<Option<String>, MediaRepositoryError>;
 }
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
@@ -297,6 +396,18 @@ pub trait AuthRepository: Send + Sync {
         now: DateTime<Utc>,
     ) -> Result<bool, AuthError>;
 
+    /// Ends one session immediately; `false` when no such session existed.
+    async fn revoke_session(&self, token_hash: SecretHash) -> Result<bool, AuthError>;
+
+    /// Moves a live session's expiry forward without changing its tokens;
+    /// `false` when the session is unknown or already expired.
+    async fn extend_session(
+        &self,
+        token_hash: SecretHash,
+        expires_at: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> Result<bool, AuthError>;
+
     async fn replace_recovery_codes(
         &self,
         code_hashes: &[SecretHash],
@@ -315,6 +426,22 @@ pub trait AuthRepository: Send + Sync {
         session: &SessionRecord,
         now: DateTime<Utc>,
     ) -> Result<bool, AuthError>;
+}
+
+/// Bearer capabilities that open one unpublished piece to whoever holds them.
+#[async_trait]
+pub trait PreviewLinkRepository: Send + Sync {
+    async fn store_preview_link(&self, link: &PreviewLinkRecord) -> Result<(), AuthError>;
+
+    /// The piece a live link opens; `None` when unknown or expired.
+    async fn find_preview_link(
+        &self,
+        token_hash: SecretHash,
+        now: DateTime<Utc>,
+    ) -> Result<Option<ContentId>, AuthError>;
+
+    /// Ends every link of one piece; answers how many existed.
+    async fn revoke_preview_links(&self, content_id: ContentId) -> Result<u64, AuthError>;
 }
 
 pub struct SetupRegistration<'a> {

@@ -58,6 +58,9 @@ fn settings(title: &str) -> SiteSettings {
         logo_media_id: None,
         favicon_media_id: None,
         custom_css: String::new(),
+        timezone: "UTC".into(),
+        author_name: String::new(),
+        custom_css_backup: None,
     }
 }
 
@@ -287,4 +290,169 @@ async fn site_configuration_is_validated_and_replaced_atomically() {
         "Field Notes"
     );
     assert_eq!(repository.navigation().await.unwrap().len(), 2);
+}
+#[tokio::test]
+async fn page_route_migration_preserves_legacy_content_tags_revisions_and_navigation() {
+    let temp = tempfile::tempdir().unwrap();
+    let database = temp.path().join("legacy-page.sqlite3");
+    let pool = migration_fixture(&database, 12).await;
+    let at = "2026-09-02T00:00:00+00:00";
+    sqlx::query(
+        "INSERT INTO contents (
+           id, kind, title, slug, summary, body_markdown, body_html, status, publish_at,
+           version, created_at, updated_at
+         ) VALUES (7, 'post', 'Legacy page', 'page', '', '# Legacy', '<h1>Legacy</h1>',
+                   'draft', NULL, 1, ?, ?)",
+    )
+    .bind(at)
+    .bind(at)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO tags (id, name, slug) VALUES (9, 'Page', 'page')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO content_tags (content_id, tag_id, position) VALUES (7, 9, 0)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let snapshot = serde_json::json!({
+        "id": 7,
+        "kind": "post",
+        "title": "Legacy page",
+        "slug": "page",
+        "summary": "",
+        "body_markdown": "# Legacy",
+        "body_html": "<h1>Legacy</h1>",
+        "tags": [{ "name": "Page", "slug": "page" }],
+        "cover_media_id": null,
+        "seo_title": null,
+        "seo_description": null,
+        "publication": { "state": "draft" },
+        "version": 1,
+        "created_at": at,
+        "updated_at": at
+    });
+    sqlx::query(
+        "INSERT INTO revisions (content_id, intent, snapshot_json, created_at)
+         VALUES (7, 'explicit', ?, ?)",
+    )
+    .bind(snapshot.to_string())
+    .bind(at)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO navigation (label, destination, is_external, position)
+         VALUES ('Legacy page', '/page/', 0, 0)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    finish_migrations(&pool).await;
+    pool.close().await;
+
+    let repository = SqliteRepository::connect(&database).await.unwrap();
+    let contents = repository.list_all_content().await.unwrap();
+    assert_eq!(contents.len(), 1);
+    assert_eq!(contents[0].slug.as_str(), "page-content-7");
+    assert_eq!(contents[0].tags[0].slug.as_str(), "page-tag-9");
+    let revisions = repository
+        .list_revisions(ContentId::from_i64(7))
+        .await
+        .unwrap();
+    assert_eq!(revisions[0].snapshot.slug.as_str(), "page-content-7");
+    assert_eq!(revisions[0].snapshot.tags[0].slug.as_str(), "page-tag-9");
+    assert_eq!(
+        repository.navigation().await.unwrap()[0].destination,
+        "/page-content-7/"
+    );
+}
+
+#[tokio::test]
+async fn theme_refresh_updates_only_the_untouched_previous_default() {
+    let temp = tempfile::tempdir().unwrap();
+
+    let untouched = temp.path().join("untouched.sqlite3");
+    let pool = migration_fixture(&untouched, 15).await;
+    finish_migrations(&pool).await;
+    pool.close().await;
+    let repository = SqliteRepository::connect(&untouched).await.unwrap();
+    assert_eq!(
+        repository.site_settings().await.unwrap().custom_css,
+        include_str!("../static/default-theme.css"),
+        "a stylesheet still equal to the previous default receives the new one"
+    );
+
+    let customized = temp.path().join("customized.sqlite3");
+    let pool = migration_fixture(&customized, 15).await;
+    sqlx::query(
+        "UPDATE site_settings SET custom_css = 'body { color: teal; }' WHERE singleton = 1",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    finish_migrations(&pool).await;
+    pool.close().await;
+    let repository = SqliteRepository::connect(&customized).await.unwrap();
+    assert_eq!(
+        repository.site_settings().await.unwrap().custom_css,
+        "body { color: teal; }",
+        "an edited stylesheet is never clobbered"
+    );
+}
+
+#[tokio::test]
+async fn locale_settings_migration_adds_columns_with_defaults_and_round_trips() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("locale.sqlite3");
+    let pool = migration_fixture(&path, 13).await;
+    finish_migrations(&pool).await;
+    pool.close().await;
+    let repository = SqliteRepository::connect(&path).await.unwrap();
+
+    let stored = repository.site_settings().await.unwrap();
+    assert_eq!(stored.timezone, "UTC");
+    assert_eq!(stored.author_name, "");
+    assert_eq!(stored.custom_css_backup, None);
+
+    let mut updated = settings("Field Notes");
+    updated.timezone = "Asia/Tokyo".into();
+    updated.author_name = "Ryo".into();
+    updated.custom_css_backup = Some("body {}".into());
+    repository
+        .save_configuration(&updated, &[], Utc::now())
+        .await
+        .unwrap();
+    let stored = repository.site_settings().await.unwrap();
+    assert_eq!(stored.timezone, "Asia/Tokyo");
+    assert_eq!(stored.author_name, "Ryo");
+    assert_eq!(stored.custom_css_backup.as_deref(), Some("body {}"));
+}
+
+#[tokio::test]
+async fn setup_adopts_the_browser_zone_only_while_the_site_is_still_utc() {
+    let temp = tempfile::tempdir().unwrap();
+    let repository = Arc::new(
+        SqliteRepository::connect(&temp.path().join("adopt.sqlite3"))
+            .await
+            .unwrap(),
+    );
+    let site = SiteService::new(repository.clone());
+    let now = Utc::now();
+
+    assert!(!site.adopt_timezone_once("Nowhere/Land", now).await.unwrap());
+    assert!(!site.adopt_timezone_once("Etc/UTC", now).await.unwrap());
+    assert!(site.adopt_timezone_once("Asia/Tokyo", now).await.unwrap());
+    assert_eq!(
+        repository.site_settings().await.unwrap().timezone,
+        "Asia/Tokyo"
+    );
+    assert!(!site.adopt_timezone_once("Europe/Paris", now).await.unwrap());
+    assert_eq!(
+        repository.site_settings().await.unwrap().timezone,
+        "Asia/Tokyo"
+    );
 }

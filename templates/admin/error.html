@@ -1,0 +1,11 @@
+{% extends "admin/base.html" %}
+{% block title %}{{ t["admin.title.error"] }}{% endblock %}
+{% block header %}<header class="admin-header"><a class="admin-brand" href="/admin/">Simple Blog</a></header>{% endblock %}
+{% block content %}
+<section class="conflict admin-error" role="alert">
+  <p class="kicker">{{ status }}</p>
+  <h1>{{ t[heading_key] }}</h1>
+  <p class="admin-error-detail">{{ message }}</p>
+  <a class="primary-button" href="/admin/">{{ t["admin.error_back"] }}</a>
+</section>
+{% endblock %}

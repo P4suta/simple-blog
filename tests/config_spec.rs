@@ -63,7 +63,7 @@ fn environment_safety_limits_and_proxy_lists_are_parsed_deterministically() {
         env: BTreeMap::from([
             (
                 "SIMPLE_BLOG_TRUSTED_PROXIES".into(),
-                "127.0.0.1, invalid, ::1".into(),
+                "127.0.0.1, ::1, ".into(),
             ),
             ("SIMPLE_BLOG_MAX_UPLOAD_BYTES".into(), "4096".into()),
         ]),
@@ -73,6 +73,16 @@ fn environment_safety_limits_and_proxy_lists_are_parsed_deterministically() {
 
     assert_eq!(config.trusted_proxies.len(), 2);
     assert_eq!(config.max_upload_bytes, 4096);
+
+    // A typo in the proxy list must not silently weaken rate limiting.
+    let mistyped = Config::resolve(ConfigSources {
+        env: BTreeMap::from([(
+            "SIMPLE_BLOG_TRUSTED_PROXIES".into(),
+            "127.0.0.1, invalid, ::1".into(),
+        )]),
+        ..ConfigSources::default()
+    });
+    assert!(matches!(mistyped, Err(ConfigError::TrustedProxy(item)) if item == "invalid"));
 
     let zero = Config::resolve(ConfigSources {
         cli: Overrides {
@@ -127,4 +137,36 @@ fn load_and_persist_report_corrupt_or_unusable_paths_without_partial_files() {
         std::fs::read_to_string(file_instead_of_directory).unwrap(),
         "occupied"
     );
+}
+
+#[test]
+fn backup_retention_defaults_to_fourteen_and_can_be_disabled() {
+    let config = Config::resolve(ConfigSources::default()).unwrap();
+    assert_eq!(config.backup_retention, 14);
+
+    let from_env = Config::resolve(ConfigSources {
+        env: BTreeMap::from([("SIMPLE_BLOG_BACKUP_RETENTION".into(), "3".into())]),
+        ..ConfigSources::default()
+    })
+    .unwrap();
+    assert_eq!(from_env.backup_retention, 3);
+
+    let disabled = Config::resolve(ConfigSources {
+        file: Some(ConfigFile {
+            backup_retention: Some(0),
+            ..ConfigFile::default()
+        }),
+        ..ConfigSources::default()
+    })
+    .unwrap();
+    assert_eq!(
+        disabled.backup_retention, 0,
+        "zero switches the scheduler off"
+    );
+
+    let garbage = Config::resolve(ConfigSources {
+        env: BTreeMap::from([("SIMPLE_BLOG_BACKUP_RETENTION".into(), "many".into())]),
+        ..ConfigSources::default()
+    });
+    assert!(matches!(garbage, Err(ConfigError::BackupRetention(_))));
 }

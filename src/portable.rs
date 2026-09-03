@@ -278,6 +278,9 @@ fn validate_content(content: &Content, expected_id: ContentId) -> Result<(), Por
         || !valid_optional(&content.seo_title, 70)
         || !valid_optional(&content.seo_description, 200)
         || content.created_at > content.updated_at
+        || content
+            .deleted_at
+            .is_some_and(|deleted_at| deleted_at < content.created_at)
     {
         return invalid("content violates the portable content contract");
     }
@@ -397,9 +400,12 @@ fn validate_publication_state(site: &PortableSiteV1) -> Result<(), PortableArchi
     if site.publication.public_revision > MAX_SQLITE_INTEGER {
         return invalid("public revision exceeds the portable integer range");
     }
+    // Trashed entries never hold the clock: a scheduled piece in the trash
+    // must not delay or trigger a publication boundary.
     let expected_next = site
         .contents
         .iter()
+        .filter(|record| !record.current.is_trashed())
         .filter_map(|record| record.current.publication.publish_at())
         .filter(|publish_at| *publish_at > site.exported_at)
         .min();

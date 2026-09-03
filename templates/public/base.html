@@ -9,28 +9,45 @@
   <meta property="og:description" content="{{ meta.description }}">
   <meta property="og:type" content="{{ meta.og_type }}">
   <meta property="og:url" content="{{ meta.canonical_url }}">
-  {% if meta.image_url %}<meta property="og:image" content="{{ meta.image_url }}">{% endif %}
-  <meta name="twitter:card" content="summary_large_image">
+  <meta property="og:site_name" content="{{ site.site_title }}">
+  <meta property="og:locale" content="{{ meta.og_locale }}">
+  {% if meta.image %}<meta property="og:image" content="{{ meta.image.url }}">
+  <meta property="og:image:width" content="{{ meta.image.width }}">
+  <meta property="og:image:height" content="{{ meta.image.height }}">
+  {% if meta.image.alt %}<meta property="og:image:alt" content="{{ meta.image.alt }}">{% endif %}
+  <meta name="twitter:card" content="summary_large_image">{% else %}<meta name="twitter:card" content="summary">{% endif %}
+  <meta name="author" content="{% if site.author_name %}{{ site.author_name }}{% else %}{{ site.site_title }}{% endif %}">
+  {% if meta.noindex %}<meta name="robots" content="noindex">{% endif %}
+  {% if meta.published_time %}<meta property="article:published_time" content="{{ meta.published_time }}">{% endif %}
+  {% if meta.modified_time %}<meta property="article:modified_time" content="{{ meta.modified_time }}">{% endif %}
+  {% for tag in meta.article_tags %}<meta property="article:tag" content="{{ tag }}">{% endfor %}
   <link rel="canonical" href="{{ meta.canonical_url }}">
+  {% if meta.prev_url %}<link rel="prev" href="{{ meta.prev_url }}">{% endif %}
+  {% if meta.next_url %}<link rel="next" href="{{ meta.next_url }}">{% endif %}
   <link rel="alternate" type="application/atom+xml" title="{{ site.site_title }}" href="/feed.xml">
-  <link rel="stylesheet" href="/assets/site.css?v={{ assets.css_version }}">
+  <link rel="alternate" type="application/feed+json" title="{{ site.site_title }}" href="/feed.json">
+  {% if meta.alternate_feed %}<link rel="alternate" type="application/atom+xml" title="{{ meta.alternate_feed.title }}" href="{{ meta.alternate_feed.href }}">{% endif %}
+  <link rel="stylesheet" href="{{ assets.css_url }}">
   {# Synchronous on purpose: a saved reader preference (measure, text size,
      scheme) must apply before first paint. Tiny and immutable-cached. #}
-  <script src="/assets/prefs.js?v={{ assets.prefs_js_version }}"></script>
+  <script src="{{ assets.prefs_js_url }}"></script>
   {% if assets.favicon_url %}<link rel="icon" href="{{ assets.favicon_url }}">{% endif %}
+  {# A data block, never executed: browsers do not run application/ld+json and
+     the compiler escapes every character that could end this element. #}
+  {% if meta.json_ld %}<script type="application/ld+json">{{ meta.json_ld|safe }}</script>{% endif %}
 </head>
 <body>
   <a class="skip-link" href="#main">{{ t["public.skip"] }}</a>
   <header class="site-header">
     <a class="brand" href="/">{% if assets.logo_url %}<img class="site-logo" src="{{ assets.logo_url }}" alt=""><span>{{ site.site_title }}</span>{% else %}{{ site.site_title }}{% endif %}</a>
     {% if navigation %}
-    <nav aria-label="Primary"><ul>{% for item in navigation %}<li><a href="{{ item.destination }}"{% if item.is_external %} rel="noopener noreferrer"{% endif %}>{{ item.label }}</a></li>{% endfor %}</ul></nav>
+    <nav aria-label="{{ t["public.primary_nav"] }}"><ul>{% for item in navigation %}<li><a href="{{ item.destination }}"{% if item.is_external %} rel="noopener noreferrer"{% endif %}>{{ item.label }}</a></li>{% endfor %}</ul></nav>
     {% endif %}
   </header>
   <main id="main" class="site-main" itemscope itemtype="https://schema.org/WebPage">
     {% block content %}{% endblock %}
   </main>
-  <footer class="site-footer"><span>{{ site.site_title }}</span><nav><ul><li><a href="/archive/">{{ t["public.archive"] }}</a></li><li><a href="/search/">{{ t["public.search"] }}</a></li><li><a href="/feed.xml">{{ t["public.feed"] }}</a></li></ul></nav></footer>
+  <footer class="site-footer"><span>{{ site.site_title }}</span><nav><ul><li><a href="/archive/">{{ t["public.archive"] }}</a></li><li><a href="/tag/">{{ t["public.tags"] }}</a></li><li><a href="/search/">{{ t["public.search"] }}</a></li><li><a href="/feed.xml">{{ t["public.feed"] }}</a></li></ul></nav></footer>
   {# Reader display preferences: per-visitor, stored in their browser.
      Hidden until prefs.js reveals it; without JavaScript defaults hold. #}
   <details class="prefs" hidden>
