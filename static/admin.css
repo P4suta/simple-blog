@@ -474,7 +474,7 @@ a {
   margin: 0.75rem auto 0;
   padding: 0.9rem 1.1rem;
   background: var(--panel);
-  border: 1px solid var(--accent);
+  border: 1px solid var(--line-strong);
   border-radius: var(--radius);
 }
 
@@ -484,7 +484,26 @@ a {
 }
 
 [data-save-state][data-pending="true"] {
-  color: var(--accent);
+  color: var(--muted);
+}
+
+/* Text this browser kept that the server has not seen yet. */
+.local-draft-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  width: min(42rem, calc(100% - 2rem));
+  margin: 0.75rem auto 0;
+  padding: 0.7rem 1.1rem;
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+}
+
+.local-draft-bar p {
+  flex: 1 1 16rem;
+  margin: 0;
 }
 
 /* A control with its explanation underneath, still aligned to the row label. */

@@ -24,6 +24,7 @@ import {
   isConflictPage,
   postFormAsNavigation,
 } from "./form-navigation";
+import { type LocalDraft, createDraftStore, draftKey, shouldOfferRestore } from "./draft-store";
 
 // Word-wise cursor movement that actually understands 日本語. CodeMirror's
 // default group motion sees an unbroken CJK run as one giant word;
@@ -749,6 +750,69 @@ if (editor) {
     }
   });
 
+  // What was typed since the last autosave also lives in this browser, so a
+  // closed tab, an expired session or a failed save never costs the text.
+  const localStore = createDraftStore(localStorage, draftKey(editor.dataset.contentId || null));
+  const summaryField = editor.querySelector<HTMLTextAreaElement>('[name="summary"]');
+  const tagsField = editor.querySelector<HTMLInputElement>('[name="tags"]');
+  const draftBar = editor.querySelector<HTMLElement>("[data-local-draft]");
+  const draftText = editor.querySelector<HTMLElement>("[data-local-draft-text]");
+  const snapshotDraft = (): LocalDraft => ({
+    title: titleField.value,
+    body: codeEditor.state.doc.toString(),
+    slug: slugField.value,
+    summary: summaryField?.value ?? "",
+    tags: tagsField?.value ?? "",
+    savedAt: new Date().toISOString(),
+    version: Number(editor.querySelector<HTMLInputElement>("[name=version]")?.value ?? "") || null,
+  });
+  let draftTimer: number | undefined;
+  const rememberDraft = (): void => {
+    clearTimeout(draftTimer);
+    draftTimer = window.setTimeout(() => localStore.write(snapshotDraft()), 500);
+  };
+  const restoreDraft = (local: LocalDraft): void => {
+    titleField.value = local.title;
+    if (summaryField) summaryField.value = local.summary;
+    if (tagsField) tagsField.value = local.tags;
+    const previousSlug = slugField.value;
+    slugField.value = local.slug;
+    if (!slugField.checkValidity()) slugField.value = previousSlug;
+    codeEditor.dispatch({
+      changes: { from: 0, to: codeEditor.state.doc.length, insert: local.body },
+    });
+    resizeTitle();
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
+  };
+  const offered = localStore.read();
+  if (
+    offered &&
+    draftBar &&
+    draftText &&
+    shouldOfferRestore(offered, {
+      updatedAt: editor.dataset.updatedAt ?? "",
+      body: textarea.value,
+      trashed,
+    })
+  ) {
+    draftText.textContent = (
+      editor.dataset.msgLocalDraft ?? "This browser has unsaved changes from {time}."
+    ).replace("{time}", formatLocalDateTime(new Date(offered.savedAt), language));
+    draftBar.hidden = false;
+    editor
+      .querySelector<HTMLButtonElement>("[data-local-draft-restore]")
+      ?.addEventListener("click", () => {
+        restoreDraft(offered);
+        draftBar.hidden = true;
+      });
+    editor
+      .querySelector<HTMLButtonElement>("[data-local-draft-discard]")
+      ?.addEventListener("click", () => {
+        localStore.clear();
+        draftBar.hidden = true;
+      });
+  }
+
   const formParameters = (): URLSearchParams => {
     const parameters = new URLSearchParams();
     for (const [name, value] of new FormData(editor)) {
@@ -826,6 +890,7 @@ if (editor) {
         editor.action = `/admin/content/${result.id}/`;
         history.replaceState(null, "", `/admin/content/${result.id}/edit/`);
         previewFrame.dataset.previewUrl = `/admin/content/${result.id}/preview/`;
+        localStore.moveTo(draftKey(result.id));
       }
       version.value = String(result.version);
       const trashVersion = document.querySelector<HTMLInputElement>("[data-trash-version]");
@@ -839,6 +904,10 @@ if (editor) {
       }
       if (!saveAgain) {
         dirty = false;
+        // Everything typed so far is on the server now; an edit that arrived
+        // mid-save keeps its local copy until its own save lands.
+        clearTimeout(draftTimer);
+        localStore.clear();
         const time = formatLocalTime(new Date(), language);
         showSaved(
           saveState,
@@ -874,6 +943,7 @@ if (editor) {
     editor.addEventListener("input", () => {
       dirty = true;
       saveState.textContent = msg.unsaved;
+      rememberDraft();
       clearTimeout(autosaveTimer);
       autosaveTimer = window.setTimeout(() => void autosave(), 1_200);
     });

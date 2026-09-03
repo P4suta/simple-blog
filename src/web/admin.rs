@@ -160,6 +160,9 @@ struct EditorContent {
     seo_title: String,
     seo_description: String,
     cover_media_id: String,
+    /// The server's last save, RFC 3339, so the browser can tell whether its
+    /// own unsaved copy is newer. Empty for a piece that was never saved.
+    updated_at: String,
 }
 
 #[derive(Serialize)]
@@ -1753,6 +1756,7 @@ impl EditorContent {
             seo_title: String::new(),
             seo_description: String::new(),
             cover_media_id: String::new(),
+            updated_at: String::new(),
         }
     }
 
@@ -1780,6 +1784,9 @@ impl EditorContent {
             seo_title: content.seo_title.clone().unwrap_or_default(),
             seo_description: content.seo_description.clone().unwrap_or_default(),
             cover_media_id: content.cover_media_id.clone().unwrap_or_default(),
+            updated_at: content
+                .updated_at
+                .to_rfc3339_opts(SecondsFormat::Secs, true),
         }
     }
 }

@@ -3037,3 +3037,56 @@ async fn editor_exposes_the_preview_frame_and_share_controls() {
     assert!(fresh.contains("data-preview-note"));
     assert!(!fresh.contains("data-share-form"));
 }
+
+#[tokio::test]
+async fn editor_exposes_local_draft_markers_and_the_server_timestamp() {
+    let harness = Harness::new().await;
+    let (cookie, _csrf) = harness.session_cookie().await;
+    let piece = harness
+        .contents
+        .create(draft("kept"), SaveIntent::Explicit, Utc::now())
+        .await
+        .unwrap();
+    let editor = text(
+        harness
+            .send(
+                Method::GET,
+                &format!("/admin/content/{}/edit/", piece.id),
+                None,
+                Body::empty(),
+                Some(&cookie),
+            )
+            .await,
+    )
+    .await;
+    let stamp = piece
+        .updated_at
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    for marker in [
+        format!("data-updated-at=\"{stamp}\""),
+        format!("data-content-id=\"{}\"", piece.id),
+        "class=\"local-draft-bar\" data-local-draft role=\"status\"".to_owned(),
+        "data-local-draft-restore".to_owned(),
+        "data-local-draft-discard".to_owned(),
+        "data-msg-local-draft".to_owned(),
+        "data-msg-local-restore".to_owned(),
+        "data-msg-local-discard".to_owned(),
+    ] {
+        assert!(editor.contains(&marker), "missing {marker}");
+    }
+
+    let fresh = text(
+        harness
+            .send(
+                Method::GET,
+                "/admin/content/new/",
+                None,
+                Body::empty(),
+                Some(&cookie),
+            )
+            .await,
+    )
+    .await;
+    assert!(fresh.contains("data-updated-at=\"\""));
+    assert!(!fresh.contains("data-content-id="));
+}

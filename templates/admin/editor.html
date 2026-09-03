@@ -35,12 +35,18 @@
       data-msg-error-offline="{{ t["editor.error_offline"] }}"
       data-msg-share-copied="{{ t["editor.share_copied"] }}"
       data-msg-share-expires="{{ t["editor.share_expires"] }}"
+      data-msg-local-draft="{{ t["editor.local_draft"] }}"
+      data-msg-local-restore="{{ t["editor.local_restore"] }}"
+      data-msg-local-discard="{{ t["editor.local_discard"] }}"
+      data-updated-at="{{ content.updated_at }}"{% if content_id %} data-content-id="{{ content_id }}"{% endif %}
       data-site-zone="{{ site_zone }}">
   <input type="hidden" name="csrf" value="{{ csrf }}">
   {% if version %}<input type="hidden" name="version" value="{{ version }}">{% endif %}
   {# Implicit submission (Enter in a field) triggers the FIRST submit button; this
      nameless one keeps Enter from acting as Publish/Unpublish. #}
   <button type="submit" hidden tabindex="-1" aria-hidden="true"></button>
+  {# Offered by the script when this browser holds text newer than the server. #}
+  <div class="local-draft-bar" data-local-draft role="status" hidden><p data-local-draft-text></p><button type="button" class="editor-bar-button" data-local-draft-restore>{{ t["editor.local_restore"] }}</button> <button type="button" class="editor-bar-button" data-local-draft-discard>{{ t["editor.local_discard"] }}</button></div>
   <header class="editor-bar">
     <a class="editor-back" href="/admin/">{{ t["editor.back"] }}</a>
     <span class="editor-save-state" data-save-state aria-live="polite">{{ t["editor.saved"] }}</span>
