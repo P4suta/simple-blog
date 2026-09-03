@@ -3744,3 +3744,137 @@ async fn expected_failures_render_localized_detail() {
         "タイトルは 1〜200 文字で入力してください"
     );
 }
+
+#[tokio::test]
+async fn backup_download_requires_recent_reauth_and_returns_an_archive() {
+    let start = Utc::now();
+    let clock = TestClock::new(start);
+    let harness = Harness::new_with_clock(Arc::new(clock.clone())).await;
+    let backups = harness._temp.path().join("backups");
+    let form = "application/x-www-form-urlencoded";
+
+    let (stale_cookie, stale_csrf) =
+        session_at(&harness, start - chrono::Duration::minutes(10)).await;
+    let refused = harness
+        .send(
+            Method::POST,
+            "/admin/backup/",
+            Some(form),
+            format!("csrf={stale_csrf}"),
+            Some(&stale_cookie),
+        )
+        .await;
+    assert_eq!(refused.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        refused.headers()[header::LOCATION],
+        "/admin/login/?next=/admin/settings/"
+    );
+    assert!(
+        std::fs::read_dir(&backups).map_or(0, Iterator::count) == 0,
+        "a stale session writes nothing"
+    );
+
+    let (cookie, csrf) = session_at(&harness, start).await;
+    let forged = harness
+        .send(
+            Method::POST,
+            "/admin/backup/",
+            Some(form),
+            "csrf=wrong",
+            Some(&cookie),
+        )
+        .await;
+    assert_eq!(forged.status(), StatusCode::FORBIDDEN);
+
+    let response = harness
+        .send(
+            Method::POST,
+            "/admin/backup/",
+            Some(form),
+            format!("csrf={csrf}"),
+            Some(&cookie),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CONTENT_TYPE], "application/zstd");
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    let disposition = response.headers()[header::CONTENT_DISPOSITION]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        disposition.starts_with("attachment; filename=\"simple-blog-")
+            && disposition.ends_with(".tar.zst\""),
+        "{disposition}"
+    );
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let decoded = zstd::decode_all(bytes.as_ref()).unwrap();
+    let names = tar::Archive::new(decoded.as_slice())
+        .entries()
+        .unwrap()
+        .map(|entry| {
+            entry
+                .unwrap()
+                .path()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        names.iter().any(|name| name.ends_with(".sqlite3")),
+        "the download is the same archive `backup` writes: {names:?}"
+    );
+    assert_eq!(
+        std::fs::read_dir(&backups).unwrap().count(),
+        1,
+        "the archive also stays on disk as the newest generation"
+    );
+
+    let page = text(
+        harness
+            .send(Method::GET, "/admin/settings/", None, "", Some(&cookie))
+            .await,
+    )
+    .await;
+    assert!(page.contains("action=\"/admin/backup/\""));
+}
+
+#[tokio::test]
+async fn scheduled_backups_start_after_the_initial_delay_and_stop_on_shutdown() {
+    let harness = Harness::new().await;
+    let backups = harness._temp.path().join("backups");
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let state = harness.state.clone();
+    let scheduler = tokio::spawn(async move {
+        state
+            .run_backup_scheduler_with(
+                shutdown_rx,
+                simple_blog::operations::BackupCadence {
+                    initial: std::time::Duration::from_millis(20),
+                    every: std::time::Duration::from_secs(3600),
+                },
+            )
+            .await;
+    });
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::fs::read_dir(&backups).map_or(0, Iterator::count) == 0 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "no archive appeared"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    let names = std::fs::read_dir(&backups)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(names.len(), 1, "{names:?}");
+    assert!(names[0].starts_with("simple-blog-") && names[0].ends_with(".tar.zst"));
+
+    shutdown_tx.send(true).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), scheduler)
+        .await
+        .expect("the scheduler stops promptly on shutdown")
+        .unwrap();
+}

@@ -172,6 +172,9 @@
   "settings.theme_undo_note": "上次重置所替换的样式表已保留，可恢复一次。",
   "settings.session": "会话",
   "settings.logout_note": "结束此浏览器的会话。",
+  "settings.backup": "备份",
+  "settings.backup_note": "生成包含数据库、图片和设置的完整存档并下载。服务器也会每天自动在 data/backups 中保存一份。",
+  "settings.backup_download": "创建并下载备份",
 
   "login.title": "登录",
   "login.kicker": "所有者访问",

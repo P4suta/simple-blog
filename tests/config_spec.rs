@@ -138,3 +138,35 @@ fn load_and_persist_report_corrupt_or_unusable_paths_without_partial_files() {
         "occupied"
     );
 }
+
+#[test]
+fn backup_retention_defaults_to_fourteen_and_can_be_disabled() {
+    let config = Config::resolve(ConfigSources::default()).unwrap();
+    assert_eq!(config.backup_retention, 14);
+
+    let from_env = Config::resolve(ConfigSources {
+        env: BTreeMap::from([("SIMPLE_BLOG_BACKUP_RETENTION".into(), "3".into())]),
+        ..ConfigSources::default()
+    })
+    .unwrap();
+    assert_eq!(from_env.backup_retention, 3);
+
+    let disabled = Config::resolve(ConfigSources {
+        file: Some(ConfigFile {
+            backup_retention: Some(0),
+            ..ConfigFile::default()
+        }),
+        ..ConfigSources::default()
+    })
+    .unwrap();
+    assert_eq!(
+        disabled.backup_retention, 0,
+        "zero switches the scheduler off"
+    );
+
+    let garbage = Config::resolve(ConfigSources {
+        env: BTreeMap::from([("SIMPLE_BLOG_BACKUP_RETENTION".into(), "many".into())]),
+        ..ConfigSources::default()
+    });
+    assert!(matches!(garbage, Err(ConfigError::BackupRetention(_))));
+}

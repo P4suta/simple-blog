@@ -172,6 +172,9 @@
   "settings.theme_undo_note": "直前のリセットで置き換えられた CSS を保管しています。一度だけ戻せます。",
   "settings.session": "セッション",
   "settings.logout_note": "このブラウザのセッションを終了します。",
+  "settings.backup": "バックアップ",
+  "settings.backup_note": "データベース・画像・設定をまとめた完全なアーカイブを作成してダウンロードします。サーバーも毎日 data/backups に自動で保存します。",
+  "settings.backup_download": "バックアップを作成してダウンロード",
 
   "login.title": "ログイン",
   "login.kicker": "Ownerアクセス",

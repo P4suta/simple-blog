@@ -17,7 +17,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub use backup::BackupService;
+pub use backup::{BackupCadence, BackupService};
 pub use doctor::{Doctor, DoctorCheck, DoctorReport};
 pub use export::Exporter;
 pub use import::{ImportReport, Importer};

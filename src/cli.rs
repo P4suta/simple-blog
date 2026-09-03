@@ -291,6 +291,11 @@ async fn serve(overrides: Overrides) -> Result<()> {
     tracing::info!(%bind, "simple-blog is listening");
     println!("Site:  {public_url}\nAdmin: {public_url}admin/");
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let backup_rx = shutdown_tx.subscribe();
+    let backup_state = state.clone();
+    let backups = tokio::spawn(async move {
+        backup_state.run_backup_scheduler(backup_rx).await;
+    });
     let scheduler = tokio::spawn(async move {
         state.run_publication_scheduler(shutdown_rx).await;
     });
@@ -308,6 +313,7 @@ async fn serve(overrides: Overrides) -> Result<()> {
     scheduler
         .await
         .context("publication scheduler task failed")?;
+    backups.await.context("backup scheduler task failed")?;
     server.context("web server failed")
 }
 

@@ -2,6 +2,7 @@ use std::str::FromStr;
 
 use axum::{
     Form, Json,
+    body::Body,
     extract::{Multipart, Path, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
@@ -10,6 +11,7 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Duration, NaiveDateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 use webauthn_rs::prelude::{PublicKeyCredential, RegisterPublicKeyCredential};
 
@@ -1624,6 +1626,54 @@ pub async fn recovery_login(
     };
     let mut response = redirect(StatusCode::SEE_OTHER, "/admin/settings/");
     set_auth_cookies(&mut response, &session, state.secure_cookies())?;
+    Ok(response)
+}
+
+/// Creates a backup archive on disk and streams it to the browser. A POST
+/// because it writes a file, and a fresh reauthentication because the
+/// archive holds every session hash and passkey record the site has.
+pub async fn download_backup(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<CsrfForm>,
+) -> Result<Response, WebError> {
+    let identity = match authenticate(&state, &headers, Some(&form.csrf)).await? {
+        Ok(identity) => identity,
+        Err(response) => return Ok(response),
+    };
+    if !recently_reauthenticated(&identity, state.clock.now()) {
+        return Ok(redirect(
+            StatusCode::SEE_OTHER,
+            "/admin/login/?next=/admin/settings/",
+        ));
+    }
+    let archive = state
+        .create_backup()
+        .await
+        .map_err(|error| WebError::Internal(format!("backup failed: {error}")))?;
+    let file = tokio::fs::File::open(&archive)
+        .await
+        .map_err(|error| WebError::Internal(format!("backup unreadable: {error}")))?;
+    let length = file
+        .metadata()
+        .await
+        .map_err(|error| WebError::Internal(format!("backup unreadable: {error}")))?
+        .len();
+    let filename = archive
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("simple-blog.tar.zst");
+    let disposition = HeaderValue::from_str(&format!("attachment; filename=\"{filename}\""))
+        .map_err(|error| WebError::Internal(error.to_string()))?;
+    let mut response = Body::from_stream(ReaderStream::new(file)).into_response();
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/zstd"),
+    );
+    headers.insert(header::CONTENT_LENGTH, HeaderValue::from(length));
+    headers.insert(header::CONTENT_DISPOSITION, disposition);
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok(response)
 }
 

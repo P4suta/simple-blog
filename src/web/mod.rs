@@ -55,6 +55,7 @@ use crate::{
         sqlite::SqliteRepository,
         webauthn::{PasskeyCeremony, PasskeyError},
     },
+    operations::{BackupCadence, BackupService, OperationError},
     release::{FilesystemReleaseStore, ReleaseError, ReleaseReader, ReleaseStore},
 };
 
@@ -82,6 +83,7 @@ pub struct AppState {
     pub(crate) release_store: Arc<FilesystemReleaseStore>,
     publication: Arc<PublicationService<SqliteRepository, FilesystemReleaseStore>>,
     publication_lock: Arc<Mutex<()>>,
+    repository: Arc<SqliteRepository>,
     publication_wakeup: Arc<Notify>,
     /// Raised when the last build failed after a committed change, so the
     /// scheduler keeps retrying and the dashboard can say so.
@@ -121,8 +123,11 @@ impl AppState {
             SiteCompiler::embedded()?,
             config.public_url.as_str(),
         )?);
-        let media_service =
-            LocalMediaService::new(config.media_dir(), repository, config.max_upload_bytes);
+        let media_service = LocalMediaService::new(
+            config.media_dir(),
+            repository.clone(),
+            config.max_upload_bytes,
+        );
         Ok(Self {
             config: Arc::new(config),
             content,
@@ -136,6 +141,7 @@ impl AppState {
             preview_links,
             webauthn,
             media_repository,
+            repository,
             revision_media,
             media_service,
             translations: Arc::new(Translations::embedded()?),
@@ -199,6 +205,66 @@ impl AppState {
         } else {
             SiteState::Pending
         })
+    }
+
+    /// Writes a complete archive under `data/backups/` and trims the folder
+    /// to the configured number of generations. The settings page and the
+    /// backup scheduler both come through here.
+    pub async fn create_backup(&self) -> Result<std::path::PathBuf, OperationError> {
+        let archive =
+            BackupService::create(&self.config, &self.repository, None, self.clock.now()).await?;
+        // Retention zero only switches the scheduler off; an archive the
+        // owner asked for is never the one that gets pruned.
+        if self.config.backup_retention > 0 {
+            let removed = BackupService::prune(&self.config, self.config.backup_retention)?;
+            if !removed.is_empty() {
+                tracing::info!(event = "backup.pruned", removed = removed.len());
+            }
+        }
+        Ok(archive)
+    }
+
+    pub async fn run_backup_scheduler(&self, shutdown: watch::Receiver<bool>) {
+        self.run_backup_scheduler_with(shutdown, BackupCadence::DEFAULT)
+            .await;
+    }
+
+    /// Keeps a daily archive without anyone remembering to. Failures are
+    /// logged with a stable code and the next attempt waits the usual
+    /// interval; nothing here can affect serving the site.
+    pub async fn run_backup_scheduler_with(
+        &self,
+        mut shutdown: watch::Receiver<bool>,
+        cadence: BackupCadence,
+    ) {
+        if self.config.backup_retention == 0 {
+            tracing::info!(event = "backup.scheduler.disabled");
+            return;
+        }
+        tracing::info!(
+            event = "backup.scheduler.started",
+            every_ms = cadence.every.as_millis(),
+            retention = self.config.backup_retention
+        );
+        let mut delay = cadence.initial;
+        loop {
+            if sleep_or_shutdown(delay, &mut shutdown).await {
+                break;
+            }
+            match self.create_backup().await {
+                Ok(archive) => tracing::info!(
+                    event = "backup.scheduled.created",
+                    path = %archive.display()
+                ),
+                Err(error) => tracing::error!(
+                    event = "backup.scheduled.failed",
+                    error_code = "backup_scheduled_failed",
+                    error = %error
+                ),
+            }
+            delay = cadence.every;
+        }
+        tracing::info!(event = "backup.scheduler.stopped");
     }
 
     pub async fn run_publication_scheduler(&self, shutdown: watch::Receiver<bool>) {
@@ -334,6 +400,14 @@ impl AppState {
     }
 }
 
+/// Sleeps for `delay` unless shutdown arrives first; answers whether to stop.
+async fn sleep_or_shutdown(delay: Duration, shutdown: &mut watch::Receiver<bool>) -> bool {
+    tokio::select! {
+        () = tokio::time::sleep(delay) => *shutdown.borrow(),
+        changed = shutdown.changed() => changed.is_err() || *shutdown.borrow(),
+    }
+}
+
 async fn scheduler_wait(
     delay: Duration,
     wakeup: &Notify,
@@ -394,6 +468,7 @@ pub fn router(state: AppState) -> Router {
             post(admin::regenerate_recovery_codes),
         )
         .route("/admin/settings/theme/reset/", post(admin::reset_theme))
+        .route("/admin/backup/", post(admin::download_backup))
         .route("/admin/settings/theme/undo/", post(admin::undo_theme_reset))
         .route("/admin/redirects/", post(admin::add_redirect))
         .route("/admin/redirects/remove/", post(admin::remove_redirect))

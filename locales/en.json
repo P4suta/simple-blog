@@ -172,6 +172,9 @@
   "settings.theme_undo_note": "The stylesheet replaced by the last reset is kept until you bring it back.",
   "settings.session": "Session",
   "settings.logout_note": "Ends this browser's session.",
+  "settings.backup": "Backups",
+  "settings.backup_note": "Create a complete archive (database, images, settings) and download it. The server also keeps a daily archive under data/backups.",
+  "settings.backup_download": "Create and download a backup",
 
   "login.title": "Log in",
   "login.kicker": "Owner access",

@@ -633,3 +633,41 @@ async fn plain_markdown_files_become_drafts_titled_from_the_first_heading() {
 fn config_for(data_dir: &std::path::Path) -> Config {
     config(data_dir)
 }
+
+#[tokio::test]
+async fn backup_rotation_keeps_the_newest_n() {
+    let temp = tempfile::tempdir().unwrap();
+    let (config, repository) = seeded(&temp).await;
+    let base = chrono::DateTime::parse_from_rfc3339("2026-09-03T01:00:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    for hour in 0..3 {
+        BackupService::create(
+            &config,
+            repository.as_ref(),
+            None,
+            base + chrono::Duration::hours(hour),
+        )
+        .await
+        .unwrap();
+    }
+    std::fs::write(config.backup_dir().join("notes.txt"), "left alone").unwrap();
+
+    let removed = BackupService::prune(&config, 2).unwrap();
+    assert_eq!(removed.len(), 1);
+    assert!(removed[0].ends_with("simple-blog-20260903-010000.tar.zst"));
+    let mut remaining = std::fs::read_dir(config.backup_dir())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect::<Vec<_>>();
+    remaining.sort();
+    assert_eq!(
+        remaining,
+        vec![
+            "notes.txt",
+            "simple-blog-20260903-020000.tar.zst",
+            "simple-blog-20260903-030000.tar.zst",
+        ]
+    );
+    assert!(BackupService::prune(&config, 5).unwrap().is_empty());
+}
