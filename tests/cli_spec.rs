@@ -15,7 +15,8 @@ fn help_exposes_the_v01_operational_surface() {
     assert!(output.status.success());
     let help = String::from_utf8(output.stdout).unwrap();
     for command in [
-        "init", "build", "serve", "backup", "restore", "export", "migrate", "doctor", "owner",
+        "init", "build", "serve", "backup", "restore", "export", "import", "migrate", "doctor",
+        "owner",
     ] {
         assert!(help.contains(command), "missing {command}");
     }

@@ -1,6 +1,7 @@
 mod backup;
 mod doctor;
 mod export;
+mod import;
 mod migration;
 mod portable;
 mod restore;
@@ -19,6 +20,7 @@ use thiserror::Error;
 pub use backup::BackupService;
 pub use doctor::{Doctor, DoctorCheck, DoctorReport};
 pub use export::Exporter;
+pub use import::{ImportReport, Importer};
 pub use migration::{ManagedDatabase, MigrationCoordinator};
 pub use portable::{PortableImportReport, PortableMigrationService};
 pub use restore::RestoreService;

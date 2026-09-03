@@ -13,7 +13,7 @@ use crate::{
     infrastructure::{entropy::SystemEntropy, sqlite::SqliteRepository},
     materialize::ReleaseMaterializer,
     operations::{
-        BackupService, Doctor, Exporter, MigrationCoordinator, PortableMigrationService,
+        BackupService, Doctor, Exporter, Importer, MigrationCoordinator, PortableMigrationService,
         RestoreService,
     },
     portable::PortableArchive,
@@ -53,6 +53,14 @@ enum Command {
     Export {
         #[arg(long, value_name = "DIRECTORY")]
         output: Option<PathBuf>,
+    },
+    /// Reads Markdown files (an `export` directory, or plain files under
+    /// posts/ and pages/) into this site.
+    Import {
+        directory: PathBuf,
+        /// Replace pieces whose slug already exists instead of skipping them.
+        #[arg(long)]
+        force: bool,
     },
     Migrate {
         #[command(subcommand)]
@@ -103,6 +111,7 @@ impl Cli {
                 Ok(())
             }
             Command::Export { output } => export(overrides, output).await,
+            Command::Import { directory, force } => import(overrides, directory, force).await,
             Command::Migrate { command } => match command {
                 MigrateCommand::Export { output } => migrate_export(overrides, output).await,
                 MigrateCommand::Import { archive, force } => {
@@ -147,6 +156,7 @@ impl Command {
             Self::Backup { .. } => "backup",
             Self::Restore { .. } => "restore",
             Self::Export { .. } => "export",
+            Self::Import { .. } => "import",
             Self::Migrate { .. } => "migrate",
             Self::Doctor { .. } => "doctor",
             Self::Owner { .. } => "owner",
@@ -311,6 +321,40 @@ async fn backup(overrides: Overrides, output: Option<PathBuf>) -> Result<()> {
         .await
         .context("could not create backup")?;
     println!("{}", archive.display());
+    Ok(())
+}
+
+async fn import(overrides: Overrides, directory: PathBuf, force: bool) -> Result<()> {
+    let config = Config::load(overrides).context("could not load configuration")?;
+    ensure_initialized(&config)?;
+    let repository = Arc::new(
+        open_database(&config)
+            .await
+            .context("could not open SQLite")?,
+    );
+    let report = Importer::import(&config, &repository, &directory, force, Utc::now())
+        .await
+        .with_context(|| format!("could not import {}", directory.display()))?;
+    println!(
+        "imported {} piece(s), {} media file(s)",
+        report.imported.len(),
+        report.media
+    );
+    for slug in &report.imported {
+        println!("  /{slug}/");
+    }
+    if !report.skipped.is_empty() {
+        println!("skipped {}:", report.skipped.len());
+        for (file, reason) in &report.skipped {
+            println!("  {file}: {reason}");
+        }
+    }
+    // Everything imported is visible only once a release carries it.
+    let state = AppState::new(config, repository).context("could not build web application")?;
+    state
+        .publish_now()
+        .await
+        .context("could not publish the imported site")?;
     Ok(())
 }
 
