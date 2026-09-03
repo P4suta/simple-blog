@@ -3857,20 +3857,28 @@ async fn scheduled_backups_start_after_the_initial_delay_and_stop_on_shutdown() 
             )
             .await;
     });
+    // The service snapshots the database into the same folder while it
+    // works, so only finished archives count.
+    let archives = || {
+        std::fs::read_dir(&backups)
+            .map(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .map(|entry| entry.file_name().into_string().unwrap())
+                    .filter(|name| name.starts_with("simple-blog-") && name.ends_with(".tar.zst"))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-    while std::fs::read_dir(&backups).map_or(0, Iterator::count) == 0 {
+    while archives().is_empty() {
         assert!(
             tokio::time::Instant::now() < deadline,
             "no archive appeared"
         );
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
-    let names = std::fs::read_dir(&backups)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-        .collect::<Vec<_>>();
-    assert_eq!(names.len(), 1, "{names:?}");
-    assert!(names[0].starts_with("simple-blog-") && names[0].ends_with(".tar.zst"));
+    assert_eq!(archives().len(), 1, "{:?}", archives());
 
     shutdown_tx.send(true).unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(5), scheduler)
