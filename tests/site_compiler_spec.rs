@@ -1,6 +1,6 @@
 use chrono::{Duration, TimeZone, Utc};
 use simple_blog::{
-    application::site_compiler::{PublicRedirect, SiteCompiler, SiteSnapshotV1},
+    application::site_compiler::{PreviewAssets, PublicRedirect, SiteCompiler, SiteSnapshotV1},
     domain::{
         content::{Content, ContentId, ContentKind, Publication, Slug, Tag},
         theme::{Locale, NavigationItem, SiteSettings},
@@ -1123,4 +1123,49 @@ fn body_images_get_dimensions_lazy_loading_srcset_and_figure_captions() {
     // Feeds and the search corpus keep the undecorated body.
     assert!(!body(&release, "/feed.xml").contains("<picture"));
     assert!(!body(&release, "/assets/search-index.json").contains("srcset"));
+}
+
+#[test]
+fn content_preview_renders_the_public_template_with_admin_assets_and_noindex() {
+    let compiler = SiteCompiler::embedded().unwrap();
+    let site = snapshot(Vec::new());
+    let piece = content(1, "Draft piece", "draft-piece", Publication::Draft, 1);
+    let html = compiler
+        .render_content_preview(
+            &site,
+            &piece,
+            "https://writing.example",
+            PreviewAssets {
+                css_url: "/admin/assets/theme.css?v=x".into(),
+                prefs_js_url: "/admin/assets/prefs.js?v=y".into(),
+            },
+        )
+        .unwrap();
+    assert!(html.contains("<article class=\"prose-shell\""));
+    assert!(html.contains("<h1 itemprop=\"headline\">Draft piece</h1>"));
+    assert!(html.contains("name=\"robots\" content=\"noindex\""));
+    assert!(html.contains("&#x2f;admin&#x2f;assets&#x2f;theme.css?v=x"));
+    assert!(html.contains("&#x2f;admin&#x2f;assets&#x2f;prefs.js?v=y"));
+    assert!(!html.contains("like.js"));
+    assert!(!html.contains("post-nav"));
+
+    let release = compile(vec![published_post(1, "Published", "published", 5)]);
+    let page = body(&release, "/published/");
+    assert!(page.contains("&#x2f;assets&#x2f;site.css?v="));
+    assert!(page.contains("like.js"));
+    assert!(!page.contains("noindex"));
+
+    let home = compiler
+        .render_home_preview(
+            &snapshot(vec![published_post(2, "Latest", "latest", 5)]),
+            "https://writing.example",
+            PreviewAssets {
+                css_url: "/admin/assets/theme.css?v=x".into(),
+                prefs_js_url: "/admin/assets/prefs.js?v=y".into(),
+            },
+        )
+        .unwrap();
+    assert!(home.contains("Latest"));
+    assert!(home.contains("noindex"));
+    assert!(home.contains("&#x2f;admin&#x2f;assets&#x2f;theme.css?v=x"));
 }

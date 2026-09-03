@@ -551,8 +551,9 @@ if (editor) {
   const textarea = editor.querySelector<HTMLTextAreaElement>("[data-markdown]")!;
   const titleField = editor.querySelector<HTMLTextAreaElement>("[data-title]")!;
   const slugField = editor.querySelector<HTMLInputElement>("[data-slug]")!;
-  const preview = editor.querySelector<HTMLElement>("[data-preview-output]")!;
   const previewSection = editor.querySelector<HTMLElement>("[data-preview]")!;
+  const previewFrame = editor.querySelector<HTMLIFrameElement>("[data-preview-frame]")!;
+  const previewNote = editor.querySelector<HTMLElement>("[data-preview-note]");
   const previewToggle = editor.querySelector<HTMLButtonElement>("[data-preview-toggle]")!;
   const documentSection = editor.querySelector<HTMLElement>('[data-media-drop="body"]')!;
   const drawer = editor.querySelector<HTMLDialogElement>("[data-drawer]")!;
@@ -602,6 +603,8 @@ if (editor) {
     count: editor.dataset.msgCount ?? "{chars} characters · {words} words",
     shortcuts: editor.dataset.msgShortcuts ?? "",
     slugInvalid: editor.dataset.msgSlugInvalid ?? "The slug may only use lowercase letters, digits, and hyphens.",
+    shareCopied: editor.dataset.msgShareCopied ?? "Copied",
+    shareExpires: editor.dataset.msgShareExpires ?? "Valid until {time}",
   };
   let autosaveTimer: number | undefined;
   let saving = false;
@@ -822,6 +825,7 @@ if (editor) {
         editor.append(version);
         editor.action = `/admin/content/${result.id}/`;
         history.replaceState(null, "", `/admin/content/${result.id}/edit/`);
+        previewFrame.dataset.previewUrl = `/admin/content/${result.id}/preview/`;
       }
       version.value = String(result.version);
       const trashVersion = document.querySelector<HTMLInputElement>("[data-trash-version]");
@@ -843,6 +847,7 @@ if (editor) {
           msg.savedPending.replace("{time}", time),
         );
       }
+      schedulePreviewReload();
     } catch (reason) {
       saveState.dataset.error = "true";
       saveState.textContent = describeFailure(reason, failures);
@@ -902,23 +907,80 @@ if (editor) {
     });
   }
 
-  previewToggle.addEventListener("click", async () => {
-    const showing = !previewSection.hidden;
-    if (showing) {
-      previewSection.hidden = true;
-      documentSection.hidden = false;
-      previewToggle.setAttribute("aria-pressed", "false");
+  // The preview is the real page in a frame: beside the text on a wide
+  // screen, in place of it on a narrow one, reloaded after every save.
+  const wide = matchMedia("(min-width: 1100px)");
+  let previewOpen = false;
+  let previewTimer: number | undefined;
+  const loadPreview = (): void => {
+    const url = previewFrame.dataset.previewUrl;
+    if (!url) {
+      if (previewNote) previewNote.hidden = false;
       return;
     }
-    try {
-      const result = await post("/admin/preview/", { csrf, markdown: textarea.value });
-      preview.innerHTML = result.html;
-    } catch (reason) {
-      preview.textContent = describeFailure(reason, failures);
+    if (previewNote) previewNote.hidden = true;
+    if (previewFrame.getAttribute("src") === url) {
+      previewFrame.contentWindow?.location.reload();
+    } else {
+      previewFrame.src = url;
     }
-    documentSection.hidden = true;
-    previewSection.hidden = false;
-    previewToggle.setAttribute("aria-pressed", "true");
+  };
+  const layoutPreview = (): void => {
+    previewSection.hidden = !previewOpen;
+    documentSection.hidden = previewOpen && !wide.matches;
+    editor.dataset.previewOpen = String(previewOpen);
+    previewToggle.setAttribute("aria-pressed", String(previewOpen));
+  };
+  const schedulePreviewReload = (): void => {
+    if (!previewOpen) return;
+    clearTimeout(previewTimer);
+    previewTimer = window.setTimeout(loadPreview, 600);
+  };
+  previewToggle.addEventListener("click", () => {
+    previewOpen = !previewOpen;
+    layoutPreview();
+    if (previewOpen) loadPreview();
+  });
+  wide.addEventListener("change", layoutPreview);
+
+  // Share links: the form still posts on its own without scripting; with it,
+  // the link lands in the drawer with a copy button.
+  const shareForm = document.querySelector<HTMLFormElement>("[data-share-form]");
+  const shareResult = editor.querySelector<HTMLElement>("[data-share-result]");
+  const shareUrl = editor.querySelector<HTMLOutputElement>("[data-share-url]");
+  const shareExpires = editor.querySelector<HTMLElement>("[data-share-expires]");
+  const shareCopy = editor.querySelector<HTMLButtonElement>("[data-share-copy]");
+  shareForm?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      const response = await fetch(shareForm.action, {
+        method: "POST",
+        headers: { Accept: "application/json" },
+        body: new URLSearchParams(new FormData(shareForm) as unknown as Record<string, string>),
+      });
+      if (!response.ok) throw new RequestFailure(response.status, await response.text());
+      const link = await response.json();
+      if (shareUrl) shareUrl.value = `${location.origin}${link.url}`;
+      if (shareExpires) {
+        shareExpires.textContent = msg.shareExpires.replace(
+          "{time}",
+          formatLocalDateTime(new Date(link.expires_at), language),
+        );
+      }
+      if (shareResult) shareResult.hidden = false;
+      if (shareCopy) shareCopy.textContent = editor.dataset.msgShareCopy ?? shareCopy.textContent;
+    } catch (reason) {
+      saveState.dataset.error = "true";
+      saveState.textContent = describeFailure(reason, failures);
+    }
+  });
+  shareCopy?.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(shareUrl?.value ?? "");
+      shareCopy.textContent = msg.shareCopied;
+    } catch {
+      shareUrl?.focus();
+    }
   });
 
   const setDrawer = (open: boolean): void => {

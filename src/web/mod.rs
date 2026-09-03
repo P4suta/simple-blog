@@ -35,6 +35,7 @@ use crate::{
             MediaRepository, MediaRepositoryError, RepositoryError, RevisionMediaReferences,
             SiteRepository,
         },
+        preview::PreviewLinkService,
         publication::{
             PublicationOutcome, PublicationService, PublicationServiceError, RetrySchedule,
             SiteState, publication_delay,
@@ -68,6 +69,7 @@ pub struct AppState {
     pub(crate) auth: AuthService,
     pub(crate) auth_rate_limiter: AuthRateLimiter,
     pub(crate) accounts: PasskeyAccountService,
+    pub(crate) preview_links: PreviewLinkService,
     pub(crate) webauthn: Arc<PasskeyCeremony>,
     pub(crate) media_repository: Arc<dyn MediaRepository>,
     pub(crate) revision_media: Arc<dyn RevisionMediaReferences>,
@@ -102,7 +104,8 @@ impl AppState {
         );
         let entropy = Arc::new(SystemEntropy);
         let auth = AuthService::new(repository.clone(), entropy.clone());
-        let accounts = PasskeyAccountService::new(repository.clone(), entropy);
+        let accounts = PasskeyAccountService::new(repository.clone(), entropy.clone());
+        let preview_links = PreviewLinkService::new(repository.clone(), entropy);
         let site_service = SiteService::new(repository.clone());
         let webauthn = Arc::new(PasskeyCeremony::new(&config.public_url, "Simple Blog")?);
         let content: Arc<dyn ContentRepository> = repository.clone();
@@ -130,6 +133,7 @@ impl AppState {
             auth,
             auth_rate_limiter: AuthRateLimiter::authentication_default(),
             accounts,
+            preview_links,
             webauthn,
             media_repository,
             revision_media,
@@ -311,6 +315,10 @@ impl AppState {
         self.config.public_url.scheme() == "https"
     }
 
+    fn compiler(&self) -> &SiteCompiler {
+        self.publication.compiler()
+    }
+
     async fn theme_media_url(&self, id: Option<&str>) -> Result<Option<String>, WebError> {
         let Some(id) = id else {
             return Ok(None);
@@ -369,6 +377,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/admin/", get(admin::dashboard))
         .route("/admin/publish/", post(admin::publish_site))
+        .route("/admin/preview/home/", get(admin::preview_home))
+        .route("/admin/share/{token}/", get(admin::shared_preview))
+        .route("/admin/assets/theme.css", get(admin::theme_css))
+        .route("/admin/assets/prefs.js", get(admin::admin_prefs_js))
         .route("/admin/login/", get(admin::login_page))
         .route("/admin/logout/", post(admin::logout))
         .route("/admin/setup/", get(admin::setup_page))
@@ -384,8 +396,16 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/admin/content/new/", get(admin::new_content))
         .route("/admin/content/", post(admin::create_content))
-        .route("/admin/preview/", post(admin::preview_markdown))
         .route("/admin/content/{id}/edit/", get(admin::edit_content))
+        .route("/admin/content/{id}/preview/", get(admin::preview_content))
+        .route(
+            "/admin/content/{id}/share/",
+            post(admin::issue_preview_link),
+        )
+        .route(
+            "/admin/content/{id}/share/revoke/",
+            post(admin::revoke_preview_links),
+        )
         .route("/admin/content/{id}/", post(admin::update_content))
         .route("/admin/content/{id}/trash/", post(admin::trash_content))
         .route("/admin/content/{id}/restore/", post(admin::restore_content))
@@ -431,6 +451,11 @@ pub fn router(state: AppState) -> Router {
         .layer(middleware::from_fn_with_state(state, perimeter))
         .layer(middleware::from_fn(observability::request_trace))
 }
+
+const DEFAULT_CSP: &str = "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
+/// The same policy with same-origin framing allowed, for the owner preview
+/// the editor embeds.
+pub(crate) const EMBEDDABLE_CSP: &str = "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'self'; form-action 'self'";
 
 /// Set by the perimeter on admin page loads so a login can return the writer
 /// to the page they asked for. Always overwritten, so a client cannot supply it.
@@ -483,12 +508,11 @@ fn security_headers(mut response: Response, secure: bool, private: bool) -> Resp
         header::REFERRER_POLICY,
         HeaderValue::from_static("strict-origin-when-cross-origin"),
     );
-    headers.insert(
-        header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static(
-            "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
-        ),
-    );
+    // A handler that must be framed (the editor preview) sets its own policy
+    // first; everything else forbids framing.
+    headers
+        .entry(header::CONTENT_SECURITY_POLICY)
+        .or_insert(HeaderValue::from_static(DEFAULT_CSP));
     headers.insert(
         header::HeaderName::from_static("permissions-policy"),
         HeaderValue::from_static("camera=(), microphone=(), geolocation=(), payment=()"),
@@ -537,6 +561,8 @@ pub enum WebError {
     #[error(transparent)]
     Publication(#[from] PublicationServiceError),
     #[error(transparent)]
+    Compiler(#[from] SiteCompilerError),
+    #[error(transparent)]
     Release(#[from] ReleaseError),
     #[error("internal web error: {0}")]
     Internal(String),
@@ -576,6 +602,7 @@ impl WebError {
             Self::Media(_) => "media.processing",
             Self::MediaRepository(_) => "media.storage",
             Self::Publication(_) => "publication.build",
+            Self::Compiler(_) => "site.compile",
             Self::Release(ReleaseError::Integrity { .. }) => "release.integrity",
             Self::Release(ReleaseError::NotFound { .. }) => "release.not_found",
             Self::Release(_) => "release.read",

@@ -112,6 +112,31 @@ impl SiteDates {
     }
 }
 
+/// Where a preview loads its stylesheet and reader-preferences script from:
+/// the live admin copies rather than the fingerprinted release assets.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreviewAssets {
+    pub css_url: String,
+    pub prefs_js_url: String,
+}
+
+impl PreviewAssets {
+    fn apply(self, assets: &mut ThemeAssets, meta: &mut PageMeta) {
+        assets.css_url = self.css_url;
+        assets.prefs_js_url = self.prefs_js_url;
+        meta.preview = true;
+        meta.noindex = true;
+    }
+}
+
+fn media_lookup(snapshot: &SiteSnapshotV1) -> HashMap<&str, &MediaAsset> {
+    snapshot
+        .media
+        .iter()
+        .map(|asset| (asset.id.as_str(), asset))
+        .collect()
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PublicRedirect {
     pub from: Slug,
@@ -181,11 +206,7 @@ impl SiteCompiler {
             .filter(|content| content.kind == ContentKind::Post)
             .cloned()
             .collect::<Vec<_>>();
-        let media = snapshot
-            .media
-            .iter()
-            .map(|asset| (asset.id.as_str(), asset))
-            .collect::<HashMap<_, _>>();
+        let media = media_lookup(snapshot);
 
         let mut builder = match previous {
             Some(previous) => {
@@ -253,75 +274,71 @@ impl SiteCompiler {
         Ok(release)
     }
 
+    /// One piece through the public templates with the live stylesheet, as the
+    /// owner (or a preview-link holder) sees it before publication. Neighbours
+    /// and reader interactions are left out; the page is marked `noindex`.
+    pub fn render_content_preview(
+        &self,
+        snapshot: &SiteSnapshotV1,
+        content: &Content,
+        origin: &str,
+        assets: PreviewAssets,
+    ) -> Result<String, SiteCompilerError> {
+        let media = media_lookup(snapshot);
+        let dates = SiteDates::new(&self.translations, &snapshot.settings)?;
+        let scope = Scope {
+            snapshot,
+            origin,
+            media: &media,
+            dates: &dates,
+        };
+        let mut context = self.content_context(&scope, content, None, None);
+        assets.apply(&mut context.assets, &mut context.meta);
+        Ok(self.templates.render("public/content.html", context)?)
+    }
+
+    /// The first home page with the live stylesheet, for the theme editor.
+    pub fn render_home_preview(
+        &self,
+        snapshot: &SiteSnapshotV1,
+        origin: &str,
+        assets: PreviewAssets,
+    ) -> Result<String, SiteCompilerError> {
+        let mut public = snapshot
+            .contents
+            .iter()
+            .filter(|content| content.publication.is_visible_at(snapshot.effective_at))
+            .cloned()
+            .collect::<Vec<_>>();
+        public.sort_by(public_order);
+        let posts = public
+            .into_iter()
+            .filter(|content| content.kind == ContentKind::Post)
+            .collect::<Vec<_>>();
+        let media = media_lookup(snapshot);
+        let dates = SiteDates::new(&self.translations, &snapshot.settings)?;
+        let scope = Scope {
+            snapshot,
+            origin,
+            media: &media,
+            dates: &dates,
+        };
+        let page_count = posts.len().div_ceil(HOME_PAGE_SIZE).max(1);
+        let mut context = self.home_context(&scope, &posts, 1, page_count);
+        assets.apply(&mut context.assets, &mut context.meta);
+        Ok(self.templates.render("public/home.html", context)?)
+    }
+
     fn add_home(
         &self,
         mut builder: ReleaseBuilder,
         scope: &Scope<'_>,
         posts: &[Content],
     ) -> Result<ReleaseBuilder, SiteCompilerError> {
-        let Scope {
-            snapshot,
-            origin,
-            dates,
-            ..
-        } = *scope;
-        let locale = snapshot.settings.locale;
         let page_count = posts.len().div_ceil(HOME_PAGE_SIZE).max(1);
         for number in 1..=page_count {
-            let start = (number - 1) * HOME_PAGE_SIZE;
-            let end = (start + HOME_PAGE_SIZE).min(posts.len());
             let path = home_path(number);
-            let newer_url = match number {
-                1 => None,
-                2 => Some("/".to_owned()),
-                other => Some(home_path(other - 1)),
-            };
-            let older_url = (number < page_count).then(|| home_path(number + 1));
-            let number_text = number.to_string();
-            let count_text = page_count.to_string();
-            let title = if number == 1 {
-                MetaTitle::Site
-            } else {
-                MetaTitle::Page(self.translations.format(
-                    locale,
-                    "public.page_number",
-                    &[("number", &number_text)],
-                ))
-            };
-            let mut context = self.theme_context(
-                scope,
-                PagePresentation {
-                    path: &path,
-                    title,
-                    description: None,
-                    og_type: "website",
-                },
-                CardsPage {
-                    posts: posts[start..end]
-                        .iter()
-                        .map(|post| ContentCard::new(post, dates))
-                        .collect(),
-                    pager: PagerView {
-                        number,
-                        count: page_count,
-                        newer_url: newer_url.clone(),
-                        older_url: older_url.clone(),
-                        archive_url: (number == page_count).then(|| "/archive/".to_owned()),
-                        status: (page_count > 1).then(|| {
-                            self.translations.format(
-                                locale,
-                                "public.page_of",
-                                &[("number", &number_text), ("count", &count_text)],
-                            )
-                        }),
-                    },
-                },
-            );
-            context.meta.prev_url = newer_url;
-            context.meta.next_url = older_url;
-            if number == 1 {
-                context.meta.json_ld = Some(site_json_ld(snapshot, origin));
-            }
+            let context = self.home_context(scope, posts, number, page_count);
             let html = self.templates.render("public/home.html", context)?;
             builder = builder.asset(&path, html.into_bytes(), "text/html; charset=utf-8", None)?;
             if number > 1 {
@@ -333,6 +350,78 @@ impl SiteCompiler {
             .redirect("/page/1/", "/", 308)?
             .redirect("/page/1", "/", 308)?;
         Ok(builder)
+    }
+
+    /// One page of the home list: twenty cards and the pager around them.
+    fn home_context(
+        &self,
+        scope: &Scope<'_>,
+        posts: &[Content],
+        number: usize,
+        page_count: usize,
+    ) -> ThemeContext<CardsPage> {
+        let Scope {
+            snapshot,
+            origin,
+            dates,
+            ..
+        } = *scope;
+        let locale = snapshot.settings.locale;
+        let start = (number - 1) * HOME_PAGE_SIZE;
+        let end = (start + HOME_PAGE_SIZE).min(posts.len());
+        let path = home_path(number);
+        let newer_url = match number {
+            1 => None,
+            2 => Some("/".to_owned()),
+            other => Some(home_path(other - 1)),
+        };
+        let older_url = (number < page_count).then(|| home_path(number + 1));
+        let number_text = number.to_string();
+        let count_text = page_count.to_string();
+        let title = if number == 1 {
+            MetaTitle::Site
+        } else {
+            MetaTitle::Page(self.translations.format(
+                locale,
+                "public.page_number",
+                &[("number", &number_text)],
+            ))
+        };
+        let mut context = self.theme_context(
+            scope,
+            PagePresentation {
+                path: &path,
+                title,
+                description: None,
+                og_type: "website",
+            },
+            CardsPage {
+                posts: posts[start..end]
+                    .iter()
+                    .map(|post| ContentCard::new(post, dates))
+                    .collect(),
+                pager: PagerView {
+                    number,
+                    count: page_count,
+                    newer_url: newer_url.clone(),
+                    older_url: older_url.clone(),
+                    archive_url: (number == page_count).then(|| "/archive/".to_owned()),
+                    status: (page_count > 1).then(|| {
+                        self.translations.format(
+                            locale,
+                            "public.page_of",
+                            &[("number", &number_text), ("count", &count_text)],
+                        )
+                    }),
+                },
+            },
+        );
+        context.meta.prev_url = newer_url;
+        context.meta.next_url = older_url;
+        if number == 1 {
+            context.meta.json_ld = Some(site_json_ld(snapshot, origin));
+        }
+        context
     }
 
     fn add_archives(
@@ -506,12 +595,6 @@ impl SiteCompiler {
         public: &[Content],
         posts: &[Content],
     ) -> Result<ReleaseBuilder, SiteCompilerError> {
-        let Scope {
-            snapshot,
-            origin,
-            media,
-            dates,
-        } = *scope;
         let post_positions = posts
             .iter()
             .enumerate()
@@ -526,52 +609,8 @@ impl SiteCompiler {
                         let older = posts.get(index + 1);
                         (older.map(content_link), newer.map(content_link))
                     });
-            let cover = content
-                .cover_media_id
-                .as_deref()
-                .and_then(|id| media.get(id).copied())
-                .map(CoverView::from);
             let path = format!("/{}/", content.slug);
-            let title = content.seo_title.clone().map_or_else(
-                || MetaTitle::Page(content.title.clone()),
-                MetaTitle::Override,
-            );
-            let description = content
-                .seo_description
-                .clone()
-                .unwrap_or_else(|| content.summary.clone());
-            let is_post = content.kind == ContentKind::Post;
-            let mut context = self.theme_context(
-                scope,
-                PagePresentation {
-                    path: &path,
-                    title,
-                    description: Some(description),
-                    og_type: if is_post { "article" } else { "website" },
-                },
-                self.content_page(scope, content, cover.clone(), older, newer),
-            );
-            let image = cover.map(|cover| MetaImage {
-                url: format!("{origin}{}", cover.original_url),
-                width: cover.width,
-                height: cover.height,
-                alt: cover.alt_text,
-            });
-            context.meta.image.clone_from(&image);
-            if is_post {
-                let published = content.publication.publish_at();
-                context.meta.published_time = published.map(|at| dates.iso(at));
-                context.meta.modified_time = Some(dates.iso(content.updated_at));
-                context.meta.article_tags =
-                    content.tags.iter().map(|tag| tag.name.clone()).collect();
-            }
-            context.meta.json_ld = Some(content_json_ld(
-                snapshot,
-                origin,
-                content,
-                image.as_ref().map(|image| image.url.as_str()),
-                dates,
-            ));
+            let context = self.content_context(scope, content, older, newer);
             let html = self.templates.render("public/content.html", context)?;
             builder = builder
                 .asset_with_metadata(
@@ -585,6 +624,69 @@ impl SiteCompiler {
                 .redirect(&format!("/{}", content.slug), &path, 308)?;
         }
         Ok(builder)
+    }
+
+    /// Everything one content page carries: the body view plus the metadata
+    /// in its head. Shared by the release and the owner preview.
+    fn content_context(
+        &self,
+        scope: &Scope<'_>,
+        content: &Content,
+        older: Option<ContentLink>,
+        newer: Option<ContentLink>,
+    ) -> ThemeContext<ContentPage> {
+        let Scope {
+            snapshot,
+            origin,
+            media,
+            dates,
+        } = *scope;
+        let cover = content
+            .cover_media_id
+            .as_deref()
+            .and_then(|id| media.get(id).copied())
+            .map(CoverView::from);
+        let path = format!("/{}/", content.slug);
+        let title = content.seo_title.clone().map_or_else(
+            || MetaTitle::Page(content.title.clone()),
+            MetaTitle::Override,
+        );
+        let description = content
+            .seo_description
+            .clone()
+            .unwrap_or_else(|| content.summary.clone());
+        let is_post = content.kind == ContentKind::Post;
+        let mut context = self.theme_context(
+            scope,
+            PagePresentation {
+                path: &path,
+                title,
+                description: Some(description),
+                og_type: if is_post { "article" } else { "website" },
+            },
+            self.content_page(scope, content, cover.clone(), older, newer),
+        );
+        let image = cover.map(|cover| MetaImage {
+            url: format!("{origin}{}", cover.original_url),
+            width: cover.width,
+            height: cover.height,
+            alt: cover.alt_text,
+        });
+        context.meta.image.clone_from(&image);
+        if is_post {
+            let published = content.publication.publish_at();
+            context.meta.published_time = published.map(|at| dates.iso(at));
+            context.meta.modified_time = Some(dates.iso(content.updated_at));
+            context.meta.article_tags = content.tags.iter().map(|tag| tag.name.clone()).collect();
+        }
+        context.meta.json_ld = Some(content_json_ld(
+            snapshot,
+            origin,
+            content,
+            image.as_ref().map(|image| image.url.as_str()),
+            dates,
+        ));
+        context
     }
 
     fn content_page(
@@ -922,8 +1024,11 @@ impl SiteCompiler {
             assets: ThemeAssets {
                 logo_url: media_url(snapshot.settings.logo_media_id.as_deref()),
                 favicon_url: media_url(snapshot.settings.favicon_media_id.as_deref()),
-                css_version: fingerprint(&snapshot.settings.custom_css),
-                prefs_js_version: fingerprint(PREFS_JS),
+                css_url: format!(
+                    "/assets/site.css?v={}",
+                    fingerprint(&snapshot.settings.custom_css)
+                ),
+                prefs_js_url: format!("/assets/prefs.js?v={}", fingerprint(PREFS_JS)),
             },
             navigation: snapshot.navigation.clone(),
             meta: PageMeta {
@@ -935,6 +1040,7 @@ impl SiteCompiler {
                 og_locale: snapshot.settings.locale.og_locale().to_owned(),
                 image: None,
                 noindex: false,
+                preview: false,
                 published_time: None,
                 modified_time: None,
                 article_tags: Vec::new(),

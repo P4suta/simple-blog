@@ -255,6 +255,8 @@ pub struct PageMeta {
     pub image: Option<MetaImage>,
     /// Utility pages (search, not found) ask crawlers to stay away.
     pub noindex: bool,
+    /// An owner or shared preview: no reader interactions, never indexed.
+    pub preview: bool,
     /// RFC 3339 instants for `article:*` metadata; posts only.
     pub published_time: Option<String>,
     pub modified_time: Option<String>,
@@ -287,11 +289,11 @@ pub struct AlternateFeed {
 pub struct ThemeAssets {
     pub logo_url: Option<String>,
     pub favicon_url: Option<String>,
-    /// Cache-busting fingerprint of the current custom CSS, used in the
-    /// stylesheet URL so long-lived caches survive CSS edits.
-    pub css_version: String,
-    /// Fingerprint of the reader-preferences script, same caching scheme.
-    pub prefs_js_version: String,
+    /// The stylesheet URL: a fingerprinted release asset on the public site,
+    /// the live stylesheet in an owner preview.
+    pub css_url: String,
+    /// The reader-preferences script URL, same scheme.
+    pub prefs_js_url: String,
 }
 
 /// The only public-theme boundary. Templates never receive repositories or ad-hoc maps.

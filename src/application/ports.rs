@@ -7,7 +7,9 @@ use chrono::{DateTime, Utc};
 use thiserror::Error;
 
 use crate::application::site_compiler::SiteSnapshotV1;
-use crate::domain::auth::{SecretHash, SessionRecord, SetupPurpose, StoredPasskey};
+use crate::domain::auth::{
+    PreviewLinkRecord, SecretHash, SessionRecord, SetupPurpose, StoredPasskey,
+};
 use crate::domain::content::{
     Content, ContentDraft, ContentId, ContentKind, ContentRevision, SaveIntent, Slug, Tag,
 };
@@ -384,6 +386,22 @@ pub trait AuthRepository: Send + Sync {
         session: &SessionRecord,
         now: DateTime<Utc>,
     ) -> Result<bool, AuthError>;
+}
+
+/// Bearer capabilities that open one unpublished piece to whoever holds them.
+#[async_trait]
+pub trait PreviewLinkRepository: Send + Sync {
+    async fn store_preview_link(&self, link: &PreviewLinkRecord) -> Result<(), AuthError>;
+
+    /// The piece a live link opens; `None` when unknown or expired.
+    async fn find_preview_link(
+        &self,
+        token_hash: SecretHash,
+        now: DateTime<Utc>,
+    ) -> Result<Option<ContentId>, AuthError>;
+
+    /// Ends every link of one piece; answers how many existed.
+    async fn revoke_preview_links(&self, content_id: ContentId) -> Result<u64, AuthError>;
 }
 
 pub struct SetupRegistration<'a> {

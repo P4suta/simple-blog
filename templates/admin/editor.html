@@ -33,6 +33,8 @@
       data-msg-error-rate-limited="{{ t["editor.error_rate_limited"] }}"
       data-msg-error-server="{{ t["editor.error_server"] }}"
       data-msg-error-offline="{{ t["editor.error_offline"] }}"
+      data-msg-share-copied="{{ t["editor.share_copied"] }}"
+      data-msg-share-expires="{{ t["editor.share_expires"] }}"
       data-site-zone="{{ site_zone }}">
   <input type="hidden" name="csrf" value="{{ csrf }}">
   {% if version %}<input type="hidden" name="version" value="{{ version }}">{% endif %}
@@ -62,8 +64,11 @@
     <textarea name="body_markdown" data-markdown required{% if trashed %} readonly{% endif %}>{{ content.body_markdown }}</textarea>
     <p class="editor-drop-hint" data-media-pick><small>{{ t["editor.body_drop_hint"] }}</small></p>
   </div>
-  <section class="editor-document editor-preview" data-preview hidden>
-    <div class="prose" data-preview-output></div>
+  {# The real page, through the public templates and the current stylesheet,
+     served by the same server: what the reader will get, not an imitation. #}
+  <section class="editor-preview" data-preview hidden>
+    <iframe class="editor-preview-frame" data-preview-frame title="{{ t["editor.preview"] }}"{% if content_id %} data-preview-url="/admin/content/{{ content_id }}/preview/"{% endif %}></iframe>
+    <p class="editor-preview-note" data-preview-note hidden>{{ t["editor.preview_needs_save"] }}</p>
   </section>
   <dialog class="editor-drawer" data-drawer aria-label="{{ t["editor.details"] }}">
     <label><span>{{ t["editor.kind"] }}</span><select name="kind"><option value="post"{% if content.kind == 'post' %} selected{% endif %}>Post</option><option value="page"{% if content.kind == 'page' %} selected{% endif %}>Page</option></select></label>
@@ -81,6 +86,7 @@
       <button type="submit" form="cover-alt-form" data-cover-alt-save{% if not cover_url %} hidden{% endif %}>{{ t["editor.cover_alt_save"] }}</button>
     </section>
     <details><summary>{{ t["editor.seo"] }}</summary><label><span>{{ t["editor.seo_title"] }}</span><input name="seo_title" value="{{ content.seo_title }}" maxlength="70"></label><label><span>{{ t["editor.seo_description"] }}</span><textarea name="seo_description" maxlength="200">{{ content.seo_description }}</textarea></label></details>
+    {% if content_id and not trashed %}<details class="share" data-share><summary>{{ t["editor.share"] }}</summary><p>{{ t["editor.share_note"] }}</p><p><button type="submit" form="share-form">{{ t["editor.share_issue"] }}</button> <button type="submit" form="share-revoke-form">{{ t["editor.share_revoke"] }}</button></p><p class="share-url" data-share-result hidden><output data-share-url></output> <button type="button" data-share-copy>{{ t["editor.share_copy"] }}</button> <small data-share-expires></small></p></details>{% endif %}
     {% if revisions %}<details><summary>{{ t["editor.history"] }}</summary><ol class="revision-list">{% for revision in revisions %}<li><a href="/admin/content/{{ content_id }}/revisions/{{ revision.id }}/"><span>{{ revision.intent }}</span> <time datetime="{{ revision.created_at }}">{{ revision.created_at }}</time></a></li>{% endfor %}</ol></details>{% endif %}
     {% if content_id and not trashed %}
     <details class="danger-zone"><summary>{{ t["editor.trash"] }}</summary><p>{{ t["editor.trash_note"] }}</p><button type="submit" class="danger-button" form="trash-form">{{ t["editor.trash_confirm"] }}</button></details>
@@ -95,5 +101,7 @@
 {# A separate form: nested forms are invalid HTML, and the button above reaches
    it through its form attribute so the confirmation still lives in the drawer. #}
 <form id="trash-form" method="post" action="/admin/content/{{ content_id }}/trash/" hidden><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="version" value="{{ version }}" data-trash-version></form>
+<form id="share-form" method="post" action="/admin/content/{{ content_id }}/share/" hidden data-share-form><input type="hidden" name="csrf" value="{{ csrf }}"></form>
+<form id="share-revoke-form" method="post" action="/admin/content/{{ content_id }}/share/revoke/" hidden><input type="hidden" name="csrf" value="{{ csrf }}"></form>
 {% endif %}
 {% endblock %}

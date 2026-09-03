@@ -12,15 +12,15 @@ use crate::{
     application::ports::{
         AuthError, AuthRepository, ContentLink, ContentRepository, Engagement,
         EngagementRepository, LikeRepository, MediaRepository, MediaRepositoryError,
-        PasskeyRepository, PortableRepository, PreparedContent, PublicSnapshotRepository,
-        PublicationState, RepositoryError, RevisionMediaReferences, SearchHit, SearchRepository,
-        SetupRegistration, SiteRepository,
+        PasskeyRepository, PortableRepository, PreparedContent, PreviewLinkRepository,
+        PublicSnapshotRepository, PublicationState, RepositoryError, RevisionMediaReferences,
+        SearchHit, SearchRepository, SetupRegistration, SiteRepository,
     },
     application::{
         media_gc,
         site_compiler::{PublicRedirect, SiteSnapshotV1},
     },
-    domain::auth::{SecretHash, SessionRecord, SetupPurpose, StoredPasskey},
+    domain::auth::{PreviewLinkRecord, SecretHash, SessionRecord, SetupPurpose, StoredPasskey},
     domain::content::{
         Content, ContentId, ContentKind, ContentRevision, Publication, SaveIntent, Slug, Tag,
     },
@@ -1833,6 +1833,7 @@ async fn clear_portable_state(
 ) -> Result<(), RepositoryError> {
     for statement in [
         "DELETE FROM sessions",
+        "DELETE FROM preview_links",
         "DELETE FROM setup_tokens",
         "DELETE FROM recovery_codes",
         "DELETE FROM passkeys",
@@ -2109,6 +2110,49 @@ async fn insert_portable_owner(
         .map_err(storage)?;
     }
     Ok(())
+}
+
+#[async_trait]
+impl PreviewLinkRepository for SqliteRepository {
+    async fn store_preview_link(&self, link: &PreviewLinkRecord) -> Result<(), AuthError> {
+        sqlx::query(
+            "INSERT INTO preview_links (token_hash, content_id, created_at, expires_at)
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(link.token_hash.as_bytes().as_slice())
+        .bind(link.content_id.as_i64())
+        .bind(link.created_at)
+        .bind(link.expires_at)
+        .execute(&self.pool)
+        .await
+        .map_err(auth_storage)?;
+        Ok(())
+    }
+
+    async fn find_preview_link(
+        &self,
+        token_hash: SecretHash,
+        now: DateTime<Utc>,
+    ) -> Result<Option<ContentId>, AuthError> {
+        let content_id: Option<i64> = sqlx::query_scalar(
+            "SELECT content_id FROM preview_links WHERE token_hash = ? AND expires_at > ?",
+        )
+        .bind(token_hash.as_bytes().as_slice())
+        .bind(now)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(auth_storage)?;
+        Ok(content_id.map(ContentId::from_i64))
+    }
+
+    async fn revoke_preview_links(&self, content_id: ContentId) -> Result<u64, AuthError> {
+        let result = sqlx::query("DELETE FROM preview_links WHERE content_id = ?")
+            .bind(content_id.as_i64())
+            .execute(&self.pool)
+            .await
+            .map_err(auth_storage)?;
+        Ok(result.rows_affected())
+    }
 }
 
 #[async_trait]

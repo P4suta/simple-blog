@@ -166,6 +166,13 @@ where
         .await
     }
 
+    /// The compiler this service publishes with, for previews that must
+    /// render exactly what a release would.
+    #[must_use]
+    pub const fn compiler(&self) -> &SiteCompiler {
+        &self.compiler
+    }
+
     pub async fn publication_state(&self) -> Result<PublicationState, PublicationServiceError> {
         Ok(self.repository.publication_state().await?)
     }

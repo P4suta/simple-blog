@@ -77,6 +77,10 @@ impl Templates {
                 include_str!("../../templates/admin/editor.html"),
             ),
             (
+                "admin/share_link.html",
+                include_str!("../../templates/admin/share_link.html"),
+            ),
+            (
                 "admin/error.html",
                 include_str!("../../templates/admin/error.html"),
             ),

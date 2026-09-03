@@ -402,7 +402,10 @@ fn new_session(
     Ok((SessionSecrets { session, csrf }, record))
 }
 
-fn random_token(entropy: &dyn EntropySource, byte_count: usize) -> Result<SecretToken, AuthError> {
+pub(crate) fn random_token(
+    entropy: &dyn EntropySource,
+    byte_count: usize,
+) -> Result<SecretToken, AuthError> {
     let mut bytes = vec![0_u8; byte_count];
     entropy
         .fill(&mut bytes)

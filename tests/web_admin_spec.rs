@@ -427,7 +427,7 @@ async fn settings_and_ordered_navigation_work_without_javascript_and_require_csr
     assert!(public.contains("href=\"/archive/\""));
     assert!(public.contains("https:&#x2f;&#x2f;www.rust-lang.org&#x2f;"));
     assert!(public.contains("lang=\"en\""));
-    assert!(public.contains("/assets/site.css?v="));
+    assert!(public.contains("&#x2f;assets&#x2f;site.css?v="));
 
     let stylesheet = harness
         .send(Method::GET, "/assets/site.css", None, Body::empty(), None)
@@ -779,54 +779,6 @@ async fn cover_media_can_be_selected_through_the_normal_editor_form() {
     assert!(editor.contains("name=\"cover_media_id\""));
     assert!(editor.contains(&format!("value=\"{media_id}\"")));
     assert!(editor.contains("data-media-drop"));
-}
-
-#[tokio::test]
-async fn live_preview_uses_the_same_safe_markdown_boundary_and_requires_csrf() {
-    let harness = Harness::new().await;
-    let (cookie, csrf) = harness.session_cookie().await;
-    let payload = serde_json::json!({
-        "csrf": csrf,
-        "markdown": "# Preview\n\n<script>alert(1)</script>\n\n- [x] safe"
-    })
-    .to_string();
-    let preview = harness
-        .send(
-            Method::POST,
-            "/admin/preview/",
-            Some("application/json"),
-            payload,
-            Some(&cookie),
-        )
-        .await;
-    assert_eq!(preview.status(), StatusCode::OK);
-    let preview: serde_json::Value = serde_json::from_str(&text(preview).await).unwrap();
-    let html = preview["html"].as_str().unwrap();
-    assert!(html.contains("<h1 id=\"user-content-preview\">"));
-    assert!(html.contains("type=\"checkbox\""));
-    assert!(!html.contains("<script"));
-
-    let rejected = harness
-        .send(
-            Method::POST,
-            "/admin/preview/",
-            Some("application/json"),
-            serde_json::json!({ "csrf": "wrong", "markdown": "body" }).to_string(),
-            Some(&cookie),
-        )
-        .await;
-    assert_eq!(rejected.status(), StatusCode::FORBIDDEN);
-
-    let editor = harness
-        .send(
-            Method::GET,
-            "/admin/content/new/",
-            None,
-            Body::empty(),
-            Some(&cookie),
-        )
-        .await;
-    assert!(text(editor).await.contains("data-preview"));
 }
 
 #[tokio::test]
@@ -2750,4 +2702,338 @@ async fn theme_reset_keeps_a_one_slot_undo() {
     )
     .await;
     assert_eq!(stylesheet, "body { color: teal; }");
+}
+
+// ---- Preview through the public theme, and shareable links -----------------
+
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the preview, its framing policy and its assets in one scenario"
+)]
+async fn owner_preview_renders_the_current_draft_through_the_public_theme() {
+    let harness = Harness::new().await;
+    let (cookie, _csrf) = harness.session_cookie().await;
+    let piece = harness
+        .contents
+        .create(
+            ContentDraft {
+                body_markdown: "First draft".into(),
+                ..draft("previewed")
+            },
+            SaveIntent::Explicit,
+            Utc::now(),
+        )
+        .await
+        .unwrap();
+    let path = format!("/admin/content/{}/preview/", piece.id);
+
+    let anonymous = harness
+        .send(Method::GET, &path, None, Body::empty(), None)
+        .await;
+    assert_eq!(anonymous.status(), StatusCode::SEE_OTHER);
+
+    let preview = harness
+        .send(Method::GET, &path, None, Body::empty(), Some(&cookie))
+        .await;
+    assert_eq!(preview.status(), StatusCode::OK);
+    assert!(
+        preview.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("text/html")
+    );
+    let csp = preview.headers()[header::CONTENT_SECURITY_POLICY]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert!(csp.contains("frame-ancestors 'self'"), "{csp}");
+    assert_eq!(preview.headers()[header::CACHE_CONTROL], "no-store");
+    let html = text(preview).await;
+    assert!(html.contains("<article class=\"prose-shell\""));
+    assert!(html.contains("<h1 itemprop=\"headline\">Original title</h1>"));
+    assert!(html.contains("First draft"));
+    assert!(html.contains("name=\"robots\" content=\"noindex\""));
+    assert!(html.contains("&#x2f;admin&#x2f;assets&#x2f;theme.css?v="));
+    assert!(!html.contains("like.js"));
+
+    // The dashboard keeps forbidding framing entirely.
+    let dashboard = harness
+        .send(Method::GET, "/admin/", None, Body::empty(), Some(&cookie))
+        .await;
+    assert!(
+        dashboard.headers()[header::CONTENT_SECURITY_POLICY]
+            .to_str()
+            .unwrap()
+            .contains("frame-ancestors 'none'")
+    );
+
+    // A newer save shows immediately: nothing here is a compiled release.
+    harness
+        .contents
+        .update(
+            piece.id,
+            piece.version,
+            ContentDraft {
+                body_markdown: "Second draft".into(),
+                ..draft("previewed")
+            },
+            SaveIntent::Autosave,
+            Utc::now(),
+        )
+        .await
+        .unwrap();
+    let refreshed = text(
+        harness
+            .send(Method::GET, &path, None, Body::empty(), Some(&cookie))
+            .await,
+    )
+    .await;
+    assert!(refreshed.contains("Second draft"));
+
+    let css = harness
+        .send(
+            Method::GET,
+            "/admin/assets/theme.css",
+            None,
+            Body::empty(),
+            None,
+        )
+        .await;
+    assert_eq!(css.status(), StatusCode::OK);
+    assert!(
+        css.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("text/css")
+    );
+    assert_eq!(css.headers()[header::CACHE_CONTROL], "no-store");
+    assert_eq!(
+        text(css).await,
+        harness.repository.site_settings().await.unwrap().custom_css
+    );
+    let prefs = harness
+        .send(
+            Method::GET,
+            "/admin/assets/prefs.js",
+            None,
+            Body::empty(),
+            None,
+        )
+        .await;
+    assert_eq!(prefs.status(), StatusCode::OK);
+}
+
+/// A session issued at a chosen instant, for scenarios driven by the test clock.
+async fn session_at(harness: &Harness, at: DateTime<Utc>) -> (String, String) {
+    let session = harness.auth.create_session(at).await.unwrap();
+    (
+        format!(
+            "sb_session={}; sb_csrf={}",
+            session.session.expose(),
+            session.csrf.expose()
+        ),
+        session.csrf.expose().to_owned(),
+    )
+}
+
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the whole life of a preview link in one scenario"
+)]
+async fn share_links_are_hashed_capabilities_with_a_seven_day_ttl() {
+    let start = Utc::now();
+    let clock = TestClock::new(start);
+    let harness = Harness::new_with_clock(Arc::new(clock.clone())).await;
+    let (cookie, csrf) = session_at(&harness, start).await;
+    let piece = harness
+        .contents
+        .create(draft("shared"), SaveIntent::Explicit, start)
+        .await
+        .unwrap();
+    let share_path = format!("/admin/content/{}/share/", piece.id);
+
+    let forbidden = harness
+        .send(
+            Method::POST,
+            &share_path,
+            Some("application/x-www-form-urlencoded"),
+            serde_urlencoded::to_string([("csrf", "wrong")]).unwrap(),
+            Some(&cookie),
+        )
+        .await;
+    assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+
+    let issued = harness
+        .post_json(
+            &share_path,
+            serde_urlencoded::to_string([("csrf", csrf.as_str())]).unwrap(),
+            &cookie,
+        )
+        .await;
+    assert_eq!(issued.status(), StatusCode::OK);
+    let link = json(issued).await;
+    let url = link["url"].as_str().unwrap().to_owned();
+    let token = url
+        .strip_prefix("/admin/share/")
+        .and_then(|rest| rest.strip_suffix('/'))
+        .expect("a share path");
+    assert_eq!(token.len(), 43, "{url}");
+    assert_eq!(
+        link["expires_at"].as_str().unwrap(),
+        (start + Duration::days(7)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    );
+
+    // Anyone holding the link reads the draft; no session, no index.
+    let shared = harness
+        .send(Method::GET, &url, None, Body::empty(), None)
+        .await;
+    assert_eq!(shared.status(), StatusCode::OK);
+    let html = text(shared).await;
+    assert!(html.contains("<h1 itemprop=\"headline\">Original title</h1>"));
+    assert!(html.contains("name=\"robots\" content=\"noindex\""));
+
+    let garbage = harness
+        .send(
+            Method::GET,
+            "/admin/share/not-a-token/",
+            None,
+            Body::empty(),
+            None,
+        )
+        .await;
+    assert_eq!(garbage.status(), StatusCode::NOT_FOUND);
+    assert!(text(garbage).await.contains("expired"));
+
+    clock.set(start + Duration::days(8));
+    let expired = harness
+        .send(Method::GET, &url, None, Body::empty(), None)
+        .await;
+    assert_eq!(expired.status(), StatusCode::NOT_FOUND);
+
+    // Revocation ends every link of the piece at once.
+    let (cookie, csrf) = session_at(&harness, start + Duration::days(8)).await;
+    let second = json(
+        harness
+            .post_json(
+                &share_path,
+                serde_urlencoded::to_string([("csrf", csrf.as_str())]).unwrap(),
+                &cookie,
+            )
+            .await,
+    )
+    .await;
+    let second_url = second["url"].as_str().unwrap().to_owned();
+    assert_eq!(
+        harness
+            .send(Method::GET, &second_url, None, Body::empty(), None)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    let revoked = harness
+        .post_json(
+            &format!("/admin/content/{}/share/revoke/", piece.id),
+            serde_urlencoded::to_string([("csrf", csrf.as_str())]).unwrap(),
+            &cookie,
+        )
+        .await;
+    assert_eq!(revoked.status(), StatusCode::OK);
+    assert_eq!(json(revoked).await["ok"], true);
+    assert_eq!(
+        harness
+            .send(Method::GET, &second_url, None, Body::empty(), None)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    // Deleting the piece permanently takes its links with it.
+    let third = json(
+        harness
+            .post_json(
+                &share_path,
+                serde_urlencoded::to_string([("csrf", csrf.as_str())]).unwrap(),
+                &cookie,
+            )
+            .await,
+    )
+    .await;
+    let third_url = third["url"].as_str().unwrap().to_owned();
+    let current = harness
+        .repository
+        .find_by_id(piece.id)
+        .await
+        .unwrap()
+        .unwrap();
+    harness
+        .repository
+        .move_to_trash(piece.id, current.version, start + Duration::days(8))
+        .await
+        .unwrap();
+    harness
+        .repository
+        .delete_permanently(piece.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        harness
+            .send(Method::GET, &third_url, None, Body::empty(), None)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn editor_exposes_the_preview_frame_and_share_controls() {
+    let harness = Harness::new().await;
+    let (cookie, _csrf) = harness.session_cookie().await;
+    let piece = harness
+        .contents
+        .create(draft("framed"), SaveIntent::Explicit, Utc::now())
+        .await
+        .unwrap();
+    let editor = text(
+        harness
+            .send(
+                Method::GET,
+                &format!("/admin/content/{}/edit/", piece.id),
+                None,
+                Body::empty(),
+                Some(&cookie),
+            )
+            .await,
+    )
+    .await;
+    for marker in [
+        "data-preview-frame",
+        &format!("data-preview-url=\"/admin/content/{}/preview/\"", piece.id),
+        "data-share-form",
+        &format!("action=\"/admin/content/{}/share/\"", piece.id),
+        &format!("action=\"/admin/content/{}/share/revoke/\"", piece.id),
+        "data-msg-share-copied",
+        "data-msg-share-expires",
+    ] {
+        assert!(editor.contains(marker), "missing {marker}");
+    }
+    assert!(!editor.contains("data-preview-output"));
+
+    let fresh = text(
+        harness
+            .send(
+                Method::GET,
+                "/admin/content/new/",
+                None,
+                Body::empty(),
+                Some(&cookie),
+            )
+            .await,
+    )
+    .await;
+    assert!(fresh.contains("data-preview-frame"));
+    assert!(!fresh.contains("data-preview-url"));
+    assert!(fresh.contains("data-preview-note"));
+    assert!(!fresh.contains("data-share-form"));
 }

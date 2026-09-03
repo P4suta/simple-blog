@@ -16,7 +16,7 @@ use webauthn_rs::prelude::{PublicKeyCredential, RegisterPublicKeyCredential};
 use crate::{
     application::{
         auth::AuthService, content::SaveIntent, ports::RepositoryError, publication::SiteState,
-        site::DEFAULT_THEME_CSS,
+        site::DEFAULT_THEME_CSS, site_compiler::PreviewAssets,
     },
     domain::diff::{DiffLine, diff_lines},
     domain::{
@@ -25,8 +25,10 @@ use crate::{
         media::MediaId,
         theme::{Locale, NavigationItem, SiteSettings, TimezoneGroup, timezone_choices},
     },
-    web::{AppState, WebError},
+    web::{AppState, EMBEDDABLE_CSP, WebError},
 };
+
+const ADMIN_PREFS_JS: &str = include_str!("../../static/prefs.js");
 
 #[derive(Serialize)]
 struct DashboardContext {
@@ -361,12 +363,6 @@ pub struct RemovePasskeyForm {
 pub struct RestoreRevisionForm {
     csrf: String,
     version: i64,
-}
-
-#[derive(Deserialize)]
-pub struct PreviewRequest {
-    csrf: String,
-    markdown: String,
 }
 
 pub async fn dashboard(
@@ -981,23 +977,6 @@ pub async fn restore_revision(
                 "content changed after this restore page was opened",
             )
             .await
-        }
-        Err(error) => application_error(&state, &headers, error).await,
-    }
-}
-
-pub async fn preview_markdown(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(request): Json<PreviewRequest>,
-) -> Result<Response, WebError> {
-    if let Err(response) = authenticate(&state, &headers, Some(&request.csrf)).await? {
-        return Ok(response);
-    }
-    match state.content_service.preview(&request.markdown) {
-        Ok(rendered) => Ok(Json(json!({ "html": rendered.html })).into_response()),
-        Err(RepositoryError::Validation(message)) => {
-            Ok((StatusCode::UNPROCESSABLE_ENTITY, message).into_response())
         }
         Err(error) => application_error(&state, &headers, error).await,
     }
@@ -2182,6 +2161,267 @@ fn clean_passkey_name(value: &str) -> String {
 
 fn default_passkey_name() -> String {
     "Passkey".into()
+}
+
+/// The current draft through the public templates and the live stylesheet:
+/// the owner sees the future page, not an imitation. Framable by the editor.
+pub async fn preview_content(
+    State(state): State<AppState>,
+    Path(raw_id): Path<i64>,
+    headers: HeaderMap,
+) -> Result<Response, WebError> {
+    let identity = match authenticate(&state, &headers, None).await? {
+        Ok(identity) => identity,
+        Err(response) => return Ok(response),
+    };
+    let Some(content) = state
+        .content
+        .find_by_id(ContentId::from_i64(raw_id))
+        .await?
+    else {
+        return failure(
+            &state,
+            &headers,
+            StatusCode::NOT_FOUND,
+            "content does not exist",
+        )
+        .await;
+    };
+    let html = render_content_preview(&state, &content).await?;
+    let mut response = preview_response(html);
+    response.headers_mut().insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(EMBEDDABLE_CSP),
+    );
+    with_session_refresh(response, &identity, state.secure_cookies())
+}
+
+/// The home page with the stylesheet as it is being edited, for Settings.
+pub async fn preview_home(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, WebError> {
+    let identity = match authenticate(&state, &headers, None).await? {
+        Ok(identity) => identity,
+        Err(response) => return Ok(response),
+    };
+    let contents = state.content.list_all_content().await?;
+    let snapshot = preview_snapshot(&state, contents).await?;
+    let html = state.compiler().render_home_preview(
+        &snapshot,
+        preview_origin(&state),
+        preview_assets(&snapshot),
+    )?;
+    let mut response = preview_response(html);
+    response.headers_mut().insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(EMBEDDABLE_CSP),
+    );
+    with_session_refresh(response, &identity, state.secure_cookies())
+}
+
+/// Whoever holds a live preview link reads the piece, without a session.
+pub async fn shared_preview(
+    State(state): State<AppState>,
+    Path(token): Path<String>,
+) -> Result<Response, WebError> {
+    let now = state.clock.now();
+    let content = match state
+        .preview_links
+        .resolve(&token, now)
+        .await
+        .map_err(WebError::auth)?
+    {
+        Some(id) => state.content.find_by_id(id).await?,
+        None => None,
+    };
+    let Some(content) = content.filter(|content| !content.is_trashed()) else {
+        let locale = state.site.site_settings().await?.locale;
+        let html = state
+            .render_admin_string(
+                "admin/error.html",
+                json!({
+                    "status": 404,
+                    "heading_key": "admin.error_not_found_heading",
+                    "message": state.translations.text(locale, "share.not_found"),
+                    "csrf": "",
+                }),
+            )
+            .await?;
+        let mut response = (StatusCode::NOT_FOUND, axum::response::Html(html)).into_response();
+        response
+            .headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        return Ok(response);
+    };
+    let html = render_content_preview(&state, &content).await?;
+    Ok(preview_response(html))
+}
+
+pub async fn issue_preview_link(
+    State(state): State<AppState>,
+    Path(raw_id): Path<i64>,
+    headers: HeaderMap,
+    Form(form): Form<CsrfForm>,
+) -> Result<Response, WebError> {
+    if let Err(response) = authenticate(&state, &headers, Some(&form.csrf)).await? {
+        return Ok(response);
+    }
+    let id = ContentId::from_i64(raw_id);
+    let Some(content) = state
+        .content
+        .find_by_id(id)
+        .await?
+        .filter(|content| !content.is_trashed())
+    else {
+        return failure(
+            &state,
+            &headers,
+            StatusCode::NOT_FOUND,
+            "content does not exist",
+        )
+        .await;
+    };
+    let now = state.clock.now();
+    let link = state
+        .preview_links
+        .issue(content.id, now)
+        .await
+        .map_err(WebError::auth)?;
+    let path = format!("/admin/share/{}/", link.token.expose());
+    let expires_at = link.expires_at.to_rfc3339_opts(SecondsFormat::Secs, true);
+    if wants_json(&headers) {
+        return Ok(Json(json!({ "url": path, "expires_at": expires_at })).into_response());
+    }
+    let locale = state.site.site_settings().await?.locale;
+    let expires_note =
+        state
+            .translations
+            .format(locale, "editor.share_expires", &[("time", &expires_at)]);
+    let absolute = format!(
+        "{}{}",
+        state.config.public_url.as_str().trim_end_matches('/'),
+        path
+    );
+    state
+        .render_admin(
+            "admin/share_link.html",
+            json!({
+                "csrf": form.csrf,
+                "content_id": raw_id,
+                "url": absolute,
+                "expires_note": expires_note,
+            }),
+        )
+        .await
+}
+
+pub async fn revoke_preview_links(
+    State(state): State<AppState>,
+    Path(raw_id): Path<i64>,
+    headers: HeaderMap,
+    Form(form): Form<CsrfForm>,
+) -> Result<Response, WebError> {
+    if let Err(response) = authenticate(&state, &headers, Some(&form.csrf)).await? {
+        return Ok(response);
+    }
+    let revoked = state
+        .preview_links
+        .revoke(ContentId::from_i64(raw_id))
+        .await
+        .map_err(WebError::auth)?;
+    if wants_json(&headers) {
+        Ok(Json(json!({ "ok": true, "revoked": revoked })).into_response())
+    } else {
+        Ok(redirect(
+            StatusCode::SEE_OTHER,
+            &format!("/admin/content/{raw_id}/edit/"),
+        ))
+    }
+}
+
+/// The stylesheet as currently saved, for previews. Deliberately public and
+/// uncached: the same bytes reach every reader once published, and a preview
+/// link holder needs them before that.
+pub async fn theme_css(State(state): State<AppState>) -> Result<Response, WebError> {
+    let css = state.site.site_settings().await?.custom_css;
+    let mut response = css.into_response();
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/css; charset=utf-8"),
+    );
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(response)
+}
+
+pub async fn admin_prefs_js() -> Response {
+    asset_response(ADMIN_PREFS_JS, "text/javascript; charset=utf-8")
+}
+
+async fn render_content_preview(state: &AppState, content: &Content) -> Result<String, WebError> {
+    let now = state.clock.now();
+    let snapshot = preview_snapshot(state, Vec::new()).await?;
+    // A draft has no date yet; showing it as if published today gives the
+    // header the shape the reader will eventually see.
+    let shown = if content.publication.publish_at().is_none() {
+        Content {
+            publication: Publication::Public { publish_at: now },
+            ..content.clone()
+        }
+    } else {
+        content.clone()
+    };
+    Ok(state.compiler().render_content_preview(
+        &snapshot,
+        &shown,
+        preview_origin(state),
+        preview_assets(&snapshot),
+    )?)
+}
+
+/// The current settings, navigation and media around the given contents, with
+/// no release involved.
+async fn preview_snapshot(
+    state: &AppState,
+    contents: Vec<Content>,
+) -> Result<crate::application::site_compiler::SiteSnapshotV1, WebError> {
+    Ok(crate::application::site_compiler::SiteSnapshotV1 {
+        public_revision: 0,
+        effective_at: state.clock.now(),
+        settings: state.site.site_settings().await?,
+        navigation: state.site.navigation().await?,
+        contents,
+        redirects: Vec::new(),
+        media: state
+            .media_repository
+            .list_media()
+            .await
+            .map_err(WebError::media_repository)?,
+    })
+}
+
+fn preview_origin(state: &AppState) -> &str {
+    state.config.public_url.as_str().trim_end_matches('/')
+}
+
+fn preview_assets(snapshot: &crate::application::site_compiler::SiteSnapshotV1) -> PreviewAssets {
+    PreviewAssets {
+        css_url: format!(
+            "/admin/assets/theme.css?v={}",
+            &blake3::hash(snapshot.settings.custom_css.as_bytes()).to_hex()[..8]
+        ),
+        prefs_js_url: format!("/admin/assets/prefs.js?v={}", admin_asset_version()),
+    }
+}
+
+fn preview_response(html: String) -> Response {
+    let mut response = axum::response::Html(html).into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 /// The picker always contains the stored zone, even a legacy alias that the

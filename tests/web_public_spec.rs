@@ -182,7 +182,7 @@ async fn home_is_server_rendered_and_never_leaks_drafts_or_javascript() {
     // The only scripts are self-hosted, fingerprinted files (the reader
     // preferences loader); inline JavaScript never appears.
     assert!(!body.contains("<script>"));
-    assert!(body.contains("/assets/prefs.js?v="));
+    assert!(body.contains("&#x2f;assets&#x2f;prefs.js?v="));
     assert!(body.contains("rel=\"canonical\" href=\"http:&#x2f;&#x2f;localhost:8080&#x2f;\""));
     assert!(body.contains("class=\"skip-link\""));
 }

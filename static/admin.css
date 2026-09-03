@@ -796,6 +796,61 @@ select:focus-visible {
   cursor: pointer;
 }
 
+.editor-preview {
+  width: min(42rem, calc(100% - 2rem));
+  margin: 0 auto;
+  padding-bottom: 6rem;
+}
+
+.editor-preview-frame {
+  display: block;
+  width: 100%;
+  min-height: 70vh;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fff;
+}
+
+.editor-preview-note {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+/* Side by side once there is room: text left, the real page right. */
+@media (min-width: 1100px) {
+  .editor[data-preview-open="true"] {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    column-gap: 1rem;
+    align-items: start;
+  }
+
+  .editor[data-preview-open="true"] .editor-bar {
+    grid-column: 1 / -1;
+  }
+
+  .editor[data-preview-open="true"] .editor-document,
+  .editor[data-preview-open="true"] .editor-preview {
+    width: auto;
+    margin: 0;
+    padding-inline: 1rem;
+  }
+
+  .editor[data-preview-open="true"] .editor-preview-frame {
+    position: sticky;
+    top: 4rem;
+    height: calc(100vh - 5rem);
+  }
+}
+
+.share-url output {
+  display: inline-block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  font-family: var(--mono);
+  font-size: 0.85rem;
+}
+
 .editor-preview .prose img {
   max-width: 100%;
   height: auto;

@@ -26,10 +26,10 @@
   {% if meta.next_url %}<link rel="next" href="{{ meta.next_url }}">{% endif %}
   <link rel="alternate" type="application/atom+xml" title="{{ site.site_title }}" href="/feed.xml">
   {% if meta.alternate_feed %}<link rel="alternate" type="application/atom+xml" title="{{ meta.alternate_feed.title }}" href="{{ meta.alternate_feed.href }}">{% endif %}
-  <link rel="stylesheet" href="/assets/site.css?v={{ assets.css_version }}">
+  <link rel="stylesheet" href="{{ assets.css_url }}">
   {# Synchronous on purpose: a saved reader preference (measure, text size,
      scheme) must apply before first paint. Tiny and immutable-cached. #}
-  <script src="/assets/prefs.js?v={{ assets.prefs_js_version }}"></script>
+  <script src="{{ assets.prefs_js_url }}"></script>
   {% if assets.favicon_url %}<link rel="icon" href="{{ assets.favicon_url }}">{% endif %}
   {# A data block, never executed: browsers do not run application/ld+json and
      the compiler escapes every character that could end this element. #}
