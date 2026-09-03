@@ -3090,3 +3090,35 @@ async fn editor_exposes_local_draft_markers_and_the_server_timestamp() {
     assert!(fresh.contains("data-updated-at=\"\""));
     assert!(!fresh.contains("data-content-id="));
 }
+
+#[tokio::test]
+async fn editor_offers_focus_mode_and_a_fuller_shortcut_legend() {
+    let harness = Harness::new().await;
+    let (cookie, _csrf) = harness.session_cookie().await;
+    let editor = text(
+        harness
+            .send(
+                Method::GET,
+                "/admin/content/new/",
+                None,
+                Body::empty(),
+                Some(&cookie),
+            )
+            .await,
+    )
+    .await;
+    for marker in [
+        "data-focus-toggle",
+        "data-msg-focus",
+        "data-msg-focus-exit",
+        "data-msg-uploading",
+        "data-shortcuts",
+    ] {
+        assert!(editor.contains(marker), "missing {marker}");
+    }
+    let legend_at = editor.find("data-msg-shortcuts=\"").unwrap() + "data-msg-shortcuts=\"".len();
+    let legend = &editor[legend_at..editor[legend_at..].find('"').unwrap() + legend_at];
+    for key in ["{mod}+B", "{mod}+I", "{mod}+K", "{mod}+S"] {
+        assert!(legend.contains(key), "legend lacks {key}: {legend}");
+    }
+}

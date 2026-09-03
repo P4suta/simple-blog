@@ -487,6 +487,33 @@ a {
   color: var(--muted);
 }
 
+/* Focus mode: only the text stays fully present; the bar and hints fade
+   until hovered or focused. */
+.focus-mode .editor-bar,
+.focus-mode .editor-drop-hint,
+.focus-mode .local-draft-bar,
+.focus-mode .publish-banner {
+  opacity: 0.08;
+  transition: opacity 0.25s ease;
+}
+
+.focus-mode .editor-bar:hover,
+.focus-mode .editor-bar:focus-within,
+.focus-mode .editor-drop-hint:hover,
+.focus-mode .local-draft-bar:hover,
+.focus-mode .local-draft-bar:focus-within {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .focus-mode .editor-bar,
+  .focus-mode .editor-drop-hint,
+  .focus-mode .local-draft-bar,
+  .focus-mode .publish-banner {
+    transition: none;
+  }
+}
+
 /* Text this browser kept that the server has not seen yet. */
 .local-draft-bar {
   display: flex;

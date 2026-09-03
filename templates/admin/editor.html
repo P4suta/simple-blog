@@ -38,6 +38,9 @@
       data-msg-local-draft="{{ t["editor.local_draft"] }}"
       data-msg-local-restore="{{ t["editor.local_restore"] }}"
       data-msg-local-discard="{{ t["editor.local_discard"] }}"
+      data-msg-focus="{{ t["editor.focus"] }}"
+      data-msg-focus-exit="{{ t["editor.focus_exit"] }}"
+      data-msg-uploading="{{ t["editor.uploading"] }}"
       data-updated-at="{{ content.updated_at }}"{% if content_id %} data-content-id="{{ content_id }}"{% endif %}
       data-site-zone="{{ site_zone }}">
   <input type="hidden" name="csrf" value="{{ csrf }}">
@@ -62,6 +65,7 @@
       <div class="editor-confirm-panel"><p>{{ t["editor.unpublish_confirm"] }}</p><button type="submit" class="editor-bar-button" name="status" value="draft">{{ t["editor.unpublish_confirm_button"] }}</button></div>
     </details>
     {% endif %}
+    <button type="button" class="editor-bar-button" data-focus-toggle aria-pressed="false">{{ t["editor.focus"] }}</button>
     <button type="button" class="editor-bar-button" data-preview-toggle aria-pressed="false">{{ t["editor.preview"] }}</button>
     <button type="button" class="editor-bar-button" data-drawer-toggle aria-expanded="false">{{ t["editor.details"] }}</button>
   </header>

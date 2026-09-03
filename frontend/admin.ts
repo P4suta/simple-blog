@@ -1,7 +1,7 @@
 import { EditorView, basicSetup, minimalSetup } from "codemirror";
 import { keymap } from "@codemirror/view";
 import { EditorSelection, EditorState } from "@codemirror/state";
-import { markdown } from "@codemirror/lang-markdown";
+import { markdown, markdownKeymap } from "@codemirror/lang-markdown";
 import { css } from "@codemirror/lang-css";
 import {
   countText,
@@ -25,6 +25,7 @@ import {
   postFormAsNavigation,
 } from "./form-navigation";
 import { type LocalDraft, createDraftStore, draftKey, shouldOfferRestore } from "./draft-store";
+import { type Edit, insertFence, togglePrefix, toggleWrap } from "./markdown-commands";
 
 // Word-wise cursor movement that actually understands 日本語. CodeMirror's
 // default group motion sees an unbroken CJK run as one giant word;
@@ -227,20 +228,26 @@ function wireDropZone(zone: HTMLElement, onFile: (file: File) => Promise<void>):
   const originalHint = hint?.textContent ?? "";
   const messages = failureMessages(document.querySelector<HTMLElement>("[data-editor], [data-settings]")?.dataset ?? {});
   const uploadFailed = document.querySelector<HTMLElement>("[data-editor], [data-settings]")?.dataset.msgUploadFailed;
-  const handle = async (file: File | undefined): Promise<void> => {
-    if (!file) return;
-    try {
-      await onFile(file);
-      if (hint) {
-        hint.textContent = originalHint;
-        delete hint.dataset.error;
+  // Several files arrive one after another; the first failure is reported
+  // and the rest still get their turn.
+  const handle = async (files: FileList | undefined | null): Promise<void> => {
+    if (!files || files.length === 0) return;
+    let failure: unknown;
+    for (const file of Array.from(files)) {
+      try {
+        await onFile(file);
+      } catch (reason) {
+        failure ??= reason;
       }
-    } catch (reason) {
-      if (hint) {
-        const detail = describeFailure(reason, messages);
-        hint.textContent = uploadFailed ? uploadFailed.replace("{detail}", detail) : detail;
-        hint.dataset.error = "true";
-      }
+    }
+    if (!hint) return;
+    if (failure === undefined) {
+      hint.textContent = originalHint;
+      delete hint.dataset.error;
+    } else {
+      const detail = describeFailure(failure, messages);
+      hint.textContent = uploadFailed ? uploadFailed.replace("{detail}", detail) : detail;
+      hint.dataset.error = "true";
     }
   };
   zone.addEventListener("dragover", (event) => {
@@ -251,7 +258,7 @@ function wireDropZone(zone: HTMLElement, onFile: (file: File) => Promise<void>):
   zone.addEventListener("drop", async (event) => {
     event.preventDefault();
     delete zone.dataset.dragging;
-    await handle(event.dataTransfer?.files[0]);
+    await handle(event.dataTransfer?.files);
   });
 
   // Click-to-pick lives on the hint element, not the zone: the body zone wraps
@@ -261,10 +268,11 @@ function wireDropZone(zone: HTMLElement, onFile: (file: File) => Promise<void>):
   const input = document.createElement("input");
   input.type = "file";
   input.accept = "image/*";
+  input.multiple = zone.dataset.mediaDrop === "body";
   input.hidden = true;
   zone.append(input);
   input.addEventListener("change", async () => {
-    await handle(input.files?.[0] ?? undefined);
+    await handle(input.files);
     input.value = "";
   });
   picker.setAttribute("role", "button");
@@ -570,6 +578,7 @@ if (editor) {
   const publishAtHint = editor.querySelector<HTMLElement>("[data-publish-at-hint]");
   const counter = editor.querySelector<HTMLElement>("[data-count]");
   const shortcuts = editor.querySelector<HTMLElement>("[data-shortcuts]");
+  const focusToggle = editor.querySelector<HTMLButtonElement>("[data-focus-toggle]");
   const trashed = editor.dataset.trashed === "true";
   const language = document.documentElement.lang;
   const siteZone = editor.dataset.siteZone ?? "";
@@ -606,6 +615,9 @@ if (editor) {
     slugInvalid: editor.dataset.msgSlugInvalid ?? "The slug may only use lowercase letters, digits, and hyphens.",
     shareCopied: editor.dataset.msgShareCopied ?? "Copied",
     shareExpires: editor.dataset.msgShareExpires ?? "Valid until {time}",
+    focus: editor.dataset.msgFocus ?? "Focus",
+    focusExit: editor.dataset.msgFocusExit ?? "Leave focus",
+    uploading: editor.dataset.msgUploading ?? "Uploading…",
   };
   let autosaveTimer: number | undefined;
   let saving = false;
@@ -678,13 +690,48 @@ if (editor) {
     return true;
   };
 
+  // Every command computes a replacement over the plain text; the editor
+  // applies it and moves the selection where writing continues.
+  const applyEdit = (view: EditorView, edit: Edit): boolean => {
+    view.dispatch({
+      changes: { from: edit.from, to: edit.to, insert: edit.insert },
+      selection: { anchor: edit.selectFrom, head: edit.selectTo },
+      scrollIntoView: true,
+      userEvent: "input",
+    });
+    return true;
+  };
+  const wrapWith = (marker: string) => (view: EditorView): boolean => {
+    const { from, to } = view.state.selection.main;
+    return applyEdit(view, toggleWrap(view.state.doc.toString(), from, to, marker));
+  };
+  const prefixWith = (prefix: string) => (view: EditorView): boolean => {
+    const { from, to } = view.state.selection.main;
+    return applyEdit(view, togglePrefix(view.state.doc.toString(), from, to, prefix));
+  };
+  const fence = (view: EditorView): boolean => {
+    const { from, to } = view.state.selection.main;
+    return applyEdit(view, insertFence(view.state.doc.toString(), from, to));
+  };
+
   // minimalSetup on purpose: basicSetup's autocompletion offers HTML tags
   // that this pipeline never renders, and prose needs none of the rest.
+  // markdownKeymap continues lists and quotes on Enter and removes an empty
+  // marker on Backspace.
   const codeEditor = new EditorView({
     doc: textarea.value,
     extensions: [
       keymap.of([
         { key: "Mod-k", run: insertLink },
+        { key: "Mod-b", run: wrapWith("**") },
+        { key: "Mod-i", run: wrapWith("*") },
+        { key: "Mod-`", run: wrapWith("`") },
+        { key: "Mod-Shift-q", run: prefixWith("> ") },
+        { key: "Mod-Shift-l", run: prefixWith("- ") },
+        { key: "Mod-Alt-1", run: prefixWith("# ") },
+        { key: "Mod-Alt-2", run: prefixWith("## ") },
+        { key: "Mod-Alt-3", run: prefixWith("### ") },
+        { key: "Mod-Alt-c", run: fence },
         {
           key: "Mod-Shift-p",
           run: () => {
@@ -692,7 +739,15 @@ if (editor) {
             return true;
           },
         },
+        {
+          key: "Mod-Shift-f",
+          run: () => {
+            focusToggle?.click();
+            return true;
+          },
+        },
       ]),
+      keymap.of(markdownKeymap),
       segmentKeymap,
       minimalSetup,
       markdown(),
@@ -1072,15 +1127,69 @@ if (editor) {
     if (!inside) setDrawer(false);
   });
 
-  // Dropping into the document body uploads and inserts markdown in place.
-  if (!trashed) wireDropZone(documentSection, async (file) => {
-    const media = await uploadMedia(csrf, file);
+  // An image goes in where the cursor is, as a placeholder first so the
+  // writer keeps typing while it uploads; the placeholder then becomes the
+  // real reference, or disappears with an explanation.
+  let uploadCounter = 0;
+  const insertImage = async (file: File): Promise<void> => {
+    uploadCounter += 1;
+    const placeholder = `![${msg.uploading} ${uploadCounter}]()`;
     const selection = codeEditor.state.selection.main;
-    const insertion = `![${media.alt_text || file.name}](${media.url})`;
+    const lead = selection.from > 0 && codeEditor.state.sliceDoc(selection.from - 1, selection.from) !== "\n" ? "\n" : "";
     codeEditor.dispatch({
-      changes: { from: selection.from, to: selection.to, insert: insertion },
-      selection: { anchor: selection.from + insertion.length },
+      changes: { from: selection.from, to: selection.to, insert: `${lead}${placeholder}\n` },
+      selection: { anchor: selection.from + lead.length + placeholder.length + 1 },
     });
-    editor.dispatchEvent(new Event("input", { bubbles: true }));
-  });
+    const replacePlaceholder = (replacement: string): void => {
+      const at = codeEditor.state.doc.toString().indexOf(placeholder);
+      if (at === -1) return;
+      codeEditor.dispatch({ changes: { from: at, to: at + placeholder.length, insert: replacement } });
+      editor.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    try {
+      const media = await uploadMedia(csrf, file);
+      replacePlaceholder(`![${media.alt_text || file.name}](${media.url})`);
+    } catch (reason) {
+      replacePlaceholder("");
+      throw reason;
+    }
+  };
+  if (!trashed) {
+    wireDropZone(documentSection, insertImage);
+    codeEditor.dom.addEventListener("paste", (event) => {
+      const files = Array.from(event.clipboardData?.files ?? []).filter((file) =>
+        file.type.startsWith("image/"),
+      );
+      if (files.length === 0) return;
+      event.preventDefault();
+      void (async () => {
+        for (const file of files) {
+          try {
+            await insertImage(file);
+          } catch (reason) {
+            saveState.dataset.error = "true";
+            saveState.textContent = describeFailure(reason, failures);
+          }
+        }
+      })();
+    });
+  }
+
+  // Focus mode: the chrome fades until the pointer or keyboard asks for it.
+  if (focusToggle) {
+    const setFocus = (on: boolean): void => {
+      document.body.classList.toggle("focus-mode", on);
+      focusToggle.setAttribute("aria-pressed", String(on));
+      focusToggle.textContent = on ? msg.focusExit : msg.focus;
+    };
+    focusToggle.addEventListener("click", () => {
+      setFocus(!document.body.classList.contains("focus-mode"));
+      codeEditor.focus();
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && document.body.classList.contains("focus-mode")) {
+        setFocus(false);
+      }
+    });
+  }
 }
