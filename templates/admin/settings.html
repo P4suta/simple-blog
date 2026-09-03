@@ -64,14 +64,14 @@
 <div class="settings-form security-section">
   <section>
     <h2>{{ t["settings.security"] }}</h2>
-    {% if not reauth_ok %}<p>{{ t["settings.reauth"] }} <a href="/admin/login/">{{ t["settings.reauth_link"] }}</a></p>{% endif %}
+    {% if not reauth_ok %}<p>{{ t["settings.reauth"] }} <a href="/admin/login/?next=/admin/settings/">{{ t["settings.reauth_link"] }}</a></p>{% endif %}
     <h3>{{ t["settings.passkeys"] }}</h3>
     <ul>{% for passkey in passkeys %}<li><span>{{ passkey.name }}</span><form method="post" action="/admin/settings/passkeys/remove/"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="credential_id" value="{{ passkey.credential_id }}"><button type="submit">{{ t["settings.passkey_remove"] }}</button></form></li>{% endfor %}</ul>
-    <div data-passkey-add class="passkey-add">
+    {% if reauth_ok %}<div data-passkey-add class="passkey-add">
       <label><span>{{ t["settings.passkey_name"] }}</span><input data-passkey-name value="New device" maxlength="80"></label>
       <button class="primary-button" type="button" data-passkey-action>{{ t["settings.passkey_add"] }}</button>
       <p data-auth-error role="alert"></p>
-    </div>
+    </div>{% endif %}
     <h3>{{ t["settings.recovery"] }}</h3>
     <div class="recovery-row">
       <p>{{ t["settings.recovery_note"] }}</p>

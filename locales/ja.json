@@ -16,6 +16,7 @@
   "admin.error_not_found_heading": "見つかりません",
   "admin.error_back": "一覧へ戻る",
   "admin.logout": "ログアウト",
+  "admin.cancel": "キャンセル",
 
   "dashboard.heading": "文章",
   "dashboard.new": "新しい文章",
@@ -172,6 +173,10 @@
   "recovery.note": "一度だけ表示されます。安全な場所へ保存してください。",
   "recovery.done": "完了",
   "recovery.to_admin": "管理画面へ",
+  "recovery.copy": "コピー",
+  "recovery.copied": "コピーしました",
+  "recovery.print": "印刷",
+  "recovery.confirm_saved": "これらのコードを安全な場所に保存しました。",
 
   "conflict.kicker": "保存の競合",
   "conflict.heading": "別のタブで更新されています",
@@ -189,6 +194,8 @@
   "revision.back": "戻る",
   "revision.legend_removed": "復元すると戻る行",
   "revision.legend_added": "復元すると消える行",
+  "revision.intent_autosave": "自動保存",
+  "revision.intent_explicit": "明示的な保存",
   "share.heading": "プレビューリンク",
   "share.note": "このリンクを知っている人は 7 日間この文章を読めます。",
   "share.back": "編集に戻る",

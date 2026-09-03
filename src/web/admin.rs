@@ -2489,6 +2489,24 @@ fn preview_response(html: String) -> Response {
     response
 }
 
+/// Existing tags for the editor's suggestions, most used first.
+pub async fn list_tags(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, WebError> {
+    if let Err(response) = authenticate(&state, &headers, None).await? {
+        return Ok(response);
+    }
+    let tags = state
+        .content
+        .list_tag_usage()
+        .await?
+        .into_iter()
+        .map(|tag| json!({ "name": tag.name, "count": tag.count }))
+        .collect::<Vec<_>>();
+    Ok(Json(tags).into_response())
+}
+
 /// The picker always contains the stored zone, even a legacy alias that the
 /// curated regions leave out, so the select never loses its selection.
 fn timezone_choices_including(stored: &str) -> Vec<TimezoneGroup> {

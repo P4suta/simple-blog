@@ -26,6 +26,7 @@ import {
 } from "./form-navigation";
 import { type LocalDraft, createDraftStore, draftKey, shouldOfferRestore } from "./draft-store";
 import { type Edit, insertFence, togglePrefix, toggleWrap } from "./markdown-commands";
+import { applySuggestion, suggestTags } from "./tag-suggest";
 
 // Word-wise cursor movement that actually understands 日本語. CodeMirror's
 // default group motion sees an unbroken CJK run as one giant word;
@@ -349,19 +350,121 @@ document.querySelectorAll<HTMLElement>("[data-media-target]").forEach((zone) => 
 
 function showRecoveryCodes(codes: string[], labels: DOMStringMap): void {
   const main = document.createElement("main");
-  main.className = "auth-card";
+  main.className = "auth-card recovery-card";
+  main.dataset.recoveryCodes = "";
+  main.dataset.msgCopied = labels.msgRecoveryCopied ?? "Copied";
   const heading = document.createElement("h1");
   heading.textContent = labels.msgRecoveryHeading ?? "Recovery codes";
   const explanation = document.createElement("p");
   explanation.textContent = labels.msgRecoveryNote ?? "Shown only once. Store them somewhere safe.";
   const output = document.createElement("pre");
+  output.dataset.codes = "";
   output.textContent = codes.join("\n");
+  const actions = document.createElement("p");
+  actions.className = "recovery-actions";
+  const copy = document.createElement("button");
+  copy.type = "button";
+  copy.dataset.copyCodes = "";
+  copy.textContent = labels.msgRecoveryCopy ?? "Copy";
+  const print = document.createElement("button");
+  print.type = "button";
+  print.dataset.printCodes = "";
+  print.textContent = labels.msgRecoveryPrint ?? "Print";
+  actions.append(copy, " ", print);
+  const confirm = document.createElement("label");
+  confirm.className = "recovery-confirm";
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.dataset.confirmSaved = "";
+  confirm.append(box, ` ${labels.msgRecoveryConfirm ?? "I have stored these codes somewhere safe."}`);
   const link = document.createElement("a");
   link.className = "primary-button";
   link.href = "/admin/";
+  link.dataset.recoveryContinue = "";
+  link.setAttribute("aria-disabled", "true");
   link.textContent = labels.msgToAdmin ?? "Go to admin";
-  main.append(heading, explanation, output, link);
+  main.append(heading, explanation, output, actions, confirm, link);
   document.body.replaceChildren(main);
+  wireRecoveryCard(main);
+}
+
+// Recovery codes are shown once: copying, printing and an explicit "I have
+// stored these" gate before the page can be left.
+function wireRecoveryCard(card: HTMLElement): void {
+  const codes = card.querySelector<HTMLElement>("[data-codes]")?.textContent ?? "";
+  const copy = card.querySelector<HTMLButtonElement>("[data-copy-codes]");
+  const original = copy?.textContent ?? "";
+  copy?.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(codes);
+      copy.textContent = card.dataset.msgCopied ?? "Copied";
+      setTimeout(() => {
+        copy.textContent = original;
+      }, 1500);
+    } catch {
+      const range = document.createRange();
+      const pre = card.querySelector("[data-codes]");
+      if (pre) {
+        range.selectNodeContents(pre);
+        getSelection()?.removeAllRanges();
+        getSelection()?.addRange(range);
+      }
+    }
+  });
+  card.querySelector<HTMLButtonElement>("[data-print-codes]")?.addEventListener("click", () => print());
+  const gate = card.querySelector<HTMLInputElement>("[data-confirm-saved]");
+  const link = card.querySelector<HTMLAnchorElement>("[data-recovery-continue]");
+  if (gate && link) {
+    const update = (): void => link.setAttribute("aria-disabled", String(!gate.checked));
+    gate.addEventListener("change", update);
+    link.addEventListener("click", (event) => {
+      if (!gate.checked) {
+        event.preventDefault();
+        gate.focus();
+      }
+    });
+    update();
+  }
+}
+
+for (const card of document.querySelectorAll<HTMLElement>("[data-recovery-codes]")) {
+  wireRecoveryCard(card);
+}
+
+// Two-step confirmations are <details> so they work without scripting. With
+// it they become real dialogs: focus stays inside, Escape and the backdrop
+// close them, and a cancel button spells out the way back.
+for (const details of document.querySelectorAll<HTMLDetailsElement>(
+  "details.danger-zone, details.editor-confirm, details.row-danger",
+)) {
+  const summary = details.querySelector<HTMLElement>(":scope > summary");
+  if (!summary) continue;
+  const dialog = document.createElement("dialog");
+  dialog.className = "confirm";
+  const heading = document.createElement("p");
+  heading.className = "confirm-heading";
+  heading.textContent = summary.textContent?.trim() ?? "";
+  const body = document.createElement("div");
+  body.className = "confirm-body";
+  for (const child of Array.from(details.children)) {
+    if (child !== summary) body.append(child);
+  }
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "confirm-cancel";
+  cancel.textContent = document.documentElement.dataset.msgCancel ?? "Cancel";
+  cancel.addEventListener("click", () => dialog.close());
+  dialog.append(heading, body, cancel);
+  details.after(dialog);
+  summary.addEventListener("click", (event) => {
+    event.preventDefault();
+    details.open = false;
+    dialog.showModal();
+  });
+  dialog.addEventListener("click", (event) => {
+    if (event.target === dialog) dialog.close();
+  });
+  dialog.addEventListener("submit", () => dialog.close());
 }
 
 const setup = document.querySelector<HTMLElement>("[data-passkey-setup]");
@@ -888,6 +991,76 @@ if (editor) {
       });
   }
 
+  // Tags: the existing ones are offered as the writer types the next token.
+  if (tagsField) {
+    const list = document.createElement("ul");
+    list.className = "tag-suggestions";
+    list.setAttribute("role", "listbox");
+    list.hidden = true;
+    tagsField.after(list);
+    let known: string[] | null = null;
+    let active = -1;
+    const choose = (name: string): void => {
+      tagsField.value = applySuggestion(tagsField.value, name);
+      active = -1;
+      tagsField.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const render = (): void => {
+      const items = known ? suggestTags(tagsField.value, known) : [];
+      list.replaceChildren(
+        ...items.map((name, index) => {
+          const item = document.createElement("li");
+          item.setAttribute("role", "option");
+          item.setAttribute("aria-selected", String(index === active));
+          item.textContent = name;
+          item.addEventListener("mousedown", (event) => {
+            event.preventDefault();
+            choose(name);
+          });
+          return item;
+        }),
+      );
+      list.hidden = items.length === 0;
+    };
+    const load = async (): Promise<void> => {
+      if (known) return;
+      try {
+        const response = await fetch("/admin/tags/", { headers: { Accept: "application/json" } });
+        const tags = (await response.json()) as { name: string }[];
+        known = tags.map((tag) => tag.name);
+      } catch {
+        known = [];
+      }
+      render();
+    };
+    tagsField.addEventListener("focus", () => void load());
+    tagsField.addEventListener("input", () => {
+      active = -1;
+      render();
+    });
+    tagsField.addEventListener("blur", () => {
+      list.hidden = true;
+    });
+    tagsField.addEventListener("keydown", (event) => {
+      const count = list.children.length;
+      if (list.hidden || count === 0) return;
+      if (event.key === "ArrowDown") {
+        active = (active + 1) % count;
+        render();
+        event.preventDefault();
+      } else if (event.key === "ArrowUp") {
+        active = (active - 1 + count) % count;
+        render();
+        event.preventDefault();
+      } else if (event.key === "Enter" && active >= 0) {
+        event.preventDefault();
+        choose(list.children[active].textContent ?? "");
+      } else if (event.key === "Escape") {
+        list.hidden = true;
+      }
+    });
+  }
+
   const formParameters = (): URLSearchParams => {
     const parameters = new URLSearchParams();
     for (const [name, value] of new FormData(editor)) {
@@ -1041,6 +1214,7 @@ if (editor) {
       ) {
         pendingStatus = submitter.value;
         if (unpublishButton) unpublishButton.open = false;
+        (submitter.closest("dialog.confirm") as HTMLDialogElement | null)?.close();
       }
       saveNow();
     });

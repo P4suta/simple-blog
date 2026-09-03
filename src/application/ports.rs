@@ -156,6 +156,16 @@ pub trait ContentRepository: Send + Sync {
     /// content answers `NotFound`, so a stale page can never destroy
     /// restored work.
     async fn delete_permanently(&self, id: ContentId) -> Result<(), RepositoryError>;
+
+    /// Every tag in use, most used first, then by name.
+    async fn list_tag_usage(&self) -> Result<Vec<TagUsage>, RepositoryError>;
+}
+
+/// A tag and how many pieces carry it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TagUsage {
+    pub name: String,
+    pub count: u64,
 }
 
 /// Media identities still mentioned by stored revision snapshots, so a sweep

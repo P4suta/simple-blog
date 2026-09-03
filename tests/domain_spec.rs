@@ -407,7 +407,7 @@ fn slugs_come_from_titles_when_they_can_and_from_the_clock_otherwise() {
 
     let base = Slug::parse("hello-world").unwrap();
     assert_eq!(base.numbered(2).as_str(), "hello-world-2");
-    let near_limit = Slug::parse(&"a".repeat(119)).unwrap();
+    let near_limit = Slug::parse("a".repeat(119)).unwrap();
     assert!(near_limit.numbered(12).as_str().len() <= 120);
     assert!(near_limit.numbered(12).as_str().ends_with("-12"));
 }

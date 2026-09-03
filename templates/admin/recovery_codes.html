@@ -1,6 +1,6 @@
 {% extends "admin/base.html" %}
 {% block title %}{{ t["admin.title.recovery_codes"] }}{% endblock %}
 {% block content %}
-<div class="auth-card"><p class="kicker">{{ t["recovery.kicker"] }}</p><h1>{{ t["recovery.heading"] }}</h1><p>{{ t["recovery.note"] }}</p><pre>{% for code in recovery_codes %}{{ code }}{% if not loop.last %}
-{% endif %}{% endfor %}</pre><a class="primary-button" href="/admin/settings/">{{ t["recovery.done"] }}</a></div>
+<div class="auth-card recovery-card" data-recovery-codes data-msg-copied="{{ t["recovery.copied"] }}"><p class="kicker">{{ t["recovery.kicker"] }}</p><h1>{{ t["recovery.heading"] }}</h1><p>{{ t["recovery.note"] }}</p><pre data-codes>{% for code in recovery_codes %}{{ code }}{% if not loop.last %}
+{% endif %}{% endfor %}</pre><p class="recovery-actions"><button type="button" data-copy-codes>{{ t["recovery.copy"] }}</button> <button type="button" data-print-codes>{{ t["recovery.print"] }}</button></p><label class="recovery-confirm"><input type="checkbox" data-confirm-saved> {{ t["recovery.confirm_saved"] }}</label><a class="primary-button" href="/admin/settings/" data-recovery-continue aria-disabled="true">{{ t["recovery.done"] }}</a></div>
 {% endblock %}

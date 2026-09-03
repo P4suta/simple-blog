@@ -16,6 +16,7 @@
   "admin.error_not_found_heading": "什么也没有",
   "admin.error_back": "返回文章列表",
   "admin.logout": "退出登录",
+  "admin.cancel": "取消",
 
   "dashboard.heading": "文章",
   "dashboard.new": "新文章",
@@ -172,6 +173,10 @@
   "recovery.note": "仅显示一次。请妥善保存。",
   "recovery.done": "完成",
   "recovery.to_admin": "前往管理后台",
+  "recovery.copy": "复制",
+  "recovery.copied": "已复制",
+  "recovery.print": "打印",
+  "recovery.confirm_saved": "我已将这些代码妥善保存。",
 
   "conflict.kicker": "保存冲突",
   "conflict.heading": "已在其他标签页中更新",
@@ -189,6 +194,8 @@
   "revision.back": "返回",
   "revision.legend_removed": "恢复后将回来的行",
   "revision.legend_added": "恢复后将消失的行",
+  "revision.intent_autosave": "自动保存",
+  "revision.intent_explicit": "手动保存",
   "share.heading": "预览链接",
   "share.note": "持有此链接的人可在七天内阅读这篇文章。",
   "share.back": "返回编辑",

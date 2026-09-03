@@ -3215,3 +3215,116 @@ async fn editor_offers_focus_mode_and_a_fuller_shortcut_legend() {
         assert!(legend.contains(key), "legend lacks {key}: {legend}");
     }
 }
+
+#[tokio::test]
+async fn tags_endpoint_lists_existing_tags_by_usage() {
+    let harness = Harness::new().await;
+    let (cookie, _csrf) = harness.session_cookie().await;
+    for (slug, tags) in [
+        ("one", vec!["Rust".to_owned(), "CMS".to_owned()]),
+        ("two", vec!["Rust".to_owned()]),
+        ("three", vec!["Writing".to_owned(), "Rust".to_owned()]),
+    ] {
+        harness
+            .contents
+            .create(
+                ContentDraft {
+                    tags,
+                    ..draft(slug)
+                },
+                SaveIntent::Explicit,
+                Utc::now(),
+            )
+            .await
+            .unwrap();
+    }
+    let anonymous = harness
+        .send(Method::GET, "/admin/tags/", None, Body::empty(), None)
+        .await;
+    assert_eq!(anonymous.status(), StatusCode::SEE_OTHER);
+    let listed = harness
+        .send(
+            Method::GET,
+            "/admin/tags/",
+            None,
+            Body::empty(),
+            Some(&cookie),
+        )
+        .await;
+    assert_eq!(listed.status(), StatusCode::OK);
+    assert_eq!(
+        json(listed).await,
+        serde_json::json!([
+            { "name": "Rust", "count": 3 },
+            { "name": "CMS", "count": 1 },
+            { "name": "Writing", "count": 1 }
+        ])
+    );
+}
+
+#[tokio::test]
+async fn editor_and_settings_expose_progressive_enhancement_markers() {
+    let harness = Harness::new().await;
+    let (cookie, _csrf) = harness.session_cookie().await;
+    let piece = harness
+        .contents
+        .create(draft("enhanced"), SaveIntent::Explicit, Utc::now())
+        .await
+        .unwrap();
+    let stamp = piece
+        .updated_at
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let editor = text(
+        harness
+            .send(
+                Method::GET,
+                &format!("/admin/content/{}/edit/", piece.id),
+                None,
+                Body::empty(),
+                Some(&cookie),
+            )
+            .await,
+    )
+    .await;
+    // The history names the kind of save in the site's language and stamps
+    // it for local display.
+    assert!(editor.contains("Explicit save"), "{editor}");
+    assert!(!editor.contains("<span>explicit</span>"));
+    assert!(editor.contains(&format!("<time datetime=\"{stamp}\" data-local-time>")));
+    assert!(editor.contains("data-tags"));
+    assert!(editor.contains("data-msg-cancel"));
+
+    // Adding a passkey is offered only inside the re-authentication window;
+    // outside it the page sends the writer through login and back.
+    let settings = text(
+        harness
+            .send(
+                Method::GET,
+                "/admin/settings/",
+                None,
+                Body::empty(),
+                Some(&cookie),
+            )
+            .await,
+    )
+    .await;
+    assert!(
+        settings.contains("data-passkey-add"),
+        "a fresh login may add a key"
+    );
+    let (stale_cookie, _) = session_at(&harness, Utc::now() - Duration::minutes(10)).await;
+    let settings = text(
+        harness
+            .send(
+                Method::GET,
+                "/admin/settings/",
+                None,
+                Body::empty(),
+                Some(&stale_cookie),
+            )
+            .await,
+    )
+    .await;
+    assert!(!settings.contains("data-passkey-add"));
+    assert!(settings.contains("href=\"/admin/login/?next=/admin/settings/\""));
+}

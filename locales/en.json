@@ -16,6 +16,7 @@
   "admin.error_not_found_heading": "Nothing here",
   "admin.error_back": "Back to writing",
   "admin.logout": "Log out",
+  "admin.cancel": "Cancel",
 
   "dashboard.heading": "Writing",
   "dashboard.new": "New piece",
@@ -172,6 +173,10 @@
   "recovery.note": "Shown only once. Store them somewhere safe.",
   "recovery.done": "Done",
   "recovery.to_admin": "Go to admin",
+  "recovery.copy": "Copy",
+  "recovery.copied": "Copied",
+  "recovery.print": "Print",
+  "recovery.confirm_saved": "I have stored these codes somewhere safe.",
 
   "conflict.kicker": "Save conflict",
   "conflict.heading": "Updated in another tab",
@@ -189,6 +194,8 @@
   "revision.back": "Back",
   "revision.legend_removed": "what a restore would put back",
   "revision.legend_added": "what a restore would remove",
+  "revision.intent_autosave": "Autosave",
+  "revision.intent_explicit": "Explicit save",
   "share.heading": "Preview link",
   "share.note": "Anyone with this link can read the piece for seven days.",
   "share.back": "Back to the editor",

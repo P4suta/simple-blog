@@ -487,6 +487,124 @@ a {
   color: var(--muted);
 }
 
+/* Confirmation dialogs the script builds out of the <details> fallbacks. */
+dialog.confirm {
+  width: min(24rem, calc(100% - 2rem));
+  padding: 1.1rem 1.2rem;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--ink);
+}
+
+dialog.confirm::backdrop {
+  background: rgb(0 0 0 / 0.35);
+}
+
+.confirm-heading {
+  margin: 0 0 0.6rem;
+  font-weight: 700;
+}
+
+.confirm-body p {
+  margin: 0 0 0.8rem;
+  color: var(--muted);
+}
+
+.confirm-body form {
+  position: static;
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
+.confirm-cancel {
+  margin-top: 0.8rem;
+  padding: 0.35rem 0.7rem;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+/* Tag suggestions hang under the field like a small menu. */
+.tags-field {
+  position: relative;
+}
+
+.tag-suggestions {
+  position: absolute;
+  z-index: 5;
+  left: 0;
+  right: 0;
+  margin: 0.2rem 0 0;
+  padding: 0.25rem 0;
+  list-style: none;
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+}
+
+.tag-suggestions li {
+  padding: 0.35rem 0.7rem;
+  cursor: pointer;
+}
+
+.tag-suggestions li[aria-selected="true"],
+.tag-suggestions li:hover {
+  background: var(--bg);
+}
+
+/* Recovery codes: actions, the "stored" gate, and a print that keeps only
+   the codes on paper. */
+.recovery-actions button {
+  padding: 0.35rem 0.7rem;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.recovery-confirm {
+  display: block;
+  margin: 0.8rem 0;
+}
+
+.recovery-confirm input {
+  width: auto;
+}
+
+[data-recovery-continue][aria-disabled="true"] {
+  opacity: 0.45;
+  pointer-events: auto;
+}
+
+@media print {
+  body * {
+    visibility: hidden;
+  }
+
+  .recovery-card,
+  .recovery-card * {
+    visibility: visible;
+  }
+
+  .recovery-card {
+    position: absolute;
+    inset: 0;
+    margin: 0;
+    border: 0;
+  }
+
+  .recovery-actions,
+  .recovery-confirm,
+  [data-recovery-continue] {
+    display: none;
+  }
+}
+
 /* Focus mode: only the text stays fully present; the bar and hints fade
    until hovered or focused. */
 .focus-mode .editor-bar,

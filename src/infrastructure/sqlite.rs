@@ -14,7 +14,7 @@ use crate::{
         EngagementRepository, LikeRepository, MediaRepository, MediaRepositoryError,
         PasskeyRepository, PortableRepository, PreparedContent, PreviewLinkRepository,
         PublicSnapshotRepository, PublicationState, RepositoryError, RevisionMediaReferences,
-        SearchHit, SearchRepository, SetupRegistration, SiteRepository,
+        SearchHit, SearchRepository, SetupRegistration, SiteRepository, TagUsage,
     },
     application::{
         media_gc,
@@ -1032,6 +1032,26 @@ impl ContentRepository for SqliteRepository {
         transaction.commit().await.map_err(storage)?;
         tracing::info!(event = "content.restored", content_id = %id, visible_again);
         Ok(restored)
+    }
+
+    async fn list_tag_usage(&self) -> Result<Vec<TagUsage>, RepositoryError> {
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT tags.name, count(content_tags.content_id) AS uses
+             FROM tags
+             JOIN content_tags ON content_tags.tag_id = tags.id
+             GROUP BY tags.id
+             ORDER BY uses DESC, tags.name ASC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage)?;
+        Ok(rows
+            .into_iter()
+            .map(|(name, count)| TagUsage {
+                name,
+                count: unsigned_count(count),
+            })
+            .collect())
     }
 
     async fn delete_permanently(&self, id: ContentId) -> Result<(), RepositoryError> {

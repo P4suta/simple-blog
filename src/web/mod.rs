@@ -298,6 +298,7 @@ impl AppState {
                 t: self.translations.for_locale(locale),
                 lang: locale.as_str(),
                 asset_version: admin::admin_asset_version(),
+                cancel_label: self.translations.text(locale, "admin.cancel"),
                 context,
             },
         )?)
@@ -351,6 +352,8 @@ struct WithTranslations<'a, C> {
     lang: &'static str,
     /// Cache-busting fingerprint of the admin stylesheet and bundle.
     asset_version: &'static str,
+    /// The word the script puts on every confirmation dialog's cancel button.
+    cancel_label: String,
     #[serde(flatten)]
     context: C,
 }
@@ -378,6 +381,7 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/", get(admin::dashboard))
         .route("/admin/publish/", post(admin::publish_site))
         .route("/admin/preview/home/", get(admin::preview_home))
+        .route("/admin/tags/", get(admin::list_tags))
         .route("/admin/share/{token}/", get(admin::shared_preview))
         .route("/admin/assets/theme.css", get(admin::theme_css))
         .route("/admin/assets/prefs.js", get(admin::admin_prefs_js))
