@@ -599,7 +599,8 @@ impl SqliteRepository {
             }
             return Ok(contents);
         }
-        let mut tags_by_content = load_all_tags(&self.pool).await?;
+        let ids = rows.iter().map(|row| row.id).collect::<Vec<_>>();
+        let mut tags_by_content = load_tags_for(&self.pool, &ids).await?;
         rows.into_iter()
             .map(|row| {
                 let tags = tags_by_content.remove(&row.id).unwrap_or_default();
@@ -670,7 +671,6 @@ impl ContentRepository for SqliteRepository {
             old_slug,
             created_at,
             was_visible,
-            was_public,
         } = load_update_target(&mut transaction, id, expected_version, now).await?;
         if old_slug != prepared.draft.slug.as_str() {
             ensure_slug_available(&mut transaction, &prepared.draft.slug, Some(id)).await?;
@@ -719,9 +719,10 @@ impl ContentRepository for SqliteRepository {
             });
         }
 
-        // A draft's address was never public, so a rename leaves nothing
-        // behind; once readers may have seen it, the old address keeps working.
-        if old_slug != prepared.draft.slug.as_str() && was_public {
+        // An address nobody could have visited yet (a draft, or a piece still
+        // waiting for its publication instant) leaves nothing behind; once
+        // readers may have seen it, the old address keeps working.
+        if old_slug != prepared.draft.slug.as_str() && was_visible {
             sqlx::query(
                 "INSERT INTO redirects (old_slug, content_id, created_at)
                  VALUES (?, ?, ?)
@@ -1082,8 +1083,6 @@ struct UpdateTarget {
     old_slug: String,
     created_at: DateTime<Utc>,
     was_visible: bool,
-    /// Public or scheduled before this update: its address may be known.
-    was_public: bool,
 }
 
 /// Reads the current row and applies the guards every edit shares: the piece
@@ -1123,7 +1122,6 @@ async fn load_update_target(
     Ok(UpdateTarget {
         old_slug: current.try_get("slug").map_err(storage)?,
         created_at: current.try_get("created_at").map_err(storage)?,
-        was_public: current_status == "public",
         was_visible: current_status == "public"
             && current_publish_at.is_some_and(|publish_at| publish_at <= now),
     })
@@ -1437,7 +1435,7 @@ impl SiteRepository for SqliteRepository {
                     contents.slug, contents.title
              FROM redirects
              JOIN contents ON contents.id = redirects.content_id
-             ORDER BY redirects.old_slug",
+             ORDER BY redirects.created_at, redirects.old_slug",
         )
         .fetch_all(&self.pool)
         .await
@@ -1485,10 +1483,7 @@ impl SiteRepository for SqliteRepository {
             .bind(now)
             .execute(&mut *transaction)
             .await
-            .map_err(|error| match error {
-                sqlx::Error::Database(_) => RepositoryError::SlugTaken(old_slug.clone()),
-                other => storage(other),
-            })?;
+            .map_err(|error| map_write_error(error, old_slug))?;
         refresh_publication_state(&mut transaction, now, true).await?;
         transaction.commit().await.map_err(storage)?;
         Ok(())
@@ -2267,17 +2262,30 @@ impl PreviewLinkRepository for SqliteRepository {
 #[async_trait]
 impl RevisionMediaReferences for SqliteRepository {
     async fn revision_media_ids(&self) -> Result<HashSet<String>, RepositoryError> {
-        let rows: Vec<(String, Option<String>)> = sqlx::query_as(
-            "SELECT snapshot_json, json_extract(snapshot_json, '$.cover_media_id') FROM revisions",
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(storage)?;
+        // Every snapshot carries a whole body, so the history is read a page
+        // at a time; memory stays bounded by one page, not by the site's age.
+        const PAGE: i64 = 200;
         let mut referenced = HashSet::new();
-        for (snapshot, cover) in rows {
-            media_gc::collect_media_references(&snapshot, &mut referenced);
-            if let Some(cover) = cover {
-                referenced.insert(cover);
+        let mut after = 0_i64;
+        loop {
+            let rows: Vec<(i64, String, Option<String>)> = sqlx::query_as(
+                "SELECT id, snapshot_json, json_extract(snapshot_json, '$.cover_media_id')
+                 FROM revisions WHERE id > ? ORDER BY id LIMIT ?",
+            )
+            .bind(after)
+            .bind(PAGE)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(storage)?;
+            let Some(last) = rows.last().map(|row| row.0) else {
+                break;
+            };
+            after = last;
+            for (_, snapshot, cover) in rows {
+                media_gc::collect_media_references(&snapshot, &mut referenced);
+                if let Some(cover) = cover {
+                    referenced.insert(cover);
+                }
             }
         }
         Ok(referenced)
@@ -2476,14 +2484,20 @@ impl ContentRow {
 
 /// Every tag assignment on the site, grouped by content id and ordered by
 /// position within each piece.
-async fn load_all_tags(
+/// Tags for exactly the given pieces, in one query; the id list travels as a
+/// JSON array so a page of any size is a single bound parameter.
+async fn load_tags_for(
     pool: &SqlitePool,
+    ids: &[i64],
 ) -> Result<std::collections::HashMap<i64, Vec<Tag>>, RepositoryError> {
+    let ids = serde_json::to_string(ids).map_err(storage)?;
     let rows = sqlx::query(
         "SELECT content_tags.content_id, tags.name, tags.slug FROM content_tags
          JOIN tags ON tags.id = content_tags.tag_id
+         WHERE content_tags.content_id IN (SELECT value FROM json_each(?))
          ORDER BY content_tags.content_id, content_tags.position",
     )
+    .bind(ids)
     .fetch_all(pool)
     .await
     .map_err(storage)?;

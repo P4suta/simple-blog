@@ -1138,6 +1138,7 @@ fn content_preview_renders_the_public_template_with_admin_assets_and_noindex() {
             PreviewAssets {
                 css_url: "/admin/assets/theme.css?v=x".into(),
                 prefs_js_url: "/admin/assets/prefs.js?v=y".into(),
+                article_js_url: "/admin/assets/article.js?v=test".into(),
             },
         )
         .unwrap();
@@ -1162,6 +1163,7 @@ fn content_preview_renders_the_public_template_with_admin_assets_and_noindex() {
             PreviewAssets {
                 css_url: "/admin/assets/theme.css?v=x".into(),
                 prefs_js_url: "/admin/assets/prefs.js?v=y".into(),
+                article_js_url: "/admin/assets/article.js?v=test".into(),
             },
         )
         .unwrap();
@@ -1220,7 +1222,7 @@ fn content_pages_load_the_article_script_with_copy_labels() {
     assert_eq!(content_type, "text/javascript; charset=utf-8");
     let page = body(&release, "/published/");
     let version = &blake3::hash(include_bytes!("../static/article.js")).to_hex()[..8];
-    assert!(page.contains(&format!("/assets/article.js?v={version}")));
+    assert!(page.contains(&format!("&#x2f;assets&#x2f;article.js?v={version}")));
     let document = Html::parse_document(page);
     assert_eq!(
         attribute(&document, "div.prose", "data-label-copy"),

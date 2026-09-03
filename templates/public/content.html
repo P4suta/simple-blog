@@ -20,5 +20,5 @@
 </nav>
 {% endif %}
 {% if not meta.preview %}<script src="/assets/like.js?v={{ page.like_js_version }}" defer></script>{% endif %}
-<script src="/assets/article.js?v={{ page.article_js_version }}" defer></script>
+<script src="{{ assets.article_js_url }}" defer></script>
 {% endblock %}

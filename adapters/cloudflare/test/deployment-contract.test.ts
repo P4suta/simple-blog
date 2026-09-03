@@ -35,7 +35,20 @@ function parseJsonc(source: string): Record<string, unknown> {
     }
     if (character === ",") {
       let ahead = index + 1;
-      while (ahead < source.length && /\s/.test(source[ahead])) ahead += 1;
+      // A comment may sit between the final comma and the closing bracket.
+      while (ahead < source.length) {
+        if (/\s/.test(source[ahead])) {
+          ahead += 1;
+        } else if (source.startsWith("//", ahead)) {
+          const end = source.indexOf("\n", ahead);
+          ahead = end === -1 ? source.length : end;
+        } else if (source.startsWith("/*", ahead)) {
+          const end = source.indexOf("*/", ahead + 2);
+          ahead = end === -1 ? source.length : end + 2;
+        } else {
+          break;
+        }
+      }
       if (source[ahead] === "}" || source[ahead] === "]") {
         index += 1;
         continue;

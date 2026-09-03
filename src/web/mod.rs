@@ -460,6 +460,7 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/share/{token}/", get(admin::shared_preview))
         .route("/admin/assets/theme.css", get(admin::theme_css))
         .route("/admin/assets/prefs.js", get(admin::admin_prefs_js))
+        .route("/admin/assets/article.js", get(admin::admin_article_js))
         .route("/admin/login/", get(admin::login_page))
         .route("/admin/logout/", post(admin::logout))
         .route("/admin/setup/", get(admin::setup_page))

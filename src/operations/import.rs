@@ -198,10 +198,13 @@ fn markdown_files(directory: &Path) -> Result<Vec<PathBuf>, OperationError> {
 }
 
 fn is_variant_name(name: &str) -> bool {
-    name.len() > 64 + "-w.webp".len()
+    // Bytes, not a string slice: a multi-byte character crossing byte 64
+    // must answer "no", not panic.
+    let bytes = name.as_bytes();
+    bytes.len() > 64 + "-w.webp".len()
         && name.ends_with("w.webp")
-        && name[..64].bytes().all(|byte| byte.is_ascii_hexdigit())
-        && name.as_bytes().get(64) == Some(&b'-')
+        && bytes[..64].iter().all(u8::is_ascii_hexdigit)
+        && bytes.get(64) == Some(&b'-')
 }
 
 /// A file as this program exports it, or plain Markdown. The front matter
@@ -402,5 +405,10 @@ mod tests {
         assert!(is_variant_name(&format!("{id}-480w.webp")));
         assert!(!is_variant_name(&format!("{id}.webp")));
         assert!(!is_variant_name("photo-480w.webp"));
+        let crossing = format!("{}\u{e9}-480w.webp", "a".repeat(63));
+        assert!(
+            !is_variant_name(&crossing),
+            "a multi-byte name is not a variant"
+        );
     }
 }

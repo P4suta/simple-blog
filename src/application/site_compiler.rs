@@ -122,12 +122,14 @@ impl SiteDates {
 pub struct PreviewAssets {
     pub css_url: String,
     pub prefs_js_url: String,
+    pub article_js_url: String,
 }
 
 impl PreviewAssets {
     fn apply(self, assets: &mut ThemeAssets, meta: &mut PageMeta) {
         assets.css_url = self.css_url;
         assets.prefs_js_url = self.prefs_js_url;
+        assets.article_js_url = self.article_js_url;
         meta.preview = true;
         meta.noindex = true;
     }
@@ -753,7 +755,6 @@ impl SiteCompiler {
             tags: content.tags.clone(),
             cover,
             like_js_version: fingerprint(LIKE_JS),
-            article_js_version: fingerprint(ARTICLE_JS),
             older: older.map(NeighborView::from),
             newer: newer.map(NeighborView::from),
             related,
@@ -1060,6 +1061,7 @@ impl SiteCompiler {
                     fingerprint(&snapshot.settings.custom_css)
                 ),
                 prefs_js_url: format!("/assets/prefs.js?v={}", fingerprint(PREFS_JS)),
+                article_js_url: format!("/assets/article.js?v={}", fingerprint(ARTICLE_JS)),
             },
             navigation: snapshot.navigation.clone(),
             meta: PageMeta {
@@ -1095,6 +1097,8 @@ pub enum SiteCompilerError {
     Release(#[from] ReleaseError),
     #[error("search index generation failed: {0}")]
     SearchIndex(String),
+    #[error("JSON Feed generation failed: {0}")]
+    JsonFeed(String),
     #[error("the date pattern in catalog key {0} is not a valid strftime string")]
     DatePattern(&'static str),
 }
@@ -1345,7 +1349,6 @@ struct ContentPage {
     tags: Vec<Tag>,
     cover: Option<CoverView>,
     like_js_version: String,
-    article_js_version: String,
     older: Option<NeighborView>,
     newer: Option<NeighborView>,
     related: Vec<RelatedView>,
@@ -1463,7 +1466,7 @@ fn json_feed(
             })
             .collect(),
     };
-    serde_json::to_vec(&feed).map_err(|error| SiteCompilerError::SearchIndex(error.to_string()))
+    serde_json::to_vec(&feed).map_err(|error| SiteCompilerError::JsonFeed(error.to_string()))
 }
 
 #[derive(Clone, Serialize)]

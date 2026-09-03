@@ -294,6 +294,8 @@ pub struct ThemeAssets {
     pub css_url: String,
     /// The reader-preferences script URL, same scheme.
     pub prefs_js_url: String,
+    /// The article script (code copying) URL, same scheme.
+    pub article_js_url: String,
 }
 
 /// The only public-theme boundary. Templates never receive repositories or ad-hoc maps.

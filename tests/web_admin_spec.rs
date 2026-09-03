@@ -2849,6 +2849,18 @@ async fn owner_preview_renders_the_current_draft_through_the_public_theme() {
     assert!(html.contains("First draft"));
     assert!(html.contains("name=\"robots\" content=\"noindex\""));
     assert!(html.contains("&#x2f;admin&#x2f;assets&#x2f;theme.css?v="));
+    assert!(
+        html.contains("&#x2f;admin&#x2f;assets&#x2f;article.js?v="),
+        "the copy button works before any release exists"
+    );
+    let article = harness
+        .send(Method::GET, "/admin/assets/article.js", None, "", None)
+        .await;
+    assert_eq!(article.status(), StatusCode::OK);
+    assert_eq!(
+        article.headers()[header::CONTENT_TYPE],
+        "text/javascript; charset=utf-8"
+    );
     assert!(!html.contains("like.js"));
 
     // The dashboard keeps forbidding framing entirely.

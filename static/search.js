@@ -186,7 +186,12 @@
         if (!response.ok) throw new Error(String(response.status));
         return response.json();
       })
-      .then((index) => index.documents || []);
+      .then((index) => index.documents || [])
+      .catch((error) => {
+        // A failed load must not pin the reader to a permanent error.
+        indexPromise = null;
+        throw error;
+      });
     return indexPromise;
   };
 
@@ -207,6 +212,8 @@
       const documents = await loadIndex();
       if (query === lastQuery) render(documents, query);
     } catch {
+      // Forget the query too, so submitting the same text again retries.
+      lastQuery = null;
       status.textContent = status.dataset.failed || "Search is temporarily unavailable.";
     }
   };

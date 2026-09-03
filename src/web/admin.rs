@@ -32,6 +32,7 @@ use crate::{
 };
 
 const ADMIN_PREFS_JS: &str = include_str!("../../static/prefs.js");
+const ADMIN_ARTICLE_JS: &str = include_str!("../../static/article.js");
 
 /// Rows per dashboard page: enough to scan, few enough to render instantly.
 const DASHBOARD_PAGE_SIZE: usize = 50;
@@ -2855,6 +2856,12 @@ pub async fn admin_prefs_js() -> Response {
     asset_response(ADMIN_PREFS_JS, "text/javascript; charset=utf-8")
 }
 
+/// The article script for previews, which may exist before any release
+/// does and so cannot rely on `/assets/`.
+pub async fn admin_article_js() -> Response {
+    asset_response(ADMIN_ARTICLE_JS, "text/javascript; charset=utf-8")
+}
+
 async fn render_content_preview(state: &AppState, content: &Content) -> Result<String, WebError> {
     let now = state.clock.now();
     let snapshot = preview_snapshot(state, Vec::new()).await?;
@@ -2908,6 +2915,7 @@ fn preview_assets(snapshot: &crate::application::site_compiler::SiteSnapshotV1) 
             &blake3::hash(snapshot.settings.custom_css.as_bytes()).to_hex()[..8]
         ),
         prefs_js_url: format!("/admin/assets/prefs.js?v={}", admin_asset_version()),
+        article_js_url: format!("/admin/assets/article.js?v={}", admin_asset_version()),
     }
 }
 

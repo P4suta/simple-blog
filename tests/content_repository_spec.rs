@@ -796,3 +796,47 @@ async fn renaming_a_draft_leaves_no_redirect_behind() {
         Some("third-thoughts")
     );
 }
+
+#[tokio::test]
+async fn renaming_a_scheduled_piece_leaves_no_redirect_behind() {
+    let (_temp, repository, service) = harness().await;
+    let now = Utc::now();
+    let later = now + chrono::Duration::hours(1);
+    let created = service
+        .create(
+            post("tomorrow", Publication::Public { publish_at: later }),
+            SaveIntent::Explicit,
+            now,
+        )
+        .await
+        .unwrap();
+    let mut draft = created.to_draft();
+    draft.slug = Slug::parse("tomorrow-revised").unwrap();
+    service
+        .update(
+            created.id,
+            created.version,
+            draft,
+            SaveIntent::Explicit,
+            now,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        repository
+            .resolve_redirect(&Slug::parse("tomorrow").unwrap())
+            .await
+            .unwrap(),
+        None,
+        "an address that was never visible is not remembered"
+    );
+    // The old address is free again for another piece.
+    service
+        .create(
+            post("tomorrow", Publication::Draft),
+            SaveIntent::Explicit,
+            now,
+        )
+        .await
+        .unwrap();
+}

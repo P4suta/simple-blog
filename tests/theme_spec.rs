@@ -89,6 +89,9 @@ fn embedded_styles_preserve_font_names_and_apply_hairline_color_last() {
     }
 
     let theme = include_str!("../static/default-theme.css");
+    // A checkout with CRLF endings must not change what the test proves.
+    let theme = theme.replace("\r\n", "\n");
+    let theme = theme.as_str();
     let post_nav_border = theme.rfind(".post-nav {").unwrap();
     let hairline_color = theme
         .rfind("border-color: color-mix(in srgb, currentcolor")
