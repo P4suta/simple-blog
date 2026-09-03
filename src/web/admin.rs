@@ -133,6 +133,8 @@ struct EditorContext {
     /// another zone never mistakes one for the other.
     site_zone: String,
     site_zone_hint: String,
+    /// The public origin, so the drawer can show the full address live.
+    site_origin: String,
 }
 
 #[derive(Serialize)]
@@ -163,6 +165,9 @@ struct EditorContent {
     /// The server's last save, RFC 3339, so the browser can tell whether its
     /// own unsaved copy is newer. Empty for a piece that was never saved.
     updated_at: String,
+    /// The address still follows the title; the field stays empty and shows
+    /// the current one as a placeholder.
+    slug_auto: bool,
 }
 
 #[derive(Serialize)]
@@ -474,6 +479,7 @@ pub async fn new_content(
                 trashed: false,
                 site_zone: site_settings.timezone.clone(),
                 site_zone_hint,
+                site_origin: preview_origin(&state).to_owned(),
             },
         )
         .await?;
@@ -705,6 +711,7 @@ pub async fn edit_content(
                 trashed: content.is_trashed(),
                 site_zone: site_settings.timezone.clone(),
                 site_zone_hint,
+                site_origin: preview_origin(&state).to_owned(),
                 content: EditorContent::from_content(&content, state.clock.now()),
                 cover_url,
                 cover_alt_text,
@@ -1000,19 +1007,11 @@ pub async fn create_content(
             return failure(&state, &headers, StatusCode::UNPROCESSABLE_ENTITY, &error).await;
         }
     };
-    let mut result = state
-        .content_service
-        .create(draft.clone(), intent, now)
-        .await;
-    // A generated slug can collide when two pieces are created within the same
-    // minute; retry once at second resolution before surfacing the conflict.
-    if matches!(result, Err(RepositoryError::SlugTaken(_))) && draft.slug.is_timestamped() {
-        let retry = ContentDraft {
-            slug: Slug::timestamped_precise(now),
-            ..draft
-        };
-        result = state.content_service.create(retry, intent, now).await;
-    }
+    let automatic = form.slug.trim().is_empty();
+    let result = with_slug_alternatives(automatic, draft, now, |draft| {
+        state.content_service.create(draft, intent, now)
+    })
+    .await;
     match result {
         Ok(content) => {
             let site = state.publish_after_commit("create").await;
@@ -1112,11 +1111,14 @@ pub async fn update_content(
     };
     let submitted_title = draft.title.clone();
     let submitted_body = draft.body_markdown.clone();
-    match state
-        .content_service
-        .update(id, expected_version, draft, intent, now)
-        .await
-    {
+    let automatic = form.slug.trim().is_empty() && draft.slug != existing.slug;
+    let result = with_slug_alternatives(automatic, draft, now, |draft| {
+        state
+            .content_service
+            .update(id, expected_version, draft, intent, now)
+    })
+    .await;
+    match result {
         Ok(content) => {
             let site = state.publish_after_commit("update").await;
             if intent == SaveIntent::Explicit {
@@ -1660,8 +1662,13 @@ impl ContentForm {
         current: Option<&Content>,
     ) -> Result<(ContentDraft, SaveIntent), String> {
         let kind = ContentKind::from_str(&self.kind).map_err(str::to_owned)?;
+        // An empty slug means "from the title": always for a new piece, and
+        // for a draft on every save; a published address never moves on its own.
         let slug = if self.slug.trim().is_empty() {
-            current.map_or_else(|| Slug::timestamped(now), |content| content.slug.clone())
+            match current {
+                Some(content) if content.publication.publish_at().is_some() => content.slug.clone(),
+                _ => Slug::from_title(&self.title, now),
+            }
         } else {
             Slug::parse(&self.slug).map_err(|error| error.to_string())?
         };
@@ -1757,6 +1764,7 @@ impl EditorContent {
             seo_description: String::new(),
             cover_media_id: String::new(),
             updated_at: String::new(),
+            slug_auto: true,
         }
     }
 
@@ -1787,6 +1795,7 @@ impl EditorContent {
             updated_at: content
                 .updated_at
                 .to_rfc3339_opts(SecondsFormat::Secs, true),
+            slug_auto: slug_follows_title(content, now),
         }
     }
 }
@@ -1877,6 +1886,54 @@ fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
         .find_map(|(key, value)| (key == name).then_some(value))
 }
 
+/// Whether the address still follows the title: a draft whose slug is the
+/// one its title (or the clock) would produce. Published addresses are fixed.
+fn slug_follows_title(content: &Content, now: DateTime<Utc>) -> bool {
+    content.publication.publish_at().is_none()
+        && (content.slug.is_timestamped() || content.slug == Slug::from_title(&content.title, now))
+}
+
+/// The addresses to try after a collision: numbered variants of a title
+/// slug, or the second-resolution stamp for a timestamped one.
+fn slug_alternatives(slug: &Slug, now: DateTime<Utc>) -> Vec<Slug> {
+    if slug.is_timestamped() {
+        vec![Slug::timestamped_precise(now)]
+    } else {
+        (2..=6).map(|n| slug.numbered(n)).collect()
+    }
+}
+
+/// Saves a draft, and when its automatically chosen address collides (a
+/// second piece with the same title, two pieces in the same minute) tries
+/// the alternatives before surfacing the conflict. A hand-typed address is
+/// never rewritten.
+async fn with_slug_alternatives<F, Fut>(
+    automatic: bool,
+    draft: ContentDraft,
+    now: DateTime<Utc>,
+    save: F,
+) -> Result<Content, RepositoryError>
+where
+    F: Fn(ContentDraft) -> Fut,
+    Fut: std::future::Future<Output = Result<Content, RepositoryError>>,
+{
+    let mut result = save(draft.clone()).await;
+    if !automatic {
+        return result;
+    }
+    for candidate in slug_alternatives(&draft.slug, now) {
+        if !matches!(result, Err(RepositoryError::SlugTaken(_))) {
+            break;
+        }
+        result = save(ContentDraft {
+            slug: candidate,
+            ..draft.clone()
+        })
+        .await;
+    }
+    result
+}
+
 /// The writer-facing state of one piece: `trashed`, `draft`, `scheduled`
 /// (public with a future instant), or `public`.
 fn content_status(content: &Content, now: DateTime<Utc>) -> &'static str {
@@ -1897,6 +1954,7 @@ fn save_response(content: &Content, now: DateTime<Utc>, site: SiteState) -> serd
         "id": content.id.as_i64(),
         "version": content.version,
         "slug": content.slug.as_str(),
+        "slug_auto": slug_follows_title(content, now),
         "status": content_status(content, now),
         "site": site,
         "publish_at": content

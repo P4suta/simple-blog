@@ -1001,43 +1001,134 @@ async fn explicit_saves_answer_json_when_the_client_asks_for_it() {
 }
 
 #[tokio::test]
-async fn empty_slugs_are_generated_server_side_and_collisions_get_seconds() {
+#[expect(
+    clippy::too_many_lines,
+    reason = "every slug rule from title to publication in one scenario"
+)]
+async fn slugs_follow_the_title_until_the_piece_is_published() {
     let harness = Harness::new().await;
     let (cookie, csrf) = harness.session_cookie().await;
-
-    let first = harness
-        .send(
+    let create = |title: &str| {
+        harness.send(
             Method::POST,
             "/admin/content/",
             Some("application/x-www-form-urlencoded"),
-            form_with_status(&csrf, "日本語タイトル", "", None, "autosave", None),
+            form_with_status(&csrf, title, "", None, "autosave", None),
             Some(&cookie),
         )
-        .await;
+    };
+
+    let first = create("Hello World").await;
     assert_eq!(first.status(), StatusCode::CREATED);
-    let first: serde_json::Value = serde_json::from_str(&text(first).await).unwrap();
-    let first_slug = first["slug"].as_str().unwrap().to_owned();
+    let first = json(first).await;
+    assert_eq!(first["slug"], "hello-world");
+    assert_eq!(first["slug_auto"], true);
+    let id = first["id"].as_i64().unwrap();
+    let version = first["version"].as_i64().unwrap();
+
+    // The same title again: a numbered address rather than a conflict.
+    let twin = json(create("Hello World").await).await;
+    assert_eq!(twin["slug"], "hello-world-2");
+
+    // A title the transliterator cannot read falls back to the clock.
+    let japanese = json(create("日本語タイトル").await).await;
     assert!(
-        is_timestamped_slug(&first_slug),
-        "generated slug must be timestamp-shaped, got {first_slug:?}"
+        is_timestamped_slug(japanese["slug"].as_str().unwrap()),
+        "{}",
+        japanese["slug"]
     );
 
-    // A second empty-slug create in the same minute collides and retries at
-    // second resolution (or lands in the next minute; either way it differs).
-    let second = harness
+    // While it is a draft the address follows the title...
+    let retitled = harness
         .send(
             Method::POST,
-            "/admin/content/",
+            &format!("/admin/content/{id}/"),
             Some("application/x-www-form-urlencoded"),
-            form_with_status(&csrf, "另一篇", "", None, "autosave", None),
+            form_with_status(&csrf, "Hello Again", "", Some(version), "autosave", None),
             Some(&cookie),
         )
         .await;
-    assert_eq!(second.status(), StatusCode::CREATED);
-    let second: serde_json::Value = serde_json::from_str(&text(second).await).unwrap();
-    let second_slug = second["slug"].as_str().unwrap();
-    assert!(is_timestamped_slug(second_slug));
-    assert_ne!(second_slug, first_slug);
+    assert_eq!(retitled.status(), StatusCode::OK);
+    let retitled = json(retitled).await;
+    assert_eq!(retitled["slug"], "hello-again");
+    assert_eq!(retitled["slug_auto"], true);
+    let version = retitled["version"].as_i64().unwrap();
+
+    // ...and the editor keeps the field empty so it keeps following.
+    let editor = text(
+        harness
+            .send(
+                Method::GET,
+                &format!("/admin/content/{id}/edit/"),
+                None,
+                Body::empty(),
+                Some(&cookie),
+            )
+            .await,
+    )
+    .await;
+    assert!(editor.contains("data-slug-auto=\"true\""));
+    assert!(editor.contains("placeholder=\"hello-again\""));
+    assert!(editor.contains("data-url-preview"));
+    assert!(!editor.contains("name=\"slug\" value=\"hello-again\" pattern"));
+
+    // Publishing fixes the address; a later title change leaves it alone.
+    let published = harness
+        .send(
+            Method::POST,
+            &format!("/admin/content/{id}/"),
+            Some("application/x-www-form-urlencoded"),
+            form_with_status(
+                &csrf,
+                "Hello Again",
+                "",
+                Some(version),
+                "explicit",
+                Some("public"),
+            ),
+            Some(&cookie),
+        )
+        .await;
+    assert_eq!(published.status(), StatusCode::SEE_OTHER);
+    let current = harness
+        .repository
+        .find_by_id(ContentId::from_i64(id))
+        .await
+        .unwrap()
+        .unwrap();
+    let renamed = harness
+        .send(
+            Method::POST,
+            &format!("/admin/content/{id}/"),
+            Some("application/x-www-form-urlencoded"),
+            form_with_status(
+                &csrf,
+                "Third Title",
+                "",
+                Some(current.version),
+                "autosave",
+                None,
+            ),
+            Some(&cookie),
+        )
+        .await;
+    let renamed = json(renamed).await;
+    assert_eq!(renamed["slug"], "hello-again");
+    assert_eq!(renamed["slug_auto"], false);
+    let editor = text(
+        harness
+            .send(
+                Method::GET,
+                &format!("/admin/content/{id}/edit/"),
+                None,
+                Body::empty(),
+                Some(&cookie),
+            )
+            .await,
+    )
+    .await;
+    assert!(editor.contains("data-slug-auto=\"false\""));
+    assert!(editor.contains("value=\"hello-again\""));
 }
 
 #[tokio::test]
@@ -1060,15 +1151,17 @@ async fn editor_offers_publish_buttons_instead_of_a_status_select() {
     assert!(!html.contains("<select name=\"status\""));
     assert!(html.contains("name=\"publish_at\""));
     assert!(html.contains("type=\"datetime-local\""));
-    // The slug field is pre-filled with a server-generated timestamp slug.
+    // A new piece starts with no address of its own: the field is empty and
+    // follows the title until the writer types one or publishes.
     let slug_value = html
         .split("name=\"slug\" value=\"")
         .nth(1)
         .and_then(|rest| rest.split('"').next())
         .expect("slug input present");
+    assert!(html.contains("data-slug-auto=\"true\""));
     assert!(
-        is_timestamped_slug(slug_value),
-        "prefilled slug must be timestamp-shaped, got {slug_value:?}"
+        slug_value.is_empty(),
+        "a new piece has no prefilled slug, got {slug_value:?}"
     );
 }
 

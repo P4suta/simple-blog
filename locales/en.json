@@ -65,6 +65,8 @@
   "editor.body_drop_hint": "Drop images anywhere in the document, or click here to pick one.",
   "editor.kind": "Type",
   "editor.slug": "Slug",
+  "editor.slug_auto": "from the title",
+  "editor.slug_redirect_note": "The old address will keep working and lead here.",
   "editor.summary": "Summary",
   "editor.tags": "Tags (comma-separated)",
   "editor.cover": "Cover image",

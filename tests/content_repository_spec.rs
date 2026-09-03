@@ -359,9 +359,10 @@ async fn reverting_to_an_own_historical_slug_keeps_only_the_other_slug_as_a_redi
 async fn active_and_historical_slugs_are_globally_unique() {
     let (_temp, _repository, service) = harness().await;
     let now = Utc::now();
+    // Public, so the rename below leaves a historical address behind.
     let first = service
         .create(
-            post("unique", Publication::Draft),
+            post("unique", Publication::Public { publish_at: now }),
             SaveIntent::Explicit,
             now,
         )
@@ -716,4 +717,82 @@ async fn permanent_delete_only_applies_to_trashed_content_and_cascades() {
         )
         .await
         .expect("new slug is reusable");
+}
+
+#[tokio::test]
+async fn renaming_a_draft_leaves_no_redirect_behind() {
+    let (_temp, repository, service) = harness().await;
+    let now = Utc::now();
+    let created = service
+        .create(
+            post("first-thoughts", Publication::Draft),
+            SaveIntent::Explicit,
+            now,
+        )
+        .await
+        .unwrap();
+    let mut draft = created.to_draft();
+    draft.slug = Slug::parse("second-thoughts").unwrap();
+    let renamed = service
+        .update(
+            created.id,
+            created.version,
+            draft,
+            SaveIntent::Explicit,
+            now,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        repository
+            .resolve_redirect(&Slug::parse("first-thoughts").unwrap())
+            .await
+            .unwrap(),
+        None,
+        "nobody ever saw the old address"
+    );
+    // The old address is free again for another piece.
+    service
+        .create(
+            post("first-thoughts", Publication::Draft),
+            SaveIntent::Explicit,
+            now,
+        )
+        .await
+        .unwrap();
+
+    // Once public, a rename keeps the old address working.
+    let mut published = renamed.to_draft();
+    published.publication = Publication::Public { publish_at: now };
+    let published = service
+        .update(
+            renamed.id,
+            renamed.version,
+            published,
+            SaveIntent::Explicit,
+            now,
+        )
+        .await
+        .unwrap();
+    let mut moved = published.to_draft();
+    moved.slug = Slug::parse("third-thoughts").unwrap();
+    service
+        .update(
+            published.id,
+            published.version,
+            moved,
+            SaveIntent::Explicit,
+            now,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        repository
+            .resolve_redirect(&Slug::parse("second-thoughts").unwrap())
+            .await
+            .unwrap()
+            .as_ref()
+            .map(Slug::as_str),
+        Some("third-thoughts")
+    );
 }

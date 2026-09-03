@@ -669,6 +669,7 @@ impl ContentRepository for SqliteRepository {
             old_slug,
             created_at,
             was_visible,
+            was_public,
         } = load_update_target(&mut transaction, id, expected_version, now).await?;
         if old_slug != prepared.draft.slug.as_str() {
             ensure_slug_available(&mut transaction, &prepared.draft.slug, Some(id)).await?;
@@ -717,7 +718,9 @@ impl ContentRepository for SqliteRepository {
             });
         }
 
-        if old_slug != prepared.draft.slug.as_str() {
+        // A draft's address was never public, so a rename leaves nothing
+        // behind; once readers may have seen it, the old address keeps working.
+        if old_slug != prepared.draft.slug.as_str() && was_public {
             sqlx::query(
                 "INSERT INTO redirects (old_slug, content_id, created_at)
                  VALUES (?, ?, ?)
@@ -1058,6 +1061,8 @@ struct UpdateTarget {
     old_slug: String,
     created_at: DateTime<Utc>,
     was_visible: bool,
+    /// Public or scheduled before this update: its address may be known.
+    was_public: bool,
 }
 
 /// Reads the current row and applies the guards every edit shares: the piece
@@ -1097,6 +1102,7 @@ async fn load_update_target(
     Ok(UpdateTarget {
         old_slug: current.try_get("slug").map_err(storage)?,
         created_at: current.try_get("created_at").map_err(storage)?,
+        was_public: current_status == "public",
         was_visible: current_status == "public"
             && current_publish_at.is_some_and(|publish_at| publish_at <= now),
     })

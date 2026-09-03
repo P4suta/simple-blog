@@ -579,6 +579,25 @@ if (editor) {
   const counter = editor.querySelector<HTMLElement>("[data-count]");
   const shortcuts = editor.querySelector<HTMLElement>("[data-shortcuts]");
   const focusToggle = editor.querySelector<HTMLButtonElement>("[data-focus-toggle]");
+  const urlPreview = editor.querySelector<HTMLOutputElement>("[data-url-preview]");
+  const redirectNote = editor.querySelector<HTMLElement>("[data-slug-redirect-note]");
+  // While the address follows the title the field stays empty and the server
+  // keeps deriving it; typing an address, or publishing, fixes it.
+  let slugAuto = slugField.dataset.slugAuto === "true";
+  let currentSlug = slugField.placeholder;
+  const showAddress = (slug: string): void => {
+    currentSlug = slug;
+    if (slugAuto) slugField.placeholder = slug;
+    if (urlPreview) urlPreview.value = `${urlPreview.dataset.origin ?? ""}/${slugField.value.trim() || slug}/`;
+  };
+  slugField.addEventListener("input", () => {
+    slugAuto = false;
+    slugField.dataset.slugAuto = "false";
+    if (urlPreview) urlPreview.value = `${urlPreview.dataset.origin ?? ""}/${slugField.value.trim() || currentSlug}/`;
+    if (redirectNote) {
+      redirectNote.hidden = !(slugField.dataset.published === "true" && slugField.value.trim() !== currentSlug);
+    }
+  });
   const trashed = editor.dataset.trashed === "true";
   const language = document.documentElement.lang;
   const siteZone = editor.dataset.siteZone ?? "";
@@ -654,6 +673,7 @@ if (editor) {
     };
     statusLabel.textContent = labels[status] ?? status;
     statusTime.hidden = status !== "scheduled";
+    slugField.dataset.published = String(status !== "draft");
     if (publishAtUtc) {
       statusTime.setAttribute("datetime", publishAtUtc);
       statusTime.textContent = describeInstant(publishAtUtc);
@@ -874,6 +894,7 @@ if (editor) {
       if (typeof value === "string") parameters.append(name, value);
     }
     parameters.set("intent", "autosave");
+    if (slugAuto) parameters.set("slug", "");
     // The control holds a local time; the server takes an instant. It is
     // sent only when the writer changed it or is publishing, so an untouched
     // date never re-dates a piece.
@@ -950,8 +971,14 @@ if (editor) {
       version.value = String(result.version);
       const trashVersion = document.querySelector<HTMLInputElement>("[data-trash-version]");
       if (trashVersion) trashVersion.value = String(result.version);
-      if (result.slug && slugField.value.trim() === "") {
-        slugField.value = result.slug;
+      if (typeof result.slug === "string") {
+        if (result.slug_auto === false && slugAuto) {
+          // Publishing fixed the address: show it as a value from now on.
+          slugAuto = false;
+          slugField.dataset.slugAuto = "false";
+          slugField.value = result.slug;
+        }
+        showAddress(result.slug);
       }
       if (statusToSend) pendingStatus = undefined;
       if (typeof result.status === "string") {

@@ -65,6 +65,8 @@
   "editor.body_drop_hint": "画像はこの文書のどこへでもdrop、またはここをクリックして選択。",
   "editor.kind": "種類",
   "editor.slug": "Slug",
+  "editor.slug_auto": "タイトルから自動生成",
+  "editor.slug_redirect_note": "以前のアドレスはそのまま使え、ここへ転送されます。",
   "editor.summary": "概要",
   "editor.tags": "タグ（カンマ区切り）",
   "editor.cover": "カバー画像",

@@ -378,3 +378,36 @@ fn line_diff_marks_only_what_a_restore_would_change() {
     assert_eq!(fallback[0].kind, DiffKind::Removed);
     assert_eq!(fallback[2_500].kind, DiffKind::Added);
 }
+
+#[test]
+fn slugs_come_from_titles_when_they_can_and_from_the_clock_otherwise() {
+    let now = Utc.with_ymd_and_hms(2026, 9, 3, 8, 12, 0).unwrap();
+    assert_eq!(
+        Slug::from_title("  Hello, World!  ", now).as_str(),
+        "hello-world"
+    );
+    assert_eq!(
+        Slug::from_title("Café à la Crème", now).as_str(),
+        "cafe-a-la-creme"
+    );
+    assert_eq!(
+        Slug::from_title("Archive", now).as_str(),
+        "archive-post",
+        "a reserved word gains a suffix instead of colliding with a route"
+    );
+    let japanese = Slug::from_title("今日の記事", now);
+    assert!(japanese.is_timestamped(), "{japanese}");
+    let mixed = Slug::from_title("Rust と 所有権", now);
+    assert!(mixed.is_timestamped(), "{mixed}");
+    assert!(Slug::from_title("한국어 제목", now).is_timestamped());
+    assert!(Slug::from_title("!!!", now).is_timestamped());
+    let long = Slug::from_title(&"word ".repeat(60), now);
+    assert!(long.as_str().len() <= 120);
+    assert!(!long.as_str().ends_with('-'));
+
+    let base = Slug::parse("hello-world").unwrap();
+    assert_eq!(base.numbered(2).as_str(), "hello-world-2");
+    let near_limit = Slug::parse(&"a".repeat(119)).unwrap();
+    assert!(near_limit.numbered(12).as_str().len() <= 120);
+    assert!(near_limit.numbered(12).as_str().ends_with("-12"));
+}
