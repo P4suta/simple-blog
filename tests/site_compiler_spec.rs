@@ -1057,3 +1057,70 @@ fn search_and_not_found_pages_are_noindex() {
         );
     }
 }
+
+#[test]
+fn body_images_get_dimensions_lazy_loading_srcset_and_figure_captions() {
+    use simple_blog::{
+        application::ports::MarkdownRenderer as _, infrastructure::markdown::ComrakMarkdownRenderer,
+    };
+
+    let now = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
+    let id = MediaId::parse("a".repeat(64)).unwrap();
+    let asset = MediaAsset {
+        id: id.clone(),
+        original_name: "sunset.png".into(),
+        original_filename: format!("{id}.webp"),
+        mime_type: "image/webp".into(),
+        extension: "webp".into(),
+        width: 1600,
+        height: 900,
+        byte_size: 1234,
+        alt_text: "Blue & calm".into(),
+        caption: String::new(),
+        animated: false,
+        variants: vec![
+            MediaVariant {
+                width: 480,
+                height: 270,
+                byte_size: 100,
+                filename: format!("{id}-480w.webp"),
+            },
+            MediaVariant {
+                width: 960,
+                height: 540,
+                byte_size: 200,
+                filename: format!("{id}-960w.webp"),
+            },
+        ],
+        created_at: now,
+    };
+    let markdown = format!(
+        "![](/media/{id}.webp \"Sunset\")\n\nText ![inline](/media/{id}.webp) more.\n\n```\n<img src=\"/media/{id}.webp\">\n```\n"
+    );
+    let mut post = published_post(1, "Pictures", "pictures", 5);
+    post.body_markdown = markdown.clone();
+    post.body_html = ComrakMarkdownRenderer::default().render(&markdown).html;
+    let mut site = snapshot(vec![post]);
+    site.media.push(asset);
+    let release = compile_snapshot(&site);
+
+    let page = body(&release, "/pictures/");
+    let figure = format!(
+        "<figure><picture><source type=\"image/webp\" srcset=\"/media/{id}-480w.webp 480w, /media/{id}-960w.webp 960w\" sizes=\"(max-width: 700px) 100vw, 640px\"><img src=\"/media/{id}.webp\" alt=\"Blue &amp; calm\" width=\"1600\" height=\"900\" loading=\"lazy\" decoding=\"async\"></picture><figcaption>Sunset</figcaption></figure>"
+    );
+    assert!(page.contains(&figure), "{page}");
+    let inline_start = page
+        .find("<p>Text <picture>")
+        .expect("inline image keeps its paragraph");
+    let inline = &page[inline_start..];
+    assert!(inline.contains("alt=\"inline\" width=\"1600\" height=\"900\" loading=\"lazy\""));
+    assert!(!inline[..inline.find("</p>").unwrap()].contains("<figure>"));
+    assert!(
+        page.contains("&lt;img src=\"/media/"),
+        "code blocks stay literal"
+    );
+
+    // Feeds and the search corpus keep the undecorated body.
+    assert!(!body(&release, "/feed.xml").contains("<picture"));
+    assert!(!body(&release, "/assets/search-index.json").contains("srcset"));
+}

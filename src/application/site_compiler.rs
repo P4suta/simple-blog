@@ -12,6 +12,7 @@ use thiserror::Error;
 
 use crate::{
     application::{
+        body_media::decorate_body_media,
         ports::ContentLink,
         static_search::{StaticSearchDocument, StaticSearchIndexV1},
         templates::{TemplateError, Templates},
@@ -595,7 +596,10 @@ impl SiteCompiler {
         newer: Option<ContentLink>,
     ) -> ContentPage {
         let Scope {
-            snapshot, dates, ..
+            snapshot,
+            media,
+            dates,
+            ..
         } = *scope;
         let locale = snapshot.settings.locale;
         let published = content.publication.publish_at();
@@ -621,7 +625,7 @@ impl SiteCompiler {
             kind: content.kind.as_str(),
             title: content.title.clone(),
             summary: content.summary.clone(),
-            body_html: content.body_html.clone(),
+            body_html: decorate_body_media(&content.body_html, media),
             publish_at: published.map(|at| dates.iso(at)),
             date: published.map(|at| dates.long(at)),
             updated,

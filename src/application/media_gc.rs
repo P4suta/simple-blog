@@ -7,9 +7,8 @@
 
 use std::collections::HashSet;
 
-use crate::domain::{content::Content, theme::SiteSettings};
+use crate::domain::{content::Content, media::media_id_from_path, theme::SiteSettings};
 
-const MEDIA_ID_LENGTH: usize = 64;
 const MEDIA_URL_PREFIX: &str = "/media/";
 
 #[must_use]
@@ -48,15 +47,8 @@ pub fn gc_survivors(
 /// because neither escapes the slash.
 pub fn collect_media_references(text: &str, referenced: &mut HashSet<String>) {
     for (index, _) in text.match_indices(MEDIA_URL_PREFIX) {
-        let candidate = &text.as_bytes()[index + MEDIA_URL_PREFIX.len()..];
-        let Some(id) = candidate.get(..MEDIA_ID_LENGTH) else {
-            continue;
-        };
-        if id
-            .iter()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-        {
-            referenced.insert(id.iter().map(|byte| char::from(*byte)).collect());
+        if let Some(id) = media_id_from_path(&text[index..]) {
+            referenced.insert(id.into());
         }
     }
 }
@@ -64,6 +56,8 @@ pub fn collect_media_references(text: &str, referenced: &mut HashSet<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const MEDIA_ID_LENGTH: usize = 64;
 
     #[test]
     fn body_reference_scanner_accepts_only_complete_lowercase_content_ids() {

@@ -3,7 +3,7 @@ use comrak::{Options, markdown_to_html};
 
 use crate::{
     application::ports::{MarkdownRenderer, RenderedMarkdown},
-    domain::search,
+    domain::{html::push_escaped, search},
 };
 
 /// GFM-compatible renderer with raw HTML disabled and a second sanitization pass.
@@ -413,19 +413,6 @@ fn highlighted(output: &mut String, class: &str, value: &str) {
     output.push_str("\">");
     push_escaped(output, value);
     output.push_str("</span>");
-}
-
-fn push_escaped(output: &mut String, value: &str) {
-    for character in value.chars() {
-        match character {
-            '&' => output.push_str("&amp;"),
-            '<' => output.push_str("&lt;"),
-            '>' => output.push_str("&gt;"),
-            '"' => output.push_str("&quot;"),
-            '\'' => output.push_str("&#39;"),
-            _ => output.push(character),
-        }
-    }
 }
 
 #[cfg(test)]
