@@ -129,11 +129,20 @@ impl SiteCompiler {
         }
 
         let tags = tag_groups(&public);
+        let search_index = Self::search_index(&public)?;
+        let search_index_version = fingerprint(&search_index);
         builder = self.add_home(builder, snapshot, &origin, &posts, &media)?;
         builder = self.add_archives(builder, snapshot, &origin, &posts, &tags, &media)?;
         builder = self.add_contents(builder, snapshot, &origin, &public, &posts, &media)?;
         builder = self.add_machine_files(builder, snapshot, &origin, &public, &posts, &tags)?;
-        builder = self.add_static_assets(builder, snapshot, &origin, &media)?;
+        builder = builder.asset(
+            "/assets/search-index.json",
+            search_index,
+            "application/json; charset=utf-8",
+            None,
+        )?;
+        builder =
+            self.add_static_assets(builder, snapshot, &origin, &media, &search_index_version)?;
 
         let release = builder.finish()?;
         let pruned_route_count = previous.map_or(0, |previous| {
@@ -569,6 +578,32 @@ impl SiteCompiler {
         )?)
     }
 
+    /// The client-side search corpus: every visible piece, folded once here
+    /// so the browser never has to.
+    fn search_index(public: &[Content]) -> Result<Vec<u8>, SiteCompilerError> {
+        let documents = public
+            .iter()
+            .map(|content| {
+                StaticSearchDocument::new(
+                    content.id.as_i64(),
+                    content.slug.as_str(),
+                    &content.title,
+                    &content.summary,
+                    &search::html_to_text(&content.body_html),
+                    &content
+                        .publication
+                        .publish_at()
+                        .unwrap_or(content.created_at)
+                        .format("%Y-%m-%d")
+                        .to_string(),
+                )
+            })
+            .collect::<Vec<_>>();
+        StaticSearchIndexV1::new(documents)
+            .canonical_bytes()
+            .map_err(|error| SiteCompilerError::SearchIndex(error.to_string()))
+    }
+
     fn add_machine_files(
         &self,
         mut builder: ReleaseBuilder,
@@ -653,33 +688,6 @@ impl SiteCompiler {
             None,
         )?;
 
-        let documents = public
-            .iter()
-            .map(|content| {
-                StaticSearchDocument::new(
-                    content.id.as_i64(),
-                    content.slug.as_str(),
-                    &content.title,
-                    &content.summary,
-                    &search::html_to_text(&content.body_html),
-                    &content
-                        .publication
-                        .publish_at()
-                        .unwrap_or(content.created_at)
-                        .format("%Y-%m-%d")
-                        .to_string(),
-                )
-            })
-            .collect::<Vec<_>>();
-        let index = StaticSearchIndexV1::new(documents)
-            .canonical_bytes()
-            .map_err(|error| SiteCompilerError::SearchIndex(error.to_string()))?;
-        builder = builder.asset(
-            "/assets/search-index.json",
-            index,
-            "application/json; charset=utf-8",
-            None,
-        )?;
         Ok(builder)
     }
 
@@ -689,6 +697,7 @@ impl SiteCompiler {
         snapshot: &SiteSnapshotV1,
         origin: &str,
         media: &HashMap<&str, &MediaAsset>,
+        search_index_version: &str,
     ) -> Result<ReleaseBuilder, SiteCompilerError> {
         let locale = snapshot.settings.locale;
         builder = builder
@@ -734,6 +743,9 @@ impl SiteCompiler {
                 results: Vec::<StaticSearchResult>::new(),
                 static_search: true,
                 search_js_version: fingerprint(SEARCH_JS),
+                // The index is served immutable for a year; a versioned URL is
+                // the only thing that keeps a returning reader's search fresh.
+                search_index_url: format!("/assets/search-index.json?v={search_index_version}"),
             },
         );
         let search = self
@@ -1164,6 +1176,7 @@ struct StaticSearchPage<'a> {
     results: Vec<StaticSearchResult>,
     static_search: bool,
     search_js_version: String,
+    search_index_url: String,
 }
 
 #[derive(Serialize)]
@@ -1185,8 +1198,8 @@ fn content_link(content: &Content) -> ContentLink {
     }
 }
 
-fn fingerprint(value: &str) -> String {
-    blake3::hash(value.as_bytes()).to_hex()[..8].to_owned()
+fn fingerprint(value: impl AsRef<[u8]>) -> String {
+    blake3::hash(value.as_ref()).to_hex()[..8].to_owned()
 }
 
 #[cfg(test)]

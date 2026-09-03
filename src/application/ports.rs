@@ -1,5 +1,7 @@
 //! Small capability-oriented ports keep external libraries out of the domain.
 
+use std::collections::HashSet;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use thiserror::Error;
@@ -152,6 +154,13 @@ pub trait ContentRepository: Send + Sync {
     /// content answers `NotFound`, so a stale page can never destroy
     /// restored work.
     async fn delete_permanently(&self, id: ContentId) -> Result<(), RepositoryError>;
+}
+
+/// Media identities still mentioned by stored revision snapshots, so a sweep
+/// keeps what history may restore.
+#[async_trait]
+pub trait RevisionMediaReferences: Send + Sync {
+    async fn revision_media_ids(&self) -> Result<HashSet<String>, RepositoryError>;
 }
 
 /// A minimal reference to another content item.
@@ -347,6 +356,15 @@ pub trait AuthRepository: Send + Sync {
 
     /// Ends one session immediately; `false` when no such session existed.
     async fn revoke_session(&self, token_hash: SecretHash) -> Result<bool, AuthError>;
+
+    /// Moves a live session's expiry forward without changing its tokens;
+    /// `false` when the session is unknown or already expired.
+    async fn extend_session(
+        &self,
+        token_hash: SecretHash,
+        expires_at: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> Result<bool, AuthError>;
 
     async fn replace_recovery_codes(
         &self,

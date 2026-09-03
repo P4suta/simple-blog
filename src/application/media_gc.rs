@@ -1,8 +1,9 @@
-//! Media is deleted the moment nothing current references it.
+//! Media is deleted only once nothing can show it any more.
 //!
-//! The reference set is computed from current content (trashed pieces
-//! included, since the trash is recoverable) and site settings only —
-//! revision snapshots deliberately do not keep media alive.
+//! The live reference set comes from current content (trashed pieces
+//! included, since the trash is recoverable) and site settings. Revision
+//! snapshots keep their images alive too: restoring an older version must
+//! never bring back a broken picture, so history is part of the survivor set.
 
 use std::collections::HashSet;
 
@@ -24,14 +25,30 @@ pub fn referenced_media_ids(contents: &[Content], settings: &SiteSettings) -> Ha
         if let Some(id) = &content.cover_media_id {
             referenced.insert(id.clone());
         }
-        collect_body_references(&content.body_markdown, &mut referenced);
+        collect_media_references(&content.body_markdown, &mut referenced);
     }
     referenced
 }
 
-fn collect_body_references(markdown: &str, referenced: &mut HashSet<String>) {
-    for (index, _) in markdown.match_indices(MEDIA_URL_PREFIX) {
-        let candidate = &markdown.as_bytes()[index + MEDIA_URL_PREFIX.len()..];
+/// Everything a sweep must keep: live references plus what stored revisions
+/// still point at.
+#[must_use]
+pub fn gc_survivors(
+    contents: &[Content],
+    settings: &SiteSettings,
+    revision_references: &HashSet<String>,
+) -> HashSet<String> {
+    let mut survivors = referenced_media_ids(contents, settings);
+    survivors.extend(revision_references.iter().cloned());
+    survivors
+}
+
+/// Adds every complete media identity mentioned as `/media/<id>` in `text`.
+/// Works on Markdown as well as on the JSON a revision snapshot stores,
+/// because neither escapes the slash.
+pub fn collect_media_references(text: &str, referenced: &mut HashSet<String>) {
+    for (index, _) in text.match_indices(MEDIA_URL_PREFIX) {
+        let candidate = &text.as_bytes()[index + MEDIA_URL_PREFIX.len()..];
         let Some(id) = candidate.get(..MEDIA_ID_LENGTH) else {
             continue;
         };
@@ -58,9 +75,28 @@ mod tests {
         );
         let mut referenced = HashSet::new();
 
-        collect_body_references(&markdown, &mut referenced);
+        collect_media_references(&markdown, &mut referenced);
 
         assert_eq!(referenced, HashSet::from([valid]));
+    }
+
+    #[test]
+    fn survivors_include_revision_references_alongside_live_ones() {
+        let live = "b".repeat(MEDIA_ID_LENGTH);
+        let historical = "c".repeat(MEDIA_ID_LENGTH);
+        let settings = SiteSettings {
+            site_title: "t".into(),
+            site_description: String::new(),
+            locale: crate::domain::theme::Locale::En,
+            logo_media_id: Some(live.clone()),
+            favicon_media_id: None,
+            custom_css: String::new(),
+        };
+        let revisions = HashSet::from([historical.clone()]);
+
+        let survivors = gc_survivors(&[], &settings, &revisions);
+
+        assert_eq!(survivors, HashSet::from([live, historical]));
     }
 
     #[test]
@@ -68,7 +104,7 @@ mod tests {
         let markdown = format!("/media/{}é", "a".repeat(MEDIA_ID_LENGTH - 1));
         let mut referenced = HashSet::new();
 
-        collect_body_references(&markdown, &mut referenced);
+        collect_media_references(&markdown, &mut referenced);
 
         assert!(referenced.is_empty());
     }

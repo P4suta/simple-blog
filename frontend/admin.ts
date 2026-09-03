@@ -423,6 +423,26 @@ passkeyAdd
     }
   });
 
+/**
+ * A save is durable once the server answers; the public site may still lag
+ * behind while a failed build is retried. The chip says which, and clears the
+ * pending mark on the next save that reaches the site.
+ */
+function showSaved(
+  chip: HTMLElement,
+  site: unknown,
+  savedText: string,
+  pendingText: string,
+): void {
+  if (site === "pending") {
+    chip.dataset.pending = "true";
+    chip.textContent = pendingText;
+  } else {
+    delete chip.dataset.pending;
+    chip.textContent = savedText;
+  }
+}
+
 // Settings save themselves like the editor does: debounced on input, flushed
 // by Ctrl+S, no save button.
 const settingsForm = document.querySelector<HTMLFormElement>("[data-settings]");
@@ -430,6 +450,7 @@ if (settingsForm) {
   const saveState = document.querySelector<HTMLElement>("[data-save-state]")!;
   const msg = {
     saved: settingsForm.dataset.msgSaved ?? "Saved",
+    savedPending: settingsForm.dataset.msgSavedPending ?? "Saved · retrying publication",
     saving: settingsForm.dataset.msgSaving ?? "Saving…",
     unsaved: settingsForm.dataset.msgUnsaved ?? "Unsaved",
   };
@@ -456,10 +477,11 @@ if (settingsForm) {
         body: parameters,
       });
       if (!response.ok) throw new RequestFailure(response.status, await response.text());
+      const result = await response.json();
       if (!saveAgain) {
         dirty = false;
         delete saveState.dataset.error;
-        saveState.textContent = msg.saved;
+        showSaved(saveState, result.site, msg.saved, msg.savedPending);
       }
     } catch (reason) {
       saveState.dataset.error = "true";
@@ -550,6 +572,7 @@ if (editor) {
   const msg = {
     saved: editor.dataset.msgSaved ?? "Saved",
     savedAt: editor.dataset.msgSavedAt ?? "Saved {time}",
+    savedPending: editor.dataset.msgSavedPending ?? "Saved {time} · retrying publication",
     saving: editor.dataset.msgSaving ?? "Saving…",
     unsaved: editor.dataset.msgUnsaved ?? "Unsaved",
     needTitle: editor.dataset.msgNeedTitle ?? "Add a title to start saving",
@@ -797,9 +820,12 @@ if (editor) {
       }
       if (!saveAgain) {
         dirty = false;
-        saveState.textContent = msg.savedAt.replace(
-          "{time}",
-          formatLocalTime(new Date(), language),
+        const time = formatLocalTime(new Date(), language);
+        showSaved(
+          saveState,
+          result.site,
+          msg.savedAt.replace("{time}", time),
+          msg.savedPending.replace("{time}", time),
         );
       }
     } catch (reason) {

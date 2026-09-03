@@ -25,6 +25,44 @@ pub enum PublicationDisposition {
     Unchanged,
 }
 
+/// Whether the public site reflects the latest committed state.
+///
+/// A save is durable the moment its transaction commits; the release that
+/// shows it may lag behind while a failed build is retried, and the writer
+/// deserves to know which of the two happened.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SiteState {
+    Current,
+    Pending,
+}
+
+/// Backoff between publication retries after a failed build.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RetrySchedule {
+    pub initial: std::time::Duration,
+    pub second: std::time::Duration,
+    pub cap: std::time::Duration,
+}
+
+impl RetrySchedule {
+    pub const DEFAULT: Self = Self {
+        initial: std::time::Duration::from_secs(5),
+        second: std::time::Duration::from_secs(30),
+        cap: std::time::Duration::from_secs(300),
+    };
+
+    /// The wait after `failures` consecutive failed attempts (zero-based).
+    #[must_use]
+    pub const fn delay(self, failures: u32) -> std::time::Duration {
+        match failures {
+            0 => self.initial,
+            1 => self.second,
+            _ => self.cap,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PublicationOutcome {
     pub build_id: uuid::Uuid,
@@ -235,7 +273,8 @@ pub enum PublicationServiceError {
 }
 
 impl PublicationServiceError {
-    const fn code(&self) -> &'static str {
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
         match self {
             Self::Repository(_) => "publication_repository_failed",
             Self::Compiler(_) => "publication_compile_failed",
@@ -243,7 +282,8 @@ impl PublicationServiceError {
         }
     }
 
-    const fn phase(&self) -> &'static str {
+    #[must_use]
+    pub const fn phase(&self) -> &'static str {
         match self {
             Self::Repository(_) => "snapshot",
             Self::Compiler(_) => "compile",

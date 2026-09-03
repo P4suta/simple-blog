@@ -871,3 +871,30 @@ fn content_pages_carry_a_table_of_contents_only_for_three_or_more_headings() {
     let short = Html::parse_document(body(&release, "/short/"));
     assert!(attribute(&short, "nav.toc", "aria-label").is_empty());
 }
+
+#[test]
+fn search_page_links_the_versioned_index_and_explains_the_javascript_requirement() {
+    let release = compile(vec![published_post(1, "Published", "published", 5)]);
+    let index = body(&release, "/assets/search-index.json");
+    let expected = format!(
+        "/assets/search-index.json?v={}",
+        &blake3::hash(index.as_bytes()).to_hex()[..8]
+    );
+    let page = Html::parse_document(body(&release, "/search/"));
+    assert_eq!(
+        attribute(&page, "form[data-static-search]", "data-index"),
+        [expected.as_str()]
+    );
+    let noscript = body(&release, "/search/");
+    assert!(noscript.contains("<noscript>"));
+    assert!(noscript.contains("JavaScript"));
+    assert!(noscript.contains("href=\"/archive/\""));
+
+    // A different index means a different URL, so no cache can serve a stale one.
+    let changed = compile(vec![published_post(1, "Renamed", "published", 5)]);
+    let changed_page = Html::parse_document(body(&changed, "/search/"));
+    assert_ne!(
+        attribute(&changed_page, "form[data-static-search]", "data-index"),
+        [expected.as_str()]
+    );
+}

@@ -91,7 +91,10 @@
   if (input) input.value = query;
   if (!query.trim()) return;
   status.textContent = status.dataset.loading || "Searching…";
-  fetch("/assets/search-index.json", { headers: { accept: "application/json" } })
+  // The index URL carries the release's fingerprint (immutable caching
+  // would otherwise pin a returning reader to a year-old corpus).
+  const indexUrl = form.dataset.index || "/assets/search-index.json";
+  fetch(indexUrl, { headers: { accept: "application/json" } })
     .then((response) => {
       if (!response.ok) throw new Error(String(response.status));
       return response.json();

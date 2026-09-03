@@ -1,4 +1,4 @@
-use std::{path::Path, str::FromStr, time::Duration};
+use std::{collections::HashSet, path::Path, str::FromStr, time::Duration};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -13,10 +13,13 @@ use crate::{
         AuthError, AuthRepository, ContentLink, ContentRepository, Engagement,
         EngagementRepository, LikeRepository, MediaRepository, MediaRepositoryError,
         PasskeyRepository, PortableRepository, PreparedContent, PublicSnapshotRepository,
-        PublicationState, RepositoryError, SearchHit, SearchRepository, SetupRegistration,
-        SiteRepository,
+        PublicationState, RepositoryError, RevisionMediaReferences, SearchHit, SearchRepository,
+        SetupRegistration, SiteRepository,
     },
-    application::site_compiler::{PublicRedirect, SiteSnapshotV1},
+    application::{
+        media_gc,
+        site_compiler::{PublicRedirect, SiteSnapshotV1},
+    },
     domain::auth::{SecretHash, SessionRecord, SetupPurpose, StoredPasskey},
     domain::content::{
         Content, ContentId, ContentKind, ContentRevision, Publication, SaveIntent, Slug, Tag,
@@ -121,6 +124,26 @@ impl AuthRepository for SqliteRepository {
             })
         })
         .transpose()
+    }
+
+    async fn extend_session(
+        &self,
+        token_hash: SecretHash,
+        expires_at: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> Result<bool, AuthError> {
+        let result = sqlx::query(
+            "UPDATE sessions SET expires_at = ?, last_seen_at = ?
+             WHERE token_hash = ? AND expires_at > ?",
+        )
+        .bind(expires_at)
+        .bind(now)
+        .bind(token_hash.as_bytes().as_slice())
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(auth_storage)?;
+        Ok(result.rows_affected() == 1)
     }
 
     async fn rotate_session(
@@ -2095,6 +2118,26 @@ async fn insert_portable_owner(
         .map_err(storage)?;
     }
     Ok(())
+}
+
+#[async_trait]
+impl RevisionMediaReferences for SqliteRepository {
+    async fn revision_media_ids(&self) -> Result<HashSet<String>, RepositoryError> {
+        let rows: Vec<(String, Option<String>)> = sqlx::query_as(
+            "SELECT snapshot_json, json_extract(snapshot_json, '$.cover_media_id') FROM revisions",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage)?;
+        let mut referenced = HashSet::new();
+        for (snapshot, cover) in rows {
+            media_gc::collect_media_references(&snapshot, &mut referenced);
+            if let Some(cover) = cover {
+                referenced.insert(cover);
+            }
+        }
+        Ok(referenced)
+    }
 }
 
 #[async_trait]

@@ -14,10 +14,13 @@ use uuid::Uuid;
 use webauthn_rs::prelude::{PublicKeyCredential, RegisterPublicKeyCredential};
 
 use crate::{
-    application::{content::SaveIntent, ports::RepositoryError, site::DEFAULT_THEME_CSS},
+    application::{
+        auth::AuthService, content::SaveIntent, ports::RepositoryError, publication::SiteState,
+        site::DEFAULT_THEME_CSS,
+    },
     domain::diff::{DiffLine, diff_lines},
     domain::{
-        auth::{SessionIdentity, SessionSecrets, SetupPurpose, StoredPasskey},
+        auth::{SecretToken, SessionIdentity, SessionSecrets, SetupPurpose, StoredPasskey},
         content::{Content, ContentDraft, ContentId, ContentKind, Publication, Slug},
         media::MediaId,
         theme::{Locale, NavigationItem, SiteSettings},
@@ -36,6 +39,8 @@ struct DashboardContext {
     q_query: String,
     /// Which empty-state sentence applies when `contents` is empty.
     empty_key: &'static str,
+    /// The active release lags behind a committed change; a retry is pending.
+    site_pending: bool,
 }
 
 #[derive(Serialize)]
@@ -274,6 +279,9 @@ pub struct SiteSettingsForm {
 struct AdminIdentity {
     session: SessionIdentity,
     csrf: String,
+    /// Set when the session was just extended: the page must re-send both
+    /// cookies so the browser's copies live as long as the server's.
+    refreshed: Option<SessionSecrets>,
 }
 
 #[derive(Deserialize)]
@@ -389,19 +397,40 @@ pub async fn dashboard(
         DashboardFilter::All if !any_content && query.q.trim().is_empty() => "dashboard.empty",
         _ => "dashboard.empty_filtered",
     };
-    state
+    let site_pending = state.site_state().await? == SiteState::Pending;
+    let page = state
         .render_admin(
             "admin/dashboard.html",
             DashboardContext {
-                csrf: identity.csrf,
+                csrf: identity.csrf.clone(),
                 contents,
                 filter: filter.as_str(),
                 q_query: percent_encode_query(query.q.trim()),
                 q: query.q.trim().to_owned(),
                 empty_key,
+                site_pending,
             },
         )
-        .await
+        .await?;
+    with_session_refresh(page, &identity, state.secure_cookies())
+}
+
+/// Rebuilds the public site on request, typically from the dashboard banner
+/// after a deferred publication.
+pub async fn publish_site(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<CsrfForm>,
+) -> Result<Response, WebError> {
+    if let Err(response) = authenticate(&state, &headers, Some(&form.csrf)).await? {
+        return Ok(response);
+    }
+    let site = state.publish_after_commit("manual").await;
+    if wants_json(&headers) {
+        Ok(Json(json!({ "ok": site == SiteState::Current, "site": site })).into_response())
+    } else {
+        Ok(redirect(StatusCode::SEE_OTHER, "/admin/"))
+    }
 }
 
 pub async fn new_content(
@@ -412,12 +441,12 @@ pub async fn new_content(
         Ok(identity) => identity,
         Err(response) => return Ok(response),
     };
-    state
+    let page = state
         .render_admin(
             "admin/editor.html",
             EditorContext {
                 title: "New".into(),
-                csrf: identity.csrf,
+                csrf: identity.csrf.clone(),
                 action: "/admin/content/".into(),
                 content_id: None,
                 version: None,
@@ -428,7 +457,8 @@ pub async fn new_content(
                 trashed: false,
             },
         )
-        .await
+        .await?;
+    with_session_refresh(page, &identity, state.secure_cookies())
 }
 
 pub async fn settings_page(
@@ -466,11 +496,11 @@ pub async fn settings_page(
         })
         .collect();
     let reauth_ok = recently_reauthenticated(&identity, state.clock.now());
-    state
+    let page = state
         .render_admin(
             "admin/settings.html",
             SettingsContext {
-                csrf: identity.csrf,
+                csrf: identity.csrf.clone(),
                 settings,
                 navigation,
                 logo_url,
@@ -479,7 +509,8 @@ pub async fn settings_page(
                 reauth_ok,
             },
         )
-        .await
+        .await?;
+    with_session_refresh(page, &identity, state.secure_cookies())
 }
 
 /// Puts the stock stylesheet back. The owner's edits are gone afterwards,
@@ -501,9 +532,9 @@ pub async fn reset_theme(
         .await
     {
         Ok(()) => {
-            state.publish_now().await?;
+            let site = state.publish_after_commit("theme_reset").await;
             if wants_json(&headers) {
-                Ok(Json(json!({ "ok": true })).into_response())
+                Ok(Json(json!({ "ok": true, "site": site })).into_response())
             } else {
                 Ok(redirect(StatusCode::SEE_OTHER, "/admin/settings/"))
             }
@@ -532,10 +563,10 @@ pub async fn update_settings(
         .await
     {
         Ok(()) => {
-            state.publish_now().await?;
+            let site = state.publish_after_commit("settings").await;
             run_media_gc(&state).await;
             if wants_json(&headers) {
-                Ok(Json(json!({ "ok": true })).into_response())
+                Ok(Json(json!({ "ok": true, "site": site })).into_response())
             } else {
                 Ok(redirect(StatusCode::SEE_OTHER, "/admin/settings/"))
             }
@@ -592,12 +623,12 @@ pub async fn edit_content(
             .unwrap_or_default(),
         _ => String::new(),
     };
-    state
+    let page = state
         .render_admin(
             "admin/editor.html",
             EditorContext {
                 title: content.title.clone(),
-                csrf: identity.csrf,
+                csrf: identity.csrf.clone(),
                 action: format!("/admin/content/{raw_id}/"),
                 content_id: Some(raw_id),
                 version: Some(content.version),
@@ -608,7 +639,8 @@ pub async fn edit_content(
                 revisions,
             },
         )
-        .await
+        .await?;
+    with_session_refresh(page, &identity, state.secure_cookies())
 }
 
 /// Alternative text lives on the media record and is baked into every page
@@ -637,9 +669,12 @@ pub async fn update_media(
         .await
     {
         Ok(true) => {
-            state.publish_now().await?;
+            let site = state.publish_after_commit("media_alt_text").await;
             if wants_json(&headers) {
-                Ok(Json(json!({ "ok": true, "alt_text": form.alt_text.trim() })).into_response())
+                Ok(
+                    Json(json!({ "ok": true, "site": site, "alt_text": form.alt_text.trim() }))
+                        .into_response(),
+                )
             } else {
                 Ok(redirect(StatusCode::SEE_OTHER, "/admin/"))
             }
@@ -678,9 +713,9 @@ pub async fn trash_content(
         Ok(_) => {
             // The route is withdrawn by the next release; media stays
             // referenced by the trashed piece, so no garbage collection.
-            state.publish_now().await?;
+            let site = state.publish_after_commit("trash").await;
             if wants_json(&headers) {
-                Ok(Json(json!({ "ok": true })).into_response())
+                Ok(Json(json!({ "ok": true, "site": site })).into_response())
             } else {
                 Ok(redirect(StatusCode::SEE_OTHER, "/admin/?status=trash"))
             }
@@ -722,9 +757,9 @@ pub async fn restore_content(
         .await
     {
         Ok(_) => {
-            state.publish_now().await?;
+            let site = state.publish_after_commit("restore").await;
             if wants_json(&headers) {
-                Ok(Json(json!({ "ok": true })).into_response())
+                Ok(Json(json!({ "ok": true, "site": site })).into_response())
             } else {
                 Ok(redirect(
                     StatusCode::SEE_OTHER,
@@ -810,11 +845,11 @@ pub async fn revision_page(
         )
         .await;
     };
-    state
+    let page = state
         .render_admin(
             "admin/revision.html",
             RevisionContext {
-                csrf: identity.csrf,
+                csrf: identity.csrf.clone(),
                 content_id: raw_id,
                 revision_id,
                 expected_version: current.version,
@@ -834,7 +869,8 @@ pub async fn revision_page(
                 },
             },
         )
-        .await
+        .await?;
+    with_session_refresh(page, &identity, state.secure_cookies())
 }
 
 pub async fn restore_revision(
@@ -857,7 +893,7 @@ pub async fn restore_revision(
         .await
     {
         Ok(_) => {
-            state.publish_now().await?;
+            let _site = state.publish_after_commit("restore_revision").await;
             run_media_gc(&state).await;
             Ok(redirect(
                 StatusCode::SEE_OTHER,
@@ -924,10 +960,16 @@ pub async fn create_content(
     }
     match result {
         Ok(content) => {
-            state.publish_now().await?;
-            run_media_gc(&state).await;
+            let site = state.publish_after_commit("create").await;
+            if intent == SaveIntent::Explicit {
+                run_media_gc(&state).await;
+            }
             if intent == SaveIntent::Autosave || wants_json(&headers) {
-                Ok((StatusCode::CREATED, Json(save_response(&content, now))).into_response())
+                Ok((
+                    StatusCode::CREATED,
+                    Json(save_response(&content, now, site)),
+                )
+                    .into_response())
             } else {
                 Ok(redirect(
                     StatusCode::SEE_OTHER,
@@ -939,8 +981,11 @@ pub async fn create_content(
     }
 }
 
-/// Runs after any successful save: media that nothing current references is
-/// removed immediately. Failure never fails the save that triggered it.
+/// Runs after deliberate moments (an explicit save, a permanent delete, a
+/// settings change, a restore): media that neither current content nor any
+/// stored revision references is removed. Autosaves never sweep, so a
+/// half-inserted image survives the typing pause. Failure never fails the
+/// action that triggered it.
 async fn run_media_gc(state: &AppState) {
     let result = async {
         let contents = state
@@ -953,7 +998,13 @@ async fn run_media_gc(state: &AppState) {
             .site_settings()
             .await
             .map_err(|error| error.to_string())?;
-        let referenced = crate::application::media_gc::referenced_media_ids(&contents, &settings);
+        let revisions = state
+            .revision_media
+            .revision_media_ids()
+            .await
+            .map_err(|error| error.to_string())?;
+        let referenced =
+            crate::application::media_gc::gc_survivors(&contents, &settings, &revisions);
         state
             .media_service
             .collect_garbage(&referenced)
@@ -1012,10 +1063,12 @@ pub async fn update_content(
         .await
     {
         Ok(content) => {
-            state.publish_now().await?;
-            run_media_gc(&state).await;
+            let site = state.publish_after_commit("update").await;
+            if intent == SaveIntent::Explicit {
+                run_media_gc(&state).await;
+            }
             if intent == SaveIntent::Autosave || wants_json(&headers) {
-                Ok(Json(save_response(&content, now)).into_response())
+                Ok(Json(save_response(&content, now, site)).into_response())
             } else {
                 Ok(redirect(
                     StatusCode::SEE_OTHER,
@@ -1511,18 +1564,27 @@ pub async fn upload_media(
         .into_response())
 }
 
+const ADMIN_CSS: &str = include_str!("../../static/admin.css");
+const ADMIN_JS: &str = include_str!(concat!(env!("OUT_DIR"), "/admin.js"));
+
+/// One fingerprint for both admin assets: their URLs carry it, so an
+/// upgraded server never runs against a browser's day-old bundle.
+pub fn admin_asset_version() -> &'static str {
+    static VERSION: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(ADMIN_CSS.as_bytes());
+        hasher.update(ADMIN_JS.as_bytes());
+        hasher.finalize().to_hex()[..16].to_owned()
+    });
+    VERSION.as_str()
+}
+
 pub async fn admin_css() -> Response {
-    asset_response(
-        include_str!("../../static/admin.css"),
-        "text/css; charset=utf-8",
-    )
+    asset_response(ADMIN_CSS, "text/css; charset=utf-8")
 }
 
 pub async fn admin_js() -> Response {
-    asset_response(
-        include_str!(concat!(env!("OUT_DIR"), "/admin.js")),
-        "text/javascript; charset=utf-8",
-    )
+    asset_response(ADMIN_JS, "text/javascript; charset=utf-8")
 }
 
 impl ContentForm {
@@ -1683,10 +1745,40 @@ async fn authenticate(
     {
         return Ok(Err(StatusCode::FORBIDDEN.into_response()));
     }
+    // Only page loads renew: a form post has no page to carry new cookies
+    // home, and the tokens never change anyway.
+    let now = state.clock.now();
+    let refreshed = if csrf.is_none() && AuthService::needs_renewal(&identity, now) {
+        state
+            .auth
+            .extend_session(session_token, now)
+            .await
+            .map_err(WebError::auth)?
+            .map(|_| SessionSecrets {
+                session: SecretToken::new(session_token.to_owned()),
+                csrf: SecretToken::new(csrf_cookie.to_owned()),
+            })
+    } else {
+        None
+    };
     Ok(Ok(AdminIdentity {
         session: identity,
         csrf: csrf_cookie.to_owned(),
+        refreshed,
     }))
+}
+
+/// Attaches renewed session cookies to a page response when the login was
+/// just extended; a no-op otherwise.
+fn with_session_refresh(
+    mut response: Response,
+    identity: &AdminIdentity,
+    secure: bool,
+) -> Result<Response, WebError> {
+    if let Some(secrets) = &identity.refreshed {
+        set_auth_cookies(&mut response, secrets, secure)?;
+    }
+    Ok(response)
 }
 
 fn recently_reauthenticated(identity: &AdminIdentity, now: DateTime<Utc>) -> bool {
@@ -1727,12 +1819,13 @@ fn content_status(content: &Content, now: DateTime<Utc>) -> &'static str {
     }
 }
 
-fn save_response(content: &Content, now: DateTime<Utc>) -> serde_json::Value {
+fn save_response(content: &Content, now: DateTime<Utc>, site: SiteState) -> serde_json::Value {
     json!({
         "id": content.id.as_i64(),
         "version": content.version,
         "slug": content.slug.as_str(),
         "status": content_status(content, now),
+        "site": site,
         "publish_at": content
             .publication
             .publish_at()
@@ -1986,7 +2079,7 @@ fn asset_response(body: &'static str, content_type: &'static str) -> Response {
         .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
     response.headers_mut().insert(
         header::CACHE_CONTROL,
-        HeaderValue::from_static("public, max-age=86400"),
+        HeaderValue::from_static("public, max-age=31536000, immutable"),
     );
     response
 }

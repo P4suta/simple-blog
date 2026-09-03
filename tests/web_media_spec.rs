@@ -11,7 +11,7 @@ use simple_blog::{
     application::{
         auth::AuthService,
         content::{ContentService, SaveIntent},
-        ports::{MediaRepository as _, SiteRepository},
+        ports::{ContentRepository as _, MediaRepository as _, SiteRepository},
         site::SiteService,
     },
     config::{Config, ConfigSources, Overrides},
@@ -303,12 +303,24 @@ async fn transport_rejects_a_body_beyond_the_configured_upload_envelope() {
     );
 }
 
-#[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "walks one story end-to-end: two uploads, a reference edit, and both outcomes"
-)]
-async fn media_loses_its_last_reference_and_is_deleted_immediately() {
+struct GcHarness {
+    _temp: tempfile::TempDir,
+    config: Config,
+    repository: Arc<SqliteRepository>,
+    media: LocalMediaService,
+    state: AppState,
+    cookie: String,
+    csrf: String,
+}
+
+/// A site whose logo is one asset and whose single draft references another
+/// inline, plus an authenticated session for the editor routes.
+async fn gc_harness() -> (
+    GcHarness,
+    MediaAsset,
+    MediaAsset,
+    simple_blog::domain::content::Content,
+) {
     let temp = tempfile::tempdir().unwrap();
     let config = Config::resolve(ConfigSources {
         cli: Overrides {
@@ -340,12 +352,10 @@ async fn media_loses_its_last_reference_and_is_deleted_immediately() {
         .store("logo.png", cursor.into_inner(), "Logo", "", Utc::now())
         .await
         .unwrap();
-
     let site = SiteService::new(repository.clone());
     let mut settings = repository.site_settings().await.unwrap();
     settings.logo_media_id = Some(logo_asset.id.to_string());
     site.update(settings, Vec::new(), Utc::now()).await.unwrap();
-
     let content = ContentService::new(
         repository.clone(),
         Arc::new(ComrakMarkdownRenderer::default()),
@@ -368,7 +378,6 @@ async fn media_loses_its_last_reference_and_is_deleted_immediately() {
     )
     .await
     .unwrap();
-
     let auth = AuthService::new(repository.clone(), Arc::new(SystemEntropy));
     let session = auth.create_session(Utc::now()).await.unwrap();
     let cookie = format!(
@@ -376,66 +385,167 @@ async fn media_loses_its_last_reference_and_is_deleted_immediately() {
         session.session.expose(),
         session.csrf.expose()
     );
-    let form = serde_urlencoded::to_string([
-        ("csrf", session.csrf.expose()),
-        ("kind", "post"),
-        ("title", "Referencing"),
-        ("slug", "referencing"),
-        ("body_markdown", "no more image"),
-        ("status", "draft"),
-        ("intent", "autosave"),
-        ("version", &content.version.to_string()),
-    ])
-    .unwrap();
     let state = AppState::new(config.clone(), repository.clone()).unwrap();
-    let saved = router(state.clone())
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri(format!("/admin/content/{}/", content.id.as_i64()))
-                .header(header::HOST, "localhost:8080")
-                .header(header::COOKIE, &cookie)
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .body(Body::from(form))
-                .unwrap(),
+    (
+        GcHarness {
+            _temp: temp,
+            config,
+            repository,
+            media,
+            state,
+            cookie,
+            csrf: session.csrf.expose().to_owned(),
+        },
+        body_asset,
+        logo_asset,
+        content,
+    )
+}
+
+impl GcHarness {
+    /// Saves the piece with a body that no longer references any image.
+    async fn save_without_image(&self, id: i64, version: i64, intent: &str) -> StatusCode {
+        let form = serde_urlencoded::to_string([
+            ("csrf", self.csrf.as_str()),
+            ("kind", "post"),
+            ("title", "Referencing"),
+            ("slug", "referencing"),
+            ("body_markdown", "no more image"),
+            ("status", "draft"),
+            ("intent", intent),
+            ("version", &version.to_string()),
+        ])
+        .unwrap();
+        router(self.state.clone())
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(format!("/admin/content/{id}/"))
+                    .header(header::HOST, "localhost:8080")
+                    .header(header::COOKIE, &self.cookie)
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .body(Body::from(form))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+    }
+
+    async fn post(&self, path: &str, fields: &[(&str, &str)]) -> axum::response::Response {
+        let mut form: Vec<(&str, &str)> = vec![("csrf", self.csrf.as_str())];
+        form.extend_from_slice(fields);
+        router(self.state.clone())
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(path)
+                    .header(header::HOST, "localhost:8080")
+                    .header(header::COOKIE, &self.cookie)
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .body(Body::from(serde_urlencoded::to_string(form).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    async fn asset_exists(&self, asset: &MediaAsset) -> bool {
+        let row = self
+            .repository
+            .find_media(&asset.id)
+            .await
+            .unwrap()
+            .is_some();
+        let files = std::iter::once(&asset.original_filename)
+            .chain(asset.variants.iter().map(|variant| &variant.filename))
+            .all(|name| self.config.media_dir().join(name).exists());
+        assert_eq!(row, files, "row and files must agree for {}", asset.id);
+        row
+    }
+}
+
+#[tokio::test]
+async fn an_image_referenced_only_by_a_revision_survives_gc_after_an_explicit_save() {
+    let (harness, body_asset, logo_asset, content) = gc_harness().await;
+
+    // The explicit save drops the only live reference, yet the revision that
+    // still shows the image keeps it alive: nothing written is lost.
+    let status = harness
+        .save_without_image(content.id.as_i64(), content.version, "explicit")
+        .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert!(harness.asset_exists(&body_asset).await);
+    assert!(harness.asset_exists(&logo_asset).await);
+
+    // Deleting the piece permanently cascades its revisions, and the very
+    // next sweep removes the now unreferenced image while the logo stays.
+    let current = harness
+        .repository
+        .find_by_id(content.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let trashed = harness
+        .post(
+            &format!("/admin/content/{}/trash/", content.id),
+            &[("version", &current.version.to_string())],
         )
+        .await;
+    assert_eq!(trashed.status(), StatusCode::SEE_OTHER);
+    assert!(harness.asset_exists(&body_asset).await);
+    let deleted = harness
+        .post(&format!("/admin/content/{}/delete/", content.id), &[])
+        .await;
+    assert_eq!(deleted.status(), StatusCode::SEE_OTHER);
+    assert!(!harness.asset_exists(&body_asset).await);
+    assert!(harness.asset_exists(&logo_asset).await);
+    let gone = get(
+        &harness.state,
+        &format!("/media/{}", body_asset.original_filename),
+    )
+    .await;
+    assert_eq!(gone.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn autosaves_do_not_run_media_garbage_collection() {
+    let (harness, _body_asset, _logo_asset, content) = gc_harness().await;
+    // Distinct bytes, or content addressing would merge it with the inline
+    // image that history still references.
+    let orphan_image =
+        DynamicImage::ImageRgb8(ImageBuffer::from_pixel(200, 100, Rgb([20, 60, 200])));
+    let mut cursor = Cursor::new(Vec::new());
+    orphan_image
+        .write_to(&mut cursor, ImageFormat::Png)
+        .unwrap();
+    let orphan = harness
+        .media
+        .store("orphan.png", cursor.into_inner(), "Orphan", "", Utc::now())
         .await
         .unwrap();
-    assert_eq!(saved.status(), StatusCode::OK);
 
-    assert!(
-        repository
-            .find_media(&body_asset.id)
-            .await
-            .unwrap()
-            .is_none()
-    );
-    assert!(
-        !config
-            .media_dir()
-            .join(&body_asset.original_filename)
-            .exists()
-    );
-    for variant in &body_asset.variants {
-        assert!(!config.media_dir().join(&variant.filename).exists());
-    }
-    let gone = get(&state, &format!("/media/{}", body_asset.original_filename)).await;
-    assert_eq!(gone.status(), StatusCode::NOT_FOUND);
+    // Typing pauses save every second or so; sweeping the media directory on
+    // each of them would be wasteful and would delete a half-inserted image.
+    let status = harness
+        .save_without_image(content.id.as_i64(), content.version, "autosave")
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(harness.asset_exists(&orphan).await);
 
-    // The logo keeps its settings reference and survives the sweep.
-    assert!(
-        repository
-            .find_media(&logo_asset.id)
-            .await
-            .unwrap()
-            .is_some()
-    );
-    assert!(
-        config
-            .media_dir()
-            .join(&logo_asset.original_filename)
-            .exists()
-    );
+    // An explicit save is a deliberate moment, and the orphan has no
+    // reference anywhere, not even in history.
+    let current = harness
+        .repository
+        .find_by_id(content.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let status = harness
+        .save_without_image(content.id.as_i64(), current.version, "explicit")
+        .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert!(!harness.asset_exists(&orphan).await);
 }
 
 #[tokio::test]
@@ -648,4 +758,43 @@ async fn cover_alt_text_can_be_edited_and_reaches_the_released_page() {
     .await;
     assert_eq!(redirected.status(), StatusCode::SEE_OTHER);
     assert_eq!(redirected.headers()[header::LOCATION], "/admin/");
+}
+
+#[tokio::test]
+async fn cover_alt_text_edit_answers_pending_when_publication_fails() {
+    let harness = cover_harness().await;
+    let releases = harness.config.release_dir();
+    std::fs::create_dir_all(&releases).unwrap();
+    std::fs::write(releases.join("objects"), b"not a directory").unwrap();
+    let auth = AuthService::new(harness.repository.clone(), Arc::new(SystemEntropy));
+    let session = auth.create_session(Utc::now()).await.unwrap();
+    let cookie = format!(
+        "sb_session={}; sb_csrf={}",
+        session.session.expose(),
+        session.csrf.expose()
+    );
+    let form = serde_urlencoded::to_string([
+        ("csrf", session.csrf.expose()),
+        ("alt_text", "Calm sea at dusk"),
+    ])
+    .unwrap();
+    let response = router(harness.state.clone())
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/admin/media/{}/", harness.asset.id))
+                .header(header::HOST, "localhost:8080")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::ACCEPT, "application/json")
+                .header(header::COOKIE, &cookie)
+                .body(Body::from(form))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = serde_json::from_slice(&response_body(response).await).unwrap();
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["site"], "pending");
+    assert_eq!(body["alt_text"], "Calm sea at dusk");
 }

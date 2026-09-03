@@ -1901,6 +1901,7 @@ async fn editor_exposes_counters_shortcut_hints_confirmations_and_error_labels()
         "data-msg-error-session",
         "data-msg-error-offline",
         "data-msg-upload-failed",
+        "data-msg-saved-pending",
         "<dialog class=\"editor-drawer\"",
         "<details class=\"editor-confirm\" data-unpublish",
         "Take this off the public site?",
@@ -2171,4 +2172,393 @@ async fn revision_page_shows_a_line_diff_and_restoring_the_default_theme_needs_c
     );
     let navigation = harness.repository.navigation().await.unwrap();
     assert_eq!(navigation.len(), 1, "navigation survives a theme reset");
+}
+
+// ---- Publication failures never masquerade as save failures -----------------
+
+impl Harness {
+    /// Makes every object write fail deterministically on Windows and Linux:
+    /// `releases/objects` becomes a regular file, so `create_dir_all` errors
+    /// while reading the active pointer still reports "no release".
+    fn break_release_store(&self) {
+        let dir = self._temp.path().join("releases");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("objects"), b"not a directory").unwrap();
+    }
+
+    fn heal_release_store(&self) {
+        std::fs::remove_file(self._temp.path().join("releases").join("objects")).unwrap();
+    }
+
+    fn release_store(&self) -> simple_blog::release::FilesystemReleaseStore {
+        simple_blog::release::FilesystemReleaseStore::new(self._temp.path().join("releases"))
+    }
+
+    async fn post_json(&self, path: &str, body: String, cookie: &str) -> axum::response::Response {
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri(path)
+            .header(header::HOST, "localhost:8080")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .header(header::ACCEPT, "application/json")
+            .header(header::COOKIE, cookie)
+            .body(Body::from(body))
+            .unwrap();
+        router(self.state.clone()).oneshot(request).await.unwrap()
+    }
+}
+
+async fn json(response: axum::response::Response) -> serde_json::Value {
+    serde_json::from_str(&text(response).await).unwrap()
+}
+
+#[tokio::test]
+async fn a_failed_publish_after_a_committed_save_answers_success_with_a_pending_site() {
+    use simple_blog::{
+        application::ports::PublicSnapshotRepository,
+        release::{ReleaseReader, ReleaseStore},
+    };
+
+    let harness = Harness::new().await;
+    let (cookie, csrf) = harness.session_cookie().await;
+    harness.break_release_store();
+
+    let created = harness
+        .send(
+            Method::POST,
+            "/admin/content/",
+            Some("application/x-www-form-urlencoded"),
+            form(&csrf, "Typing", "typing", None, "autosave"),
+            Some(&cookie),
+        )
+        .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let created = json(created).await;
+    assert_eq!(created["site"], "pending");
+    let id = created["id"].as_i64().unwrap();
+    let version = created["version"].as_i64().unwrap();
+    assert!(
+        harness
+            .repository
+            .list_all_content()
+            .await
+            .unwrap()
+            .iter()
+            .any(|content| content.slug.as_str() == "typing"),
+        "the save must have committed even though publishing failed"
+    );
+
+    let updated = harness
+        .send(
+            Method::POST,
+            &format!("/admin/content/{id}/"),
+            Some("application/x-www-form-urlencoded"),
+            form(&csrf, "Typing more", "typing", Some(version), "autosave"),
+            Some(&cookie),
+        )
+        .await;
+    assert_eq!(updated.status(), StatusCode::OK);
+    assert_eq!(json(updated).await["site"], "pending");
+    assert!(harness.release_store().active().await.unwrap().is_none());
+
+    let dashboard = text(
+        harness
+            .send(Method::GET, "/admin/", None, Body::empty(), Some(&cookie))
+            .await,
+    )
+    .await;
+    assert!(dashboard.contains("class=\"publish-banner\" role=\"status\""));
+    assert!(dashboard.contains("action=\"/admin/publish/\""));
+
+    let forbidden = harness
+        .send(
+            Method::POST,
+            "/admin/publish/",
+            Some("application/x-www-form-urlencoded"),
+            serde_urlencoded::to_string([("csrf", "wrong")]).unwrap(),
+            Some(&cookie),
+        )
+        .await;
+    assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+
+    harness.heal_release_store();
+    let published = harness
+        .send(
+            Method::POST,
+            "/admin/publish/",
+            Some("application/x-www-form-urlencoded"),
+            serde_urlencoded::to_string([("csrf", csrf.as_str())]).unwrap(),
+            Some(&cookie),
+        )
+        .await;
+    assert_eq!(published.status(), StatusCode::SEE_OTHER);
+    assert_eq!(published.headers()[header::LOCATION], "/admin/");
+
+    let dashboard = text(
+        harness
+            .send(Method::GET, "/admin/", None, Body::empty(), Some(&cookie))
+            .await,
+    )
+    .await;
+    assert!(!dashboard.contains("publish-banner"));
+    let store = harness.release_store();
+    let active = store.active().await.unwrap().expect("a release is active");
+    let manifest = store.manifest(&active.id).await.unwrap();
+    let state = harness.repository.publication_state().await.unwrap();
+    assert_eq!(manifest.public_revision, state.revision);
+}
+
+#[tokio::test]
+async fn other_committed_admin_actions_never_fail_when_publication_fails() {
+    let harness = Harness::new().await;
+    let (cookie, csrf) = harness.session_cookie().await;
+    let content = harness
+        .contents
+        .create(
+            ContentDraft {
+                publication: Publication::Public {
+                    publish_at: Utc::now(),
+                },
+                ..draft("resilient")
+            },
+            SaveIntent::Explicit,
+            Utc::now(),
+        )
+        .await
+        .unwrap();
+    harness.break_release_store();
+
+    let trashed = harness
+        .post_json(
+            &format!("/admin/content/{}/trash/", content.id),
+            serde_urlencoded::to_string([
+                ("csrf", csrf.as_str()),
+                ("version", &content.version.to_string()),
+            ])
+            .unwrap(),
+            &cookie,
+        )
+        .await;
+    assert_eq!(trashed.status(), StatusCode::OK);
+    let body = json(trashed).await;
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["site"], "pending");
+
+    let restored = harness
+        .post_json(
+            &format!("/admin/content/{}/restore/", content.id),
+            serde_urlencoded::to_string([("csrf", csrf.as_str())]).unwrap(),
+            &cookie,
+        )
+        .await;
+    assert_eq!(restored.status(), StatusCode::OK);
+    assert_eq!(json(restored).await["site"], "pending");
+
+    let settings = harness
+        .post_json(
+            "/admin/settings/",
+            serde_urlencoded::to_string([
+                ("csrf", csrf.as_str()),
+                ("site_title", "Field Notes"),
+                ("site_description", ""),
+                ("locale", "en"),
+                ("logo_media_id", ""),
+                ("favicon_media_id", ""),
+                ("custom_css", "body { margin: 0; }"),
+                ("navigation", ""),
+            ])
+            .unwrap(),
+            &cookie,
+        )
+        .await;
+    assert_eq!(settings.status(), StatusCode::OK);
+    assert_eq!(json(settings).await["site"], "pending");
+
+    let reset = harness
+        .post_json(
+            "/admin/settings/theme/reset/",
+            serde_urlencoded::to_string([("csrf", csrf.as_str())]).unwrap(),
+            &cookie,
+        )
+        .await;
+    assert_eq!(reset.status(), StatusCode::OK);
+    assert_eq!(json(reset).await["site"], "pending");
+
+    let current = harness
+        .repository
+        .find_by_id(content.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let revision = harness
+        .repository
+        .list_revisions(content.id)
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
+    let restored_revision = harness
+        .send(
+            Method::POST,
+            &format!(
+                "/admin/content/{}/revisions/{}/restore/",
+                content.id, revision.id
+            ),
+            Some("application/x-www-form-urlencoded"),
+            serde_urlencoded::to_string([
+                ("csrf", csrf.as_str()),
+                ("version", &current.version.to_string()),
+            ])
+            .unwrap(),
+            Some(&cookie),
+        )
+        .await;
+    assert_eq!(restored_revision.status(), StatusCode::SEE_OTHER);
+}
+
+#[tokio::test]
+async fn the_scheduler_retries_a_deferred_publication_until_the_store_recovers() {
+    use simple_blog::{application::publication::RetrySchedule, release::ReleaseStore};
+
+    let harness = Harness::new().await;
+    let (cookie, csrf) = harness.session_cookie().await;
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let scheduler_state = harness.state.clone();
+    let scheduler = tokio::spawn(async move {
+        scheduler_state
+            .run_publication_scheduler_with(
+                shutdown_rx,
+                RetrySchedule {
+                    initial: std::time::Duration::from_millis(20),
+                    second: std::time::Duration::from_millis(40),
+                    cap: std::time::Duration::from_millis(80),
+                },
+            )
+            .await;
+    });
+
+    harness.break_release_store();
+    let created = harness
+        .send(
+            Method::POST,
+            "/admin/content/",
+            Some("application/x-www-form-urlencoded"),
+            form(&csrf, "Deferred", "deferred", None, "autosave"),
+            Some(&cookie),
+        )
+        .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    assert_eq!(json(created).await["site"], "pending");
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(harness.release_store().active().await.unwrap().is_none());
+
+    harness.heal_release_store();
+    let store = harness.release_store();
+    let mut healed = false;
+    for _ in 0..100 {
+        if store.active().await.unwrap().is_some() {
+            healed = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    shutdown_tx.send(true).unwrap();
+    scheduler.await.unwrap();
+    assert!(healed, "the scheduler must publish once the store recovers");
+}
+
+// ---- Admin assets and session lifetime ------------------------------------
+
+#[tokio::test]
+async fn admin_assets_are_fingerprinted_and_immutable() {
+    let harness = Harness::new().await;
+    let login = text(
+        harness
+            .send(Method::GET, "/admin/login/", None, Body::empty(), None)
+            .await,
+    )
+    .await;
+    let css_at = login
+        .find("/admin/assets/admin.css?v=")
+        .expect("stylesheet link carries a version");
+    let version = &login[css_at + "/admin/assets/admin.css?v=".len()..][..16];
+    assert!(version.chars().all(|c| c.is_ascii_hexdigit()), "{version}");
+    assert!(login.contains(&format!("/admin/assets/admin.js?v={version}")));
+
+    for path in [
+        format!("/admin/assets/admin.css?v={version}"),
+        format!("/admin/assets/admin.js?v={version}"),
+    ] {
+        let asset = harness
+            .send(Method::GET, &path, None, Body::empty(), None)
+            .await;
+        assert_eq!(asset.status(), StatusCode::OK);
+        let cache = asset.headers()[header::CACHE_CONTROL].to_str().unwrap();
+        assert!(cache.contains("immutable"), "{path}: {cache}");
+        assert!(cache.contains("max-age=31536000"), "{path}: {cache}");
+    }
+}
+
+#[tokio::test]
+async fn sessions_extend_on_use_without_changing_csrf() {
+    let start = Utc::now();
+    let clock = TestClock::new(start);
+    let harness = Harness::new_with_clock(Arc::new(clock.clone())).await;
+    let (cookie, csrf) = harness.session_cookie().await;
+    let session_token = cookie
+        .split(';')
+        .find_map(|part| part.trim().strip_prefix("sb_session="))
+        .unwrap()
+        .to_owned();
+
+    // Fresh sessions are left alone: no cookie churn on every page.
+    clock.set(start + Duration::hours(1));
+    let fresh = harness
+        .send(Method::GET, "/admin/", None, Body::empty(), Some(&cookie))
+        .await;
+    assert_eq!(fresh.status(), StatusCode::OK);
+    assert_eq!(
+        fresh.headers().get_all(header::SET_COOKIE).iter().count(),
+        0
+    );
+
+    // After a day of use the same tokens are re-issued for another week.
+    clock.set(start + Duration::days(2));
+    let renewed = harness
+        .send(Method::GET, "/admin/", None, Body::empty(), Some(&cookie))
+        .await;
+    assert_eq!(renewed.status(), StatusCode::OK);
+    let cookies: Vec<&str> = renewed
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .map(|value| value.to_str().unwrap())
+        .collect();
+    assert_eq!(cookies.len(), 2, "{cookies:?}");
+    assert!(
+        cookies
+            .iter()
+            .any(|c| c.starts_with(&format!("sb_session={session_token};"))
+                && c.contains("Max-Age=604800"))
+    );
+    assert!(
+        cookies
+            .iter()
+            .any(|c| c.starts_with(&format!("sb_csrf={csrf};")) && c.contains("Max-Age=604800"))
+    );
+
+    // Without the extension the session would have died on day seven.
+    clock.set(start + Duration::days(8));
+    let still_valid = harness
+        .send(Method::GET, "/admin/", None, Body::empty(), Some(&cookie))
+        .await;
+    assert_eq!(still_valid.status(), StatusCode::OK);
+
+    // Neglect still ends it: nothing renewed it after day eight.
+    clock.set(start + Duration::days(15) + Duration::hours(1));
+    let expired = harness
+        .send(Method::GET, "/admin/", None, Body::empty(), Some(&cookie))
+        .await;
+    assert_eq!(expired.status(), StatusCode::SEE_OTHER);
 }

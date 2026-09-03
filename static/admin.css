@@ -463,6 +463,30 @@ a {
   margin: 0;
 }
 
+/* The site lags behind a committed change: same shape as the trash banner,
+   but the tone is "still working", not danger. */
+.publish-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1.25rem;
+  width: min(42rem, calc(100% - 2rem));
+  margin: 0.75rem auto 0;
+  padding: 0.9rem 1.1rem;
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+}
+
+.publish-banner p {
+  flex: 1 1 16rem;
+  margin: 0;
+}
+
+[data-save-state][data-pending="true"] {
+  color: var(--accent);
+}
+
 .editor-status-time {
   font-size: 0.75rem;
   color: var(--faint);

@@ -178,7 +178,11 @@ async fn init(overrides: Overrides) -> Result<()> {
         .issue_setup_token(SetupPurpose::Initial, Utc::now())
         .await
         .context("could not issue setup token")?;
-    println!("{}", setup_url(&config.public_url, token.expose())?);
+    println!(
+        "Initialized {}.\nNo owner passkey is registered yet. Open this link within 15 minutes to register one:\n{}\nThen start the site with `simple-blog serve`; it prints a fresh link if this one expires.",
+        config.data_dir.display(),
+        setup_url(&config.public_url, token.expose())?
+    );
     Ok(())
 }
 
@@ -254,16 +258,22 @@ async fn serve(overrides: Overrides) -> Result<()> {
         );
     }
     let state = AppState::new(config, repository).context("could not build web application")?;
-    let initial = state
-        .publish_now()
-        .await
-        .context("could not build initial public release")?;
-    tracing::info!(
-        event = "server.initial_release.ready",
-        release_id = %initial.release_id,
-        public_revision = initial.public_revision,
-        disposition = ?initial.disposition
-    );
+    // A broken release store at boot is not fatal: the scheduler keeps
+    // retrying with backoff, and the dashboard says the site is pending.
+    match state.publish_now().await {
+        Ok(initial) => tracing::info!(
+            event = "server.initial_release.ready",
+            release_id = %initial.release_id,
+            public_revision = initial.public_revision,
+            disposition = ?initial.disposition
+        ),
+        Err(error) => tracing::error!(
+            event = "server.initial_release.deferred",
+            error_code = error.code(),
+            phase = error.phase(),
+            error = %error
+        ),
+    }
     let app = router(state.clone());
     let listener = TcpListener::bind(bind)
         .await

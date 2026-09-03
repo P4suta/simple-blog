@@ -3,7 +3,13 @@ mod observability;
 mod public;
 mod security;
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use axum::{
     Router,
@@ -26,10 +32,12 @@ use crate::{
         content::ContentService,
         ports::{
             AuthError, Clock, ContentRepository, EngagementRepository, LikeRepository,
-            MediaRepository, MediaRepositoryError, RepositoryError, SiteRepository,
+            MediaRepository, MediaRepositoryError, RepositoryError, RevisionMediaReferences,
+            SiteRepository,
         },
         publication::{
-            PublicationOutcome, PublicationService, PublicationServiceError, publication_delay,
+            PublicationOutcome, PublicationService, PublicationServiceError, RetrySchedule,
+            SiteState, publication_delay,
         },
         site::SiteService,
         site_compiler::{SiteCompiler, SiteCompilerError},
@@ -46,7 +54,7 @@ use crate::{
         sqlite::SqliteRepository,
         webauthn::{PasskeyCeremony, PasskeyError},
     },
-    release::{FilesystemReleaseStore, ReleaseError},
+    release::{FilesystemReleaseStore, ReleaseError, ReleaseReader, ReleaseStore},
 };
 
 #[derive(Clone)]
@@ -62,6 +70,7 @@ pub struct AppState {
     pub(crate) accounts: PasskeyAccountService,
     pub(crate) webauthn: Arc<PasskeyCeremony>,
     pub(crate) media_repository: Arc<dyn MediaRepository>,
+    pub(crate) revision_media: Arc<dyn RevisionMediaReferences>,
     pub(crate) media_service: LocalMediaService,
     pub(crate) translations: Arc<Translations>,
     pub(crate) clock: Arc<dyn Clock>,
@@ -72,6 +81,9 @@ pub struct AppState {
     publication: Arc<PublicationService<SqliteRepository, FilesystemReleaseStore>>,
     publication_lock: Arc<Mutex<()>>,
     publication_wakeup: Arc<Notify>,
+    /// Raised when the last build failed after a committed change, so the
+    /// scheduler keeps retrying and the dashboard can say so.
+    site_stale: Arc<AtomicBool>,
 }
 
 impl AppState {
@@ -96,6 +108,7 @@ impl AppState {
         let content: Arc<dyn ContentRepository> = repository.clone();
         let site: Arc<dyn SiteRepository> = repository.clone();
         let media_repository: Arc<dyn MediaRepository> = repository.clone();
+        let revision_media: Arc<dyn RevisionMediaReferences> = repository.clone();
         let likes: Arc<dyn LikeRepository> = repository.clone();
         let engagement: Arc<dyn EngagementRepository> = repository.clone();
         let release_store = Arc::new(FilesystemReleaseStore::new(config.release_dir()));
@@ -119,6 +132,7 @@ impl AppState {
             accounts,
             webauthn,
             media_repository,
+            revision_media,
             media_service,
             translations: Arc::new(Translations::embedded()?),
             clock,
@@ -129,51 +143,82 @@ impl AppState {
             publication,
             publication_lock: Arc::new(Mutex::new(())),
             publication_wakeup: Arc::new(Notify::new()),
+            site_stale: Arc::new(AtomicBool::new(false)),
         })
     }
 
     pub async fn publish_now(&self) -> Result<PublicationOutcome, PublicationServiceError> {
         let _guard = self.publication_lock.lock().await;
         let outcome = self.publication.publish(self.clock.now()).await;
+        self.site_stale.store(outcome.is_err(), Ordering::Release);
         self.publication_wakeup.notify_waiters();
         outcome
     }
 
-    pub async fn run_publication_scheduler(&self, mut shutdown: watch::Receiver<bool>) {
+    /// Publishes after a transaction has already committed. The change is
+    /// durable either way; a failed build only defers its appearance, so this
+    /// never turns a successful save into an error. The scheduler is woken to
+    /// retry with backoff.
+    pub(crate) async fn publish_after_commit(&self, trigger: &'static str) -> SiteState {
+        match self.publish_now().await {
+            Ok(_) => SiteState::Current,
+            Err(error) => {
+                tracing::error!(
+                    event = "publication.deferred",
+                    error_code = error.code(),
+                    phase = error.phase(),
+                    trigger,
+                    error = %error
+                );
+                self.publication_wakeup.notify_one();
+                SiteState::Pending
+            }
+        }
+    }
+
+    /// Whether the active release shows the latest committed public state.
+    pub(crate) async fn site_state(&self) -> Result<SiteState, WebError> {
+        if self.site_stale.load(Ordering::Acquire) {
+            return Ok(SiteState::Pending);
+        }
+        let revision = self.publication.publication_state().await?.revision;
+        let Some(active) = self.release_store.active().await? else {
+            return Ok(if revision == 0 {
+                SiteState::Current
+            } else {
+                SiteState::Pending
+            });
+        };
+        let manifest = self.release_store.manifest(&active.id).await?;
+        Ok(if manifest.public_revision == revision {
+            SiteState::Current
+        } else {
+            SiteState::Pending
+        })
+    }
+
+    pub async fn run_publication_scheduler(&self, shutdown: watch::Receiver<bool>) {
+        self.run_publication_scheduler_with(shutdown, RetrySchedule::DEFAULT)
+            .await;
+    }
+
+    pub async fn run_publication_scheduler_with(
+        &self,
+        mut shutdown: watch::Receiver<bool>,
+        schedule: RetrySchedule,
+    ) {
         const MAXIMUM_IDLE: Duration = Duration::from_secs(60);
-        const FAILURE_RETRY: Duration = Duration::from_secs(5);
 
         tracing::info!(event = "publication.scheduler.started");
+        let mut failures = 0_u32;
         loop {
             if *shutdown.borrow() {
                 break;
             }
-            let now = self.clock.now();
-            let delay = match self.publication.publication_state().await {
-                Ok(state) => publication_delay(state, now, MAXIMUM_IDLE),
-                Err(error) => {
-                    tracing::error!(
-                        event = "publication.scheduler.state_failed",
-                        error_code = "publication_scheduler_state_failed",
-                        retry_ms = FAILURE_RETRY.as_millis(),
-                        error = %error
-                    );
-                    FAILURE_RETRY
-                }
-            };
+            let delay = self
+                .scheduler_tick(schedule, MAXIMUM_IDLE, &mut failures)
+                .await;
             if delay.is_zero() {
-                if let Err(error) = self.publish_now().await {
-                    tracing::error!(
-                        event = "publication.scheduler.publish_failed",
-                        error_code = "publication_scheduler_publish_failed",
-                        retry_ms = FAILURE_RETRY.as_millis(),
-                        error = %error
-                    );
-                    if scheduler_wait(FAILURE_RETRY, &self.publication_wakeup, &mut shutdown).await
-                    {
-                        break;
-                    }
-                }
                 continue;
             }
             tracing::debug!(
@@ -185,6 +230,54 @@ impl AppState {
             }
         }
         tracing::info!(event = "publication.scheduler.stopped");
+    }
+
+    /// One scheduler pass: publishes when a boundary is due or the site is
+    /// stale, and answers how long to wait before looking again. Zero means
+    /// "look again now" after a successful build.
+    async fn scheduler_tick(
+        &self,
+        schedule: RetrySchedule,
+        maximum_idle: Duration,
+        failures: &mut u32,
+    ) -> Duration {
+        let now = self.clock.now();
+        let due = match self.publication.publication_state().await {
+            Ok(state) => publication_delay(state, now, maximum_idle),
+            Err(error) => {
+                *failures += 1;
+                let retry = schedule.delay(*failures - 1);
+                tracing::error!(
+                    event = "publication.scheduler.state_failed",
+                    error_code = "publication_scheduler_state_failed",
+                    retry_ms = retry.as_millis(),
+                    error = %error
+                );
+                return retry;
+            }
+        };
+        if !due.is_zero() && !self.site_stale.load(Ordering::Acquire) {
+            return due;
+        }
+        match self.publish_now().await {
+            Ok(_) => {
+                *failures = 0;
+                Duration::ZERO
+            }
+            Err(error) => {
+                *failures += 1;
+                let retry = schedule.delay(*failures - 1);
+                tracing::error!(
+                    event = "publication.scheduler.publish_failed",
+                    error_code = error.code(),
+                    phase = error.phase(),
+                    attempt = *failures,
+                    retry_ms = retry.as_millis(),
+                    error = %error
+                );
+                retry
+            }
+        }
     }
 
     /// Renders an admin template with the translation map for the site's
@@ -200,6 +293,7 @@ impl AppState {
             WithTranslations {
                 t: self.translations.for_locale(locale),
                 lang: locale.as_str(),
+                asset_version: admin::admin_asset_version(),
                 context,
             },
         )?)
@@ -247,6 +341,8 @@ async fn scheduler_wait(
 struct WithTranslations<'a, C> {
     t: &'a std::collections::HashMap<String, String>,
     lang: &'static str,
+    /// Cache-busting fingerprint of the admin stylesheet and bundle.
+    asset_version: &'static str,
     #[serde(flatten)]
     context: C,
 }
@@ -272,6 +368,7 @@ pub fn router(state: AppState) -> Router {
             }),
         )
         .route("/admin/", get(admin::dashboard))
+        .route("/admin/publish/", post(admin::publish_site))
         .route("/admin/login/", get(admin::login_page))
         .route("/admin/logout/", post(admin::logout))
         .route("/admin/setup/", get(admin::setup_page))

@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="csrf-token" content="{{ csrf }}">
   <title>{% block title %}{{ t["admin.brand"] }}{% endblock %} — {{ t["admin.brand"] }}</title>
-  <link rel="stylesheet" href="/admin/assets/admin.css">
-  <script src="/admin/assets/admin.js" defer></script>
+  <link rel="stylesheet" href="/admin/assets/admin.css?v={{ asset_version }}">
+  <script src="/admin/assets/admin.js?v={{ asset_version }}" defer></script>
 </head>
 <body class="admin-body">
   <a class="skip-link" href="#admin-main">{{ t["admin.skip"] }}</a>

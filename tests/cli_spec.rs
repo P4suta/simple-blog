@@ -166,6 +166,8 @@ fn init_to_doctor_and_backup_works_with_only_the_release_binary_contract() {
     );
     let stdout = String::from_utf8(init.stdout).unwrap();
     assert!(stdout.contains("/admin/setup/?token="));
+    assert!(stdout.contains("within 15 minutes"), "{stdout}");
+    assert!(stdout.contains("simple-blog serve"), "{stdout}");
     assert!(data.join("simple-blog.sqlite3").is_file());
     assert!(data.join("config.toml").is_file());
     assert!(data.join("media").is_dir());

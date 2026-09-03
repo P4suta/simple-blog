@@ -2,7 +2,8 @@
 {% block title %}{{ t["admin.title.dashboard"] }}{% endblock %}
 {% block content %}
 <header class="admin-page-head"><h1>{{ t["dashboard.heading"] }}</h1><a class="primary-button" href="/admin/content/new/">{{ t["dashboard.new"] }}</a></header>
-<div class="dashboard-tools">
+{% if site_pending %}<div class="publish-banner" role="status"><p>{{ t["dashboard.site_pending"] }}</p><form method="post" action="/admin/publish/"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="primary-button">{{ t["dashboard.publish_now"] }}</button></form></div>
+{% endif %}<div class="dashboard-tools">
   <nav class="dashboard-filters" aria-label="{{ t["dashboard.filters"] }}">
     {% for key in ["all", "draft", "scheduled", "public", "trash"] %}<a href="/admin/?status={{ key }}{% if q %}&amp;q={{ q_query }}{% endif %}"{% if key == filter %} aria-current="page"{% endif %}>{{ t["dashboard.filter_" ~ key] }}</a>{% endfor %}
   </nav>
