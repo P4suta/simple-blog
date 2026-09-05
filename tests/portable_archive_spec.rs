@@ -128,9 +128,15 @@ fn settings_history_travels_and_an_empty_one_leaves_older_archives_untouched() {
     let mut disordered = site.clone();
     disordered.settings_revisions = vec![current, earlier];
     assert!(disordered.validate().is_err());
-    let mut unnormalized = site;
+    let mut unnormalized = site.clone();
     unnormalized.settings_revisions[0].settings.site_title = "  padded  ".into();
     assert!(unnormalized.validate().is_err());
+    // A kept state that names a logo the archive does not carry is refused,
+    // exactly as the current settings would be.
+    let mut forgotten_logo = site;
+    forgotten_logo.settings_revisions[0].settings.logo_media_id = Some("e".repeat(64));
+    let error = forgotten_logo.validate().unwrap_err().to_string();
+    assert!(error.contains("missing referenced media"), "{error}");
 }
 
 #[test]

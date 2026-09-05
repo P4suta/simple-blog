@@ -40,17 +40,28 @@ export function isoToZonedDateTime(iso: string, zone: string): string {
  * `YYYY-MM-DDTHH:MM` read on the clock of `zone` → RFC 3339 UTC instant, or
  * null when empty or unparseable. Used only to label the button before the
  * save; the server's reading of the same value is the one that counts, so a
- * clock change in the zone at that very minute is left to it.
+ * minute that a clock change skips or repeats is left to it.
  */
 export function zonedDateTimeToIso(local: string, zone: string): string | null {
   if (!local.trim()) return null;
   const asUtc = new Date(`${local.trim()}Z`);
   if (Number.isNaN(asUtc.getTime())) return null;
-  const parts = zonedParts(asUtc, zone);
-  if (!parts) return localDateTimeToIso(local);
-  const wall = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second);
-  const offset = wall - asUtc.getTime();
+  const guess = offsetMillis(asUtc, zone);
+  if (guess === null) return localDateTimeToIso(local);
+  // The offset must be read at the instant itself, not at `local` read as
+  // UTC: the two can lie on opposite sides of a clock change, up to fourteen
+  // hours apart. One correction lands on the right side.
+  const candidate = new Date(asUtc.getTime() - guess);
+  const offset = offsetMillis(candidate, zone) ?? guess;
   return new Date(asUtc.getTime() - offset).toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+/** The zone's offset from UTC at `instant`, in milliseconds; null when the runtime does not know the zone. */
+function offsetMillis(instant: Date, zone: string): number | null {
+  const clock = zonedParts(instant, zone);
+  if (!clock) return null;
+  const wall = Date.UTC(clock.year, clock.month - 1, clock.day, clock.hour, clock.minute, clock.second);
+  return wall - instant.getTime();
 }
 
 interface WallClock {

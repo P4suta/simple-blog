@@ -8,7 +8,9 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use chrono::{DateTime, Duration, LocalResult, NaiveDateTime, SecondsFormat, TimeZone, Utc};
+use chrono::{
+    DateTime, Duration, LocalResult, NaiveDateTime, Offset, SecondsFormat, TimeZone, Utc,
+};
 use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -2364,13 +2366,23 @@ fn parse_publish_at(value: &str, zone: Tz) -> Result<Option<DateTime<Utc>>, Stri
     for format in ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M"] {
         if let Ok(naive) = NaiveDateTime::parse_from_str(value, format) {
             let instant = match zone.from_local_datetime(&naive) {
-                LocalResult::Single(at) | LocalResult::Ambiguous(at, _) => at,
-                LocalResult::None => zone
-                    .from_local_datetime(&(naive + Duration::hours(1)))
-                    .earliest()
-                    .ok_or_else(|| "publish date does not exist in the site's zone".to_owned())?,
+                LocalResult::Single(at) | LocalResult::Ambiguous(at, _) => at.with_timezone(&Utc),
+                // The minute never happens. Read it on the clock that was
+                // running when it was skipped, whatever the size of the jump:
+                // a 02:30 erased by an hour becomes 03:30, one erased by a
+                // half hour becomes 03:00.
+                LocalResult::None => {
+                    let before = zone
+                        .from_local_datetime(&(naive - Duration::days(1)))
+                        .earliest()
+                        .ok_or_else(|| {
+                            "publish date does not exist in the site's zone".to_owned()
+                        })?;
+                    let offset = i64::from(before.offset().fix().local_minus_utc());
+                    (naive - Duration::seconds(offset)).and_utc()
+                }
             };
-            return Ok(Some(instant.with_timezone(&Utc)));
+            return Ok(Some(instant));
         }
     }
     Err("publish date must be an ISO 8601 date-time".into())
@@ -3423,6 +3435,13 @@ mod tests {
         assert_eq!(
             parse_publish_at("2026-03-29T02:30", berlin),
             Ok(Some(Utc.with_ymd_and_hms(2026, 3, 29, 1, 30, 0).unwrap()))
+        );
+        // Lord Howe Island jumps by half an hour: 02:15 is skipped and reads
+        // as 02:15 on the standard clock (+10:30), which is 02:45 summer time.
+        let lord_howe: Tz = "Australia/Lord_Howe".parse().unwrap();
+        assert_eq!(
+            parse_publish_at("2026-10-04T02:15", lord_howe),
+            Ok(Some(Utc.with_ymd_and_hms(2026, 10, 3, 15, 45, 0).unwrap()))
         );
     }
 

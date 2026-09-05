@@ -180,16 +180,28 @@ impl Importer {
                     .find(|existing| existing.slug == draft.slug);
                 match existing {
                     Some(existing) => {
-                        content
-                            .update(
-                                existing.id,
-                                existing.version,
-                                draft,
-                                SaveIntent::Explicit,
-                                now,
-                            )
+                        // A trashed piece is read-only, so it comes back for
+                        // the write; afterwards the folder the file came from
+                        // decides whether it goes back into the trash.
+                        let (id, version) = if existing.is_trashed() {
+                            let restored = content
+                                .restore_from_trash(existing.id, now)
+                                .await
+                                .map_err(|error| OperationError::Database(error.to_string()))?;
+                            (restored.id, restored.version)
+                        } else {
+                            (existing.id, existing.version)
+                        };
+                        let replaced = content
+                            .update(id, version, draft, SaveIntent::Explicit, now)
                             .await
                             .map_err(|error| OperationError::Database(error.to_string()))?;
+                        if trashed {
+                            content
+                                .move_to_trash(replaced.id, replaced.version, now)
+                                .await
+                                .map_err(|error| OperationError::Database(error.to_string()))?;
+                        }
                         report.imported.push(slug);
                     }
                     None => report.skipped.push((

@@ -366,7 +366,7 @@ done < <(find . -name '*.md' \
 
 # Diagnostic codes are a compatibility contract: emitted only through the
 # named constants, listed in the contract, and explained in the catalogue.
-if grep -En 'error_code = "' src; then
+if grep -rEn 'error_code = "' src; then
   fail 'error codes are named constants in src/observability.rs, not literals'
 fi
 diagnostics_contract=contracts/diagnostics-v1.json

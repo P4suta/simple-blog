@@ -424,12 +424,23 @@ fn validate_media_references(
     site: &PortableSiteV1,
     media_ids: &BTreeSet<&str>,
 ) -> Result<(), PortableArchiveError> {
+    // A kept state of the settings may still name a logo or favicon the
+    // current settings no longer do; restoring it must find the file.
+    let remembered = site.settings_revisions.iter().flat_map(|revision| {
+        revision
+            .settings
+            .logo_media_id
+            .as_deref()
+            .into_iter()
+            .chain(revision.settings.favicon_media_id.as_deref())
+    });
     for media_id in site
         .contents
         .iter()
         .filter_map(|record| record.current.cover_media_id.as_deref())
         .chain(site.settings.logo_media_id.as_deref())
         .chain(site.settings.favicon_media_id.as_deref())
+        .chain(remembered)
     {
         MediaId::parse(media_id)
             .map_err(|error| PortableArchiveError::InvalidPackage(error.to_string()))?;

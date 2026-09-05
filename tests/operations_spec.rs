@@ -164,6 +164,10 @@ async fn export_writes_front_matter_markdown_and_plain_media_files() {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one story told in order: export, a fresh import, then forced imports both ways"
+)]
 async fn export_and_import_carry_the_trash() {
     let source = tempfile::tempdir().unwrap();
     let (config, repository) = seeded(&source).await;
@@ -231,6 +235,61 @@ async fn export_and_import_carry_the_trash() {
         "it comes back into the trash, not onto the site"
     );
     assert_eq!(back.kind, ContentKind::Page);
+
+    // A forced import decides by folder as well: the discarded piece was
+    // restored on the destination meanwhile, and a live piece was trashed
+    // there; the export puts each back where the source had it.
+    let target_content =
+        ContentService::new(target.clone(), Arc::new(ComrakMarkdownRenderer::default()));
+    target_content
+        .restore_from_trash(back.id, Utc::now())
+        .await
+        .unwrap();
+    let post = target
+        .list_all_content()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|piece| piece.slug.as_str() == "portable-post")
+        .unwrap();
+    target_content
+        .move_to_trash(post.id, post.version, Utc::now())
+        .await
+        .unwrap();
+    let forced = Importer::import(&target_config, &target, &output, true, Utc::now())
+        .await
+        .unwrap();
+    assert!(forced.skipped.is_empty(), "{:?}", forced.skipped);
+    let after = target.list_all_content().await.unwrap();
+    let discarded = after
+        .iter()
+        .find(|piece| piece.slug.as_str() == "discarded")
+        .unwrap();
+    let post = after
+        .iter()
+        .find(|piece| piece.slug.as_str() == "portable-post")
+        .unwrap();
+    assert!(
+        discarded.is_trashed(),
+        "a trash file keeps the piece in the trash"
+    );
+    assert!(!post.is_trashed(), "a live file brings the piece back");
+
+    // A trash file over a piece already in the trash is not an error either.
+    let once_more = Importer::import(&target_config, &target, &output, true, Utc::now())
+        .await
+        .unwrap();
+    assert!(once_more.skipped.is_empty(), "{:?}", once_more.skipped);
+    assert!(
+        target
+            .list_all_content()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|piece| piece.slug.as_str() == "discarded")
+            .unwrap()
+            .is_trashed()
+    );
 }
 
 #[tokio::test]

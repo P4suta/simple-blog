@@ -3404,7 +3404,12 @@ async fn editor_offers_focus_mode_and_a_fuller_shortcut_legend() {
     }
     // The help lists every binding from the script's own table; the page
     // supplies the words for each, in the site's language.
-    assert!(editor.contains("data-shortcut-labels=\""));
+    // tojson escapes <, >, & and ' but not ", so the attribute is
+    // single-quoted and its value must be JSON a script can parse as it is.
+    let start = editor.find("data-shortcut-labels='").unwrap() + "data-shortcut-labels='".len();
+    let labels = &editor[start..start + editor[start..].find('\'').unwrap()];
+    let labels: serde_json::Value = serde_json::from_str(labels).unwrap();
+    assert!(labels["editor.shortcut_bold"].is_string(), "{labels}");
     for label in [
         "editor.shortcut_save",
         "editor.shortcut_bold",
