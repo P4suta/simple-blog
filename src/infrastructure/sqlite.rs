@@ -153,7 +153,7 @@ impl AuthRepository for SqliteRepository {
         replacement: &SessionRecord,
         now: DateTime<Utc>,
     ) -> Result<bool, AuthError> {
-        let mut transaction = self.pool.begin().await.map_err(auth_storage)?;
+        let mut transaction = self.write_transaction().await.map_err(auth_storage)?;
         let result = sqlx::query("DELETE FROM sessions WHERE token_hash = ? AND expires_at > ?")
             .bind(old_token_hash.as_bytes().as_slice())
             .bind(now)
@@ -196,7 +196,7 @@ impl AuthRepository for SqliteRepository {
         code_hashes: &[SecretHash],
         now: DateTime<Utc>,
     ) -> Result<(), AuthError> {
-        let mut transaction = self.pool.begin().await.map_err(auth_storage)?;
+        let mut transaction = self.write_transaction().await.map_err(auth_storage)?;
         sqlx::query("DELETE FROM recovery_codes")
             .execute(&mut *transaction)
             .await
@@ -236,7 +236,7 @@ impl AuthRepository for SqliteRepository {
         session: &SessionRecord,
         now: DateTime<Utc>,
     ) -> Result<bool, AuthError> {
-        let mut transaction = self.pool.begin().await.map_err(auth_storage)?;
+        let mut transaction = self.write_transaction().await.map_err(auth_storage)?;
         let consumed = sqlx::query(
             "UPDATE recovery_codes SET consumed_at = ?
              WHERE code_hash = ? AND consumed_at IS NULL",
@@ -322,7 +322,7 @@ impl PasskeyRepository for SqliteRepository {
             recovery_code_hashes,
             now,
         } = registration;
-        let mut transaction = self.pool.begin().await.map_err(auth_storage)?;
+        let mut transaction = self.write_transaction().await.map_err(auth_storage)?;
         let consumed = sqlx::query(
             "UPDATE setup_tokens SET consumed_at = ?
              WHERE token_hash = ? AND purpose = ? AND consumed_at IS NULL AND expires_at >= ?",
@@ -408,7 +408,7 @@ impl PasskeyRepository for SqliteRepository {
         session: &SessionRecord,
         now: DateTime<Utc>,
     ) -> Result<bool, AuthError> {
-        let mut transaction = self.pool.begin().await.map_err(auth_storage)?;
+        let mut transaction = self.write_transaction().await.map_err(auth_storage)?;
         let updated = sqlx::query(
             "UPDATE passkeys SET passkey_json = ?, last_used_at = ? WHERE credential_id = ?",
         )
@@ -536,7 +536,7 @@ impl SqliteRepository {
         if rows.is_empty() {
             return Ok(());
         }
-        let mut transaction = self.pool.begin().await.map_err(storage)?;
+        let mut transaction = self.write_transaction().await.map_err(storage)?;
         for row in rows {
             let id: i64 = row.try_get("id").map_err(storage)?;
             let title: String = row.try_get("title").map_err(storage)?;
@@ -555,6 +555,16 @@ impl SqliteRepository {
     #[must_use]
     pub const fn pool(&self) -> &SqlitePool {
         &self.pool
+    }
+
+    /// Every transaction that writes takes the write lock as it begins. A
+    /// deferred `BEGIN` that reads first and writes later cannot wait for a
+    /// concurrent commit under WAL: it fails at once with "database is
+    /// locked" (`SQLITE_BUSY_SNAPSHOT`), which `busy_timeout` never retries.
+    /// `BEGIN IMMEDIATE` queues behind the other writer instead, so a save
+    /// never fails merely because a reader's view was being counted.
+    async fn write_transaction(&self) -> Result<Transaction<'static, Sqlite>, sqlx::Error> {
+        self.pool.begin_with("BEGIN IMMEDIATE").await
     }
 
     pub async fn close(&self) {
@@ -618,7 +628,7 @@ impl ContentRepository for SqliteRepository {
         intent: SaveIntent,
         now: DateTime<Utc>,
     ) -> Result<Content, RepositoryError> {
-        let mut transaction = self.pool.begin().await.map_err(storage)?;
+        let mut transaction = self.write_transaction().await.map_err(storage)?;
         ensure_slug_available(&mut transaction, &prepared.draft.slug, None).await?;
         let (status, publish_at) = publication_columns(&prepared.draft.publication);
         let result = sqlx::query(
@@ -666,7 +676,7 @@ impl ContentRepository for SqliteRepository {
         intent: SaveIntent,
         now: DateTime<Utc>,
     ) -> Result<Content, RepositoryError> {
-        let mut transaction = self.pool.begin().await.map_err(storage)?;
+        let mut transaction = self.write_transaction().await.map_err(storage)?;
         let UpdateTarget {
             old_slug,
             created_at,
@@ -963,7 +973,7 @@ impl ContentRepository for SqliteRepository {
         expected_version: i64,
         now: DateTime<Utc>,
     ) -> Result<Content, RepositoryError> {
-        let mut transaction = self.pool.begin().await.map_err(storage)?;
+        let mut transaction = self.write_transaction().await.map_err(storage)?;
         let current = load_content_in(&mut transaction, id)
             .await?
             .ok_or(RepositoryError::NotFound)?;
@@ -1009,7 +1019,7 @@ impl ContentRepository for SqliteRepository {
         id: ContentId,
         now: DateTime<Utc>,
     ) -> Result<Content, RepositoryError> {
-        let mut transaction = self.pool.begin().await.map_err(storage)?;
+        let mut transaction = self.write_transaction().await.map_err(storage)?;
         let current = load_content_in(&mut transaction, id)
             .await?
             .ok_or(RepositoryError::NotFound)?;
@@ -1057,7 +1067,7 @@ impl ContentRepository for SqliteRepository {
     }
 
     async fn delete_permanently(&self, id: ContentId) -> Result<(), RepositoryError> {
-        let mut transaction = self.pool.begin().await.map_err(storage)?;
+        let mut transaction = self.write_transaction().await.map_err(storage)?;
         let result = sqlx::query("DELETE FROM contents WHERE id = ? AND deleted_at IS NOT NULL")
             .bind(id.as_i64())
             .execute(&mut *transaction)
@@ -1467,7 +1477,7 @@ impl SiteRepository for SqliteRepository {
         content_id: ContentId,
         now: DateTime<Utc>,
     ) -> Result<(), RepositoryError> {
-        let mut transaction = self.pool.begin().await.map_err(storage)?;
+        let mut transaction = self.write_transaction().await.map_err(storage)?;
         let exists: Option<i64> = sqlx::query_scalar("SELECT id FROM contents WHERE id = ?")
             .bind(content_id.as_i64())
             .fetch_optional(&mut *transaction)
@@ -1494,7 +1504,7 @@ impl SiteRepository for SqliteRepository {
         old_slug: &Slug,
         now: DateTime<Utc>,
     ) -> Result<bool, RepositoryError> {
-        let mut transaction = self.pool.begin().await.map_err(storage)?;
+        let mut transaction = self.write_transaction().await.map_err(storage)?;
         let result = sqlx::query("DELETE FROM redirects WHERE old_slug = ?")
             .bind(old_slug.as_str())
             .execute(&mut *transaction)
@@ -1544,7 +1554,7 @@ impl SiteRepository for SqliteRepository {
         navigation: &[NavigationItem],
         now: DateTime<Utc>,
     ) -> Result<(), RepositoryError> {
-        let mut transaction = self.pool.begin().await.map_err(storage)?;
+        let mut transaction = self.write_transaction().await.map_err(storage)?;
         sqlx::query(
             "UPDATE site_settings SET
                 site_title = ?, site_description = ?, locale = ?, logo_media_id = ?,
@@ -1603,7 +1613,7 @@ impl PublicSnapshotRepository for SqliteRepository {
 
     #[tracing::instrument(name = "publication.clock.advance", skip_all, fields(now = %now))]
     async fn advance_publication_clock(&self, now: DateTime<Utc>) -> Result<bool, RepositoryError> {
-        let mut transaction = self.pool.begin().await.map_err(storage)?;
+        let mut transaction = self.write_transaction().await.map_err(storage)?;
         let next: Option<DateTime<Utc>> =
             sqlx::query_scalar("SELECT next_publish_at FROM publication_state WHERE singleton = 1")
                 .fetch_one(&mut *transaction)
@@ -1735,7 +1745,7 @@ impl PortableRepository for SqliteRepository {
     ) -> Result<(), RepositoryError> {
         site.validate()
             .map_err(|error| RepositoryError::Validation(error.to_string()))?;
-        let mut transaction = self.pool.begin().await.map_err(storage)?;
+        let mut transaction = self.write_transaction().await.map_err(storage)?;
         clear_portable_state(&mut transaction).await?;
         insert_portable_media(&mut transaction, &site.media).await?;
         insert_portable_settings(&mut transaction, site).await?;
@@ -2295,7 +2305,7 @@ impl RevisionMediaReferences for SqliteRepository {
 #[async_trait]
 impl MediaRepository for SqliteRepository {
     async fn save_media(&self, media: &MediaAsset) -> Result<MediaAsset, MediaRepositoryError> {
-        let mut transaction = self.pool.begin().await.map_err(media_storage)?;
+        let mut transaction = self.write_transaction().await.map_err(media_storage)?;
         sqlx::query(
             "INSERT INTO media (
                 id, original_name, mime_type, extension, width, height, byte_size,
@@ -2369,7 +2379,7 @@ impl MediaRepository for SqliteRepository {
     }
 
     async fn delete_media(&self, id: &MediaId) -> Result<(), MediaRepositoryError> {
-        let mut transaction = self.pool.begin().await.map_err(media_storage)?;
+        let mut transaction = self.write_transaction().await.map_err(media_storage)?;
         sqlx::query("DELETE FROM media_variants WHERE media_id = ?")
             .bind(id.as_str())
             .execute(&mut *transaction)
@@ -2389,7 +2399,7 @@ impl MediaRepository for SqliteRepository {
         alt_text: &str,
         now: DateTime<Utc>,
     ) -> Result<bool, MediaRepositoryError> {
-        let mut transaction = self.pool.begin().await.map_err(media_storage)?;
+        let mut transaction = self.write_transaction().await.map_err(media_storage)?;
         let result = sqlx::query("UPDATE media SET alt_text = ? WHERE id = ?")
             .bind(alt_text)
             .bind(id.as_str())
@@ -2404,28 +2414,6 @@ impl MediaRepository for SqliteRepository {
             .map_err(media_storage)?;
         transaction.commit().await.map_err(media_storage)?;
         Ok(true)
-    }
-
-    async fn mime_type_for_filename(
-        &self,
-        filename: &str,
-    ) -> Result<Option<String>, MediaRepositoryError> {
-        let original: Option<String> =
-            sqlx::query_scalar("SELECT mime_type FROM media WHERE id || '.' || extension = ?")
-                .bind(filename)
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(media_storage)?;
-        if original.is_some() {
-            return Ok(original);
-        }
-        let variant: Option<String> =
-            sqlx::query_scalar("SELECT media_id FROM media_variants WHERE filename = ?")
-                .bind(filename)
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(media_storage)?;
-        Ok(variant.map(|_| "image/webp".to_owned()))
     }
 
     async fn list_media(&self) -> Result<Vec<MediaAsset>, MediaRepositoryError> {

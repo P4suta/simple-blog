@@ -346,15 +346,6 @@ pub trait MediaRepository: Send + Sync {
         alt_text: &str,
         now: DateTime<Utc>,
     ) -> Result<bool, MediaRepositoryError>;
-
-    /// The MIME type of one publicly servable file name — an original
-    /// (`{id}.{extension}`) or a generated variant — without listing the
-    /// whole media table on every image request. `None` means the file is
-    /// not referenced by any media record and must not be served.
-    async fn mime_type_for_filename(
-        &self,
-        filename: &str,
-    ) -> Result<Option<String>, MediaRepositoryError>;
 }
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
