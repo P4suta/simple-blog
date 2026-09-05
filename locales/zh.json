@@ -78,7 +78,7 @@
   "editor.title_placeholder": "标题",
   "editor.body_drop_hint": "图片可拖放到文档任意位置，或点击此处选择。",
   "editor.kind": "类型",
-  "editor.slug": "Slug",
+  "editor.slug": "网址别名",
   "editor.slug_auto": "由标题自动生成",
   "editor.slug_redirect_note": "旧地址仍然有效，并会转到这里。",
   "editor.summary": "摘要",
