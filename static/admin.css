@@ -966,8 +966,7 @@ select:focus-visible {
   margin-left: auto;
 }
 
-.editor-count,
-.editor-shortcuts {
+.editor-count {
   color: var(--faint);
   font-size: 0.75rem;
   white-space: nowrap;
@@ -979,8 +978,30 @@ select:focus-visible {
   margin: 0 0.4rem 0 0.1rem;
 }
 
-.editor-shortcuts {
-  margin-right: 0.5rem;
+/* The shortcut help hangs off the bar like the unpublish panel: two columns,
+   keys the way a keyboard shows them, one line per binding. */
+.editor-shortcuts-panel {
+  width: 20rem;
+}
+
+.editor-shortcuts-panel dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.35rem 0.8rem;
+  margin: 0;
+  font-size: 0.8rem;
+}
+
+.editor-shortcuts-panel dt,
+.editor-shortcuts-panel dd {
+  margin: 0;
+}
+
+.editor-shortcuts-panel kbd {
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--ink);
 }
 
 [data-save-state][data-error="true"],

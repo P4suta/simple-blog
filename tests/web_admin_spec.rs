@@ -3308,11 +3308,22 @@ async fn editor_offers_focus_mode_and_a_fuller_shortcut_legend() {
     ] {
         assert!(editor.contains(marker), "missing {marker}");
     }
-    let legend_at = editor.find("data-msg-shortcuts=\"").unwrap() + "data-msg-shortcuts=\"".len();
-    let legend = &editor[legend_at..editor[legend_at..].find('"').unwrap() + legend_at];
-    for key in ["{mod}+B", "{mod}+I", "{mod}+K", "{mod}+S"] {
-        assert!(legend.contains(key), "legend lacks {key}: {legend}");
+    // The help lists every binding from the script's own table; the page
+    // supplies the words for each, in the site's language.
+    assert!(editor.contains("data-shortcut-labels=\""));
+    for label in [
+        "editor.shortcut_save",
+        "editor.shortcut_bold",
+        "editor.shortcut_italic",
+        "editor.shortcut_link",
+        "editor.shortcut_heading3",
+        "editor.shortcut_fence",
+        "editor.shortcut_focus",
+    ] {
+        assert!(editor.contains(label), "labels lack {label}");
     }
+    assert!(editor.contains("data-shortcut-list"));
+    assert!(!editor.contains("data-msg-shortcuts"));
 }
 
 #[tokio::test]

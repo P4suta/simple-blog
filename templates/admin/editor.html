@@ -24,7 +24,7 @@
       data-msg-schedule="{{ t["editor.schedule"] }}"
       data-msg-device-zone="{{ t["editor.device_zone_hint"] }}"
       data-msg-count="{{ t["editor.count"] }}"
-      data-msg-shortcuts="{{ t["editor.shortcuts"] }}"
+      data-shortcut-labels="{{ shortcut_labels|tojson }}"
       data-msg-slug-invalid="{{ t["editor.slug_invalid"] }}"
       data-msg-upload-failed="{{ t["editor.upload_failed"] }}"
       data-msg-error-session="{{ t["editor.error_session"] }}"
@@ -55,7 +55,12 @@
     <span class="editor-save-state" data-save-state aria-live="polite">{{ t["editor.saved"] }}</span>
     <span class="editor-count" data-count hidden></span>
     <span class="editor-bar-spacer"></span>
-    <small class="editor-shortcuts" data-shortcuts hidden></small>
+    {# Every key binding, listed by the script from the same table that
+       binds them. Without a script there are no bindings to list. #}
+    <details class="editor-confirm editor-shortcuts" data-shortcuts hidden>
+      <summary class="editor-bar-button">{{ t["editor.shortcuts"] }}</summary>
+      <div class="editor-confirm-panel editor-shortcuts-panel" data-shortcut-list></div>
+    </details>
     <span class="editor-status" data-status-label>{{ t["status." ~ content.status] }}</span>
     <time class="editor-status-time" data-status-time datetime="{{ content.publish_at }}"{% if content.status != 'scheduled' %} hidden{% endif %}>{{ content.publish_at }}</time>
     {% if not trashed %}

@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::{collections::BTreeMap, str::FromStr};
 
 use axum::{
     Form, Json,
@@ -227,6 +227,21 @@ struct EditorContext {
     site_zone: String,
     /// The public origin, so the drawer can show the full address live.
     site_origin: String,
+    /// What each key binding does, in the site's language, keyed the way the
+    /// script's shortcut table names them.
+    shortcut_labels: BTreeMap<String, String>,
+}
+
+/// The localized descriptions of the editor's key bindings. The bindings
+/// themselves live in the script, which builds both the keymap and the help
+/// from one table; this only supplies the words.
+fn shortcut_labels(translations: &Translations, locale: Locale) -> BTreeMap<String, String> {
+    translations
+        .for_locale(locale)
+        .iter()
+        .filter(|(key, _)| key.starts_with("editor.shortcut_"))
+        .map(|(key, label)| (key.clone(), label.clone()))
+        .collect()
 }
 
 #[derive(Serialize)]
@@ -706,6 +721,7 @@ pub async fn new_content(
                 trashed: false,
                 site_zone: site_settings.timezone.clone(),
                 site_origin: preview_origin(&state).to_owned(),
+                shortcut_labels: shortcut_labels(&state.translations, site_settings.locale),
             },
         )
         .await?;
@@ -956,6 +972,7 @@ pub async fn edit_content(
                 trashed: content.is_trashed(),
                 site_zone: site_settings.timezone.clone(),
                 site_origin: preview_origin(&state).to_owned(),
+                shortcut_labels: shortcut_labels(&state.translations, site_settings.locale),
                 content: EditorContent::from_content(
                     &content,
                     state.clock.now(),

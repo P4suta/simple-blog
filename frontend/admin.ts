@@ -25,7 +25,14 @@ import {
   postFormAsNavigation,
 } from "./form-navigation";
 import { type LocalDraft, createDraftStore, draftKey, shouldOfferRestore } from "./draft-store";
-import { type Edit, insertFence, togglePrefix, toggleWrap } from "./markdown-commands";
+import {
+  EDITOR_SHORTCUTS,
+  type Edit,
+  describeShortcut,
+  insertFence,
+  togglePrefix,
+  toggleWrap,
+} from "./markdown-commands";
 import { applySuggestion, suggestTags } from "./tag-suggest";
 
 // Word-wise cursor movement that actually understands 日本語. CodeMirror's
@@ -796,7 +803,6 @@ if (editor) {
     schedule: editor.dataset.msgSchedule ?? "Schedule",
     deviceZone: editor.dataset.msgDeviceZone ?? "This device keeps {zone} time; the time above is the site's.",
     count: editor.dataset.msgCount ?? "{chars} characters · {words} words",
-    shortcuts: editor.dataset.msgShortcuts ?? "",
     slugInvalid: editor.dataset.msgSlugInvalid ?? "The slug may only use lowercase letters, digits, and hyphens.",
     shareCopied: editor.dataset.msgShareCopied ?? "Copied",
     shareExpires: editor.dataset.msgShareExpires ?? "Valid until {time}",
@@ -903,35 +909,38 @@ if (editor) {
   // that this pipeline never renders, and prose needs none of the rest.
   // markdownKeymap continues lists and quotes on Enter and removes an empty
   // marker on Backspace.
+  // What each binding does; the keys themselves come from the shared table
+  // so the help panel always describes exactly these. Save is bound on the
+  // document below, where it also works from the title and the drawer.
+  const commands: Partial<Record<string, (view: EditorView) => boolean>> = {
+    "editor.shortcut_link": insertLink,
+    "editor.shortcut_bold": wrapWith("**"),
+    "editor.shortcut_italic": wrapWith("*"),
+    "editor.shortcut_code": wrapWith("`"),
+    "editor.shortcut_quote": prefixWith("> "),
+    "editor.shortcut_list": prefixWith("- "),
+    "editor.shortcut_heading1": prefixWith("# "),
+    "editor.shortcut_heading2": prefixWith("## "),
+    "editor.shortcut_heading3": prefixWith("### "),
+    "editor.shortcut_fence": fence,
+    "editor.shortcut_preview": () => {
+      previewToggle.click();
+      return true;
+    },
+    "editor.shortcut_focus": () => {
+      focusToggle?.click();
+      return true;
+    },
+  };
   const codeEditor = new EditorView({
     doc: textarea.value,
     extensions: [
-      keymap.of([
-        { key: "Mod-k", run: insertLink },
-        { key: "Mod-b", run: wrapWith("**") },
-        { key: "Mod-i", run: wrapWith("*") },
-        { key: "Mod-`", run: wrapWith("`") },
-        { key: "Mod-Shift-q", run: prefixWith("> ") },
-        { key: "Mod-Shift-l", run: prefixWith("- ") },
-        { key: "Mod-Alt-1", run: prefixWith("# ") },
-        { key: "Mod-Alt-2", run: prefixWith("## ") },
-        { key: "Mod-Alt-3", run: prefixWith("### ") },
-        { key: "Mod-Alt-c", run: fence },
-        {
-          key: "Mod-Shift-p",
-          run: () => {
-            previewToggle.click();
-            return true;
-          },
-        },
-        {
-          key: "Mod-Shift-f",
-          run: () => {
-            focusToggle?.click();
-            return true;
-          },
-        },
-      ]),
+      keymap.of(
+        EDITOR_SHORTCUTS.flatMap((shortcut) => {
+          const run = commands[shortcut.labelKey];
+          return run ? [{ key: shortcut.key, run }] : [];
+        }),
+      ),
       keymap.of(markdownKeymap),
       segmentKeymap,
       minimalSetup,
@@ -968,10 +977,28 @@ if (editor) {
   };
   refreshCount();
 
-  if (shortcuts && msg.shortcuts) {
+  // Every binding, described in the site's language, from the same table
+  // the keymap is built from, so the help can never fall behind the keys.
+  if (shortcuts) {
     const platform = navigator.platform || navigator.userAgent;
     const mod = /Mac|iPhone|iPad/.test(platform) ? "⌘" : "Ctrl";
-    shortcuts.textContent = msg.shortcuts.replaceAll("{mod}", mod);
+    let labels: Record<string, string> = {};
+    try {
+      labels = JSON.parse(editor.dataset.shortcutLabels ?? "{}") as Record<string, string>;
+    } catch {
+      /* an unreadable label map: the keys are still listed */
+    }
+    const list = document.createElement("dl");
+    for (const shortcut of EDITOR_SHORTCUTS) {
+      const keys = document.createElement("dt");
+      const kbd = document.createElement("kbd");
+      kbd.textContent = describeShortcut(shortcut.key, mod);
+      keys.append(kbd);
+      const meaning = document.createElement("dd");
+      meaning.textContent = labels[shortcut.labelKey] ?? shortcut.labelKey;
+      list.append(keys, meaning);
+    }
+    shortcuts.querySelector("[data-shortcut-list]")?.replaceChildren(list);
     shortcuts.hidden = false;
   }
 
