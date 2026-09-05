@@ -179,11 +179,11 @@ happen.
 | --- | --- |
 | Nothing written is lost | [0004](adr/0004-content-addressed-local-media.md), [0010](adr/0010-immutable-public-releases.md), [0011](adr/0011-portable-core-and-host-adapters.md), [0014](adr/0014-recoverable-trash.md) |
 | Nothing on the site lies | [0010](adr/0010-immutable-public-releases.md), [0015](adr/0015-site-local-time.md), [0016](adr/0016-capability-preview-links.md) |
-| The writer's job is the text | [0002](adr/0002-canonical-markdown-and-request-time-ssr.md), [0003](adr/0003-passkey-only-transaction-boundary.md), [0010](adr/0010-immutable-public-releases.md) |
+| The writer's job is the text | [0002](adr/0002-canonical-markdown-and-request-time-ssr.md) (its request-time rendering is superseded by 0010), [0003](adr/0003-passkey-only-transaction-boundary.md), [0010](adr/0010-immutable-public-releases.md) |
 | The reader is a guest, not a product | [0006](adr/0006-diagnostic-first-observability.md), [0013](adr/0013-dependency-free-static-highlighting.md), [0016](adr/0016-capability-preview-links.md) |
-| The site outlives the software | [0002](adr/0002-canonical-markdown-and-request-time-ssr.md), [0011](adr/0011-portable-core-and-host-adapters.md), [0012](adr/0012-domain-first-official-hosting.md) |
+| The site outlives the software | [0001](adr/0001-inward-dependencies.md), [0002](adr/0002-canonical-markdown-and-request-time-ssr.md) (its request-time rendering is superseded by 0010), [0011](adr/0011-portable-core-and-host-adapters.md), [0012](adr/0012-domain-first-official-hosting.md) |
 | Nothing is rationed | [0012](adr/0012-domain-first-official-hosting.md) |
-| Every failure can be explained | [0005](adr/0005-test-driven-delivery.md), [0006](adr/0006-diagnostic-first-observability.md), [0007](adr/0007-reproducible-verification-contract.md), [0008](adr/0008-no-unscoped-lint-suppression.md), [0009](adr/0009-protected-integration-boundary.md) |
+| Every failure can be explained | [0001](adr/0001-inward-dependencies.md), [0005](adr/0005-test-driven-delivery.md), [0006](adr/0006-diagnostic-first-observability.md), [0007](adr/0007-reproducible-verification-contract.md), [0008](adr/0008-no-unscoped-lint-suppression.md), [0009](adr/0009-protected-integration-boundary.md) |
 | It is quiet | No record. Not every promise needs one; this one is kept by leaving things out. |
 
 Decisions live only in the records. When a record and this document disagree
