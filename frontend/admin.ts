@@ -8,8 +8,8 @@ import {
   failureKey,
   formatLocalDateTime,
   formatLocalTime,
-  isoToLocalDateTime,
-  localDateTimeToIso,
+  isoToZonedDateTime,
+  zonedDateTimeToIso,
 } from "./editor-helpers";
 
 // Server stamps are UTC; readers of the dashboard live in their own zone.
@@ -738,7 +738,7 @@ if (editor) {
   // Unpublish is a two-step <details>: opening it is the confirmation.
   const unpublishButton = editor.querySelector<HTMLDetailsElement>("[data-unpublish]");
   const publishAt = editor.querySelector<HTMLInputElement>("[data-publish-at]")!;
-  const publishAtHint = editor.querySelector<HTMLElement>("[data-publish-at-hint]");
+  const deviceZoneHint = editor.querySelector<HTMLElement>("[data-device-zone-hint]");
   const counter = editor.querySelector<HTMLElement>("[data-count]");
   const shortcuts = editor.querySelector<HTMLElement>("[data-shortcuts]");
   const focusToggle = editor.querySelector<HTMLButtonElement>("[data-focus-toggle]");
@@ -765,16 +765,19 @@ if (editor) {
   const language = document.documentElement.lang;
   const siteZone = editor.dataset.siteZone ?? "";
   const browserZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
-  // A scheduled instant in the writer's zone, and in the site's when they differ.
+  // A scheduled instant on the site's clock, and on the device's when the
+  // two differ, so a travelling writer sees both readings.
   const describeInstant = (iso: string): string => {
     const instant = new Date(iso);
-    let label = instant.toLocaleString(language || undefined);
-    if (siteZone && siteZone !== browserZone) {
-      try {
-        label += ` (${siteZone}: ${instant.toLocaleString(language || undefined, { timeZone: siteZone })})`;
-      } catch {
-        /* an unknown zone name: the writer's own reading is enough */
-      }
+    let label: string;
+    try {
+      label = instant.toLocaleString(language || undefined, siteZone ? { timeZone: siteZone } : undefined);
+    } catch {
+      /* an unknown zone name: the device's own reading is enough */
+      label = instant.toLocaleString(language || undefined);
+    }
+    if (siteZone && browserZone && siteZone !== browserZone) {
+      label += ` (${browserZone}: ${instant.toLocaleString(language || undefined)})`;
     }
     return label;
   };
@@ -791,7 +794,7 @@ if (editor) {
     statusPublic: editor.dataset.msgStatusPublic ?? "Public",
     publish: editor.dataset.msgPublish ?? "Publish",
     schedule: editor.dataset.msgSchedule ?? "Schedule",
-    publishAtHint: editor.dataset.msgPublishAtHint ?? "",
+    deviceZone: editor.dataset.msgDeviceZone ?? "This device keeps {zone} time; the time above is the site's.",
     count: editor.dataset.msgCount ?? "{chars} characters · {words} words",
     shortcuts: editor.dataset.msgShortcuts ?? "",
     slugInvalid: editor.dataset.msgSlugInvalid ?? "The slug may only use lowercase letters, digits, and hyphens.",
@@ -807,17 +810,16 @@ if (editor) {
   let dirty = false;
   let pendingStatus: "public" | "draft" | undefined;
 
-  // The server stores UTC; the control shows the writer's own zone.
-  if (publishAt.dataset.publishAtUtc) {
-    publishAt.value = isoToLocalDateTime(publishAt.dataset.publishAtUtc);
-  }
+  // The control shows the site's clock, filled in by the server, and is
+  // labelled with the site's zone. Only when this device keeps another zone
+  // is the writer told which, so the two clocks are never confused.
   publishAt.dataset.initial = publishAt.value;
-  if (publishAtHint && msg.publishAtHint) {
-    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-    publishAtHint.textContent = msg.publishAtHint.replace("{zone}", zone);
+  if (deviceZoneHint && siteZone && browserZone && siteZone !== browserZone) {
+    deviceZoneHint.textContent = msg.deviceZone.replace("{zone}", browserZone);
+    deviceZoneHint.hidden = false;
   }
   const chosenInstantIsFuture = (): boolean => {
-    const iso = localDateTimeToIso(publishAt.value);
+    const iso = zonedDateTimeToIso(publishAt.value, siteZone);
     return iso !== null && new Date(iso).getTime() > Date.now();
   };
   const refreshPublishLabel = (): void => {
@@ -840,7 +842,7 @@ if (editor) {
     if (publishAtUtc) {
       statusTime.setAttribute("datetime", publishAtUtc);
       statusTime.textContent = describeInstant(publishAtUtc);
-      publishAt.value = isoToLocalDateTime(publishAtUtc);
+      publishAt.value = isoToZonedDateTime(publishAtUtc, siteZone);
       publishAt.dataset.publishAtUtc = publishAtUtc;
     } else {
       publishAt.dataset.publishAtUtc = "";
@@ -1128,11 +1130,11 @@ if (editor) {
     }
     parameters.set("intent", "autosave");
     if (slugAuto) parameters.set("slug", "");
-    // The control holds a local time; the server takes an instant. It is
-    // sent only when the writer changed it or is publishing, so an untouched
-    // date never re-dates a piece.
+    // The control holds the site's clock and the server reads it in the
+    // site's zone. It is sent only when the writer changed it or is
+    // publishing, so an untouched date never re-dates a piece.
     if (publishAt.value !== publishAt.dataset.initial || pendingStatus) {
-      parameters.set("publish_at", localDateTimeToIso(publishAt.value) ?? "");
+      parameters.set("publish_at", publishAt.value.trim());
     } else {
       parameters.delete("publish_at");
     }

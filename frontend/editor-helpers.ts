@@ -21,6 +21,76 @@ export function localDateTimeToIso(local: string): string | null {
   return date.toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
+/**
+ * RFC 3339 instant → `YYYY-MM-DDTHH:MM` on the clock of `zone`, an IANA name.
+ * The site's clock is what the scheduling control shows; an unknown zone
+ * falls back to the device's own.
+ */
+export function isoToZonedDateTime(iso: string, zone: string): string {
+  if (!iso) return "";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  const parts = zonedParts(date, zone);
+  if (!parts) return isoToLocalDateTime(iso);
+  const pad = (value: number): string => String(value).padStart(2, "0");
+  return `${parts.year}-${pad(parts.month)}-${pad(parts.day)}T${pad(parts.hour)}:${pad(parts.minute)}`;
+}
+
+/**
+ * `YYYY-MM-DDTHH:MM` read on the clock of `zone` → RFC 3339 UTC instant, or
+ * null when empty or unparseable. Used only to label the button before the
+ * save; the server's reading of the same value is the one that counts, so a
+ * clock change in the zone at that very minute is left to it.
+ */
+export function zonedDateTimeToIso(local: string, zone: string): string | null {
+  if (!local.trim()) return null;
+  const asUtc = new Date(`${local.trim()}Z`);
+  if (Number.isNaN(asUtc.getTime())) return null;
+  const parts = zonedParts(asUtc, zone);
+  if (!parts) return localDateTimeToIso(local);
+  const wall = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second);
+  const offset = wall - asUtc.getTime();
+  return new Date(asUtc.getTime() - offset).toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+interface WallClock {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
+}
+
+/** The wall clock of `zone` at `date`, or null when the runtime does not know the zone. */
+function zonedParts(date: Date, zone: string): WallClock | null {
+  if (!zone) return null;
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: zone,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    }).formatToParts(date);
+    const read = (type: string): number => Number(parts.find((part) => part.type === type)?.value);
+    const clock = {
+      year: read("year"),
+      month: read("month"),
+      day: read("day"),
+      hour: read("hour"),
+      minute: read("minute"),
+      second: read("second"),
+    };
+    return Object.values(clock).some(Number.isNaN) ? null : clock;
+  } catch {
+    return null;
+  }
+}
+
 /** A short local time for the "saved at" indicator. */
 export function formatLocalTime(date: Date, language: string): string {
   try {

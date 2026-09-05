@@ -1704,6 +1704,88 @@ async fn editing_the_publish_date_moves_a_post_but_same_minute_values_keep_it() 
 }
 
 #[tokio::test]
+async fn scheduling_reads_and_shows_the_site_clock() {
+    let harness = Harness::new().await;
+    let (cookie, csrf) = harness.session_cookie().await;
+    let mut settings = harness.repository.site_settings().await.unwrap();
+    settings.timezone = "Asia/Tokyo".into();
+    harness
+        .repository
+        .save_configuration(&settings, &[], Utc::now())
+        .await
+        .unwrap();
+    let repository = &harness.repository;
+    let find = move |slug: &'static str| async move {
+        repository
+            .list_all_content()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|content| content.slug.as_str() == slug)
+            .unwrap()
+    };
+
+    // The form carries the clock the writer was shown: 18:00 in Tokyo is
+    // 09:00 UTC.
+    let created = harness
+        .send(
+            Method::POST,
+            "/admin/content/",
+            Some("application/x-www-form-urlencoded"),
+            scheduled_form(&csrf, "Evening", "evening", None, "2026-12-24T18:00"),
+            Some(&cookie),
+        )
+        .await;
+    assert_eq!(created.status(), StatusCode::SEE_OTHER);
+    let evening = find("evening").await;
+    assert_eq!(
+        evening.publication,
+        Publication::Public {
+            publish_at: Utc.with_ymd_and_hms(2026, 12, 24, 9, 0, 0).unwrap()
+        }
+    );
+
+    // The editor shows the same clock back, labelled with the site's zone,
+    // and keeps the instant beside it for the script.
+    let editor = text(
+        harness
+            .send(
+                Method::GET,
+                &format!("/admin/content/{}/edit/", evening.id),
+                None,
+                Body::empty(),
+                Some(&cookie),
+            )
+            .await,
+    )
+    .await;
+    assert!(
+        editor.contains("name=\"publish_at\" value=\"2026-12-24T18:00\""),
+        "{editor}"
+    );
+    assert!(editor.contains("data-publish-at-utc=\"2026-12-24T09:00:00Z\""));
+    assert!(editor.contains("Asia&#x2f;Tokyo.</small>"));
+
+    // A value that carries its own offset is never reinterpreted.
+    let with_offset = harness
+        .send(
+            Method::POST,
+            "/admin/content/",
+            Some("application/x-www-form-urlencoded"),
+            scheduled_form(&csrf, "Noon", "noon", None, "2026-12-24T12:00:00+09:00"),
+            Some(&cookie),
+        )
+        .await;
+    assert_eq!(with_offset.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        find("noon").await.publication,
+        Publication::Public {
+            publish_at: Utc.with_ymd_and_hms(2026, 12, 24, 3, 0, 0).unwrap()
+        }
+    );
+}
+
+#[tokio::test]
 async fn logout_revokes_the_session_and_clears_both_cookies() {
     let harness = Harness::new().await;
     let (cookie, csrf) = harness.session_cookie().await;
@@ -2701,7 +2783,11 @@ async fn settings_form_round_trips_timezone_and_author_and_rejects_unknown_zones
     )
     .await;
     assert!(editor.contains("data-site-zone=\"Asia&#x2f;Tokyo\""));
-    assert!(editor.contains("data-site-zone-hint"));
+    // The scheduling control is labelled with the site's clock, not UTC or
+    // the device's; the device is mentioned only by script, when it differs.
+    assert!(editor.contains("<small data-publish-at-hint>"));
+    assert!(editor.contains("Asia&#x2f;Tokyo.</small>"));
+    assert!(editor.contains("<small data-device-zone-hint hidden></small>"));
 
     let rejected = harness
         .send(

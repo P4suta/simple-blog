@@ -8,7 +8,8 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use chrono::{DateTime, Duration, NaiveDateTime, SecondsFormat, Utc};
+use chrono::{DateTime, Duration, LocalResult, NaiveDateTime, SecondsFormat, TimeZone, Utc};
+use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio_util::io::ReaderStream;
@@ -221,10 +222,9 @@ struct EditorContext {
     cover_alt_text: String,
     revisions: Vec<RevisionItem>,
     trashed: bool,
-    /// The site's zone, named next to the scheduling control so a writer in
-    /// another zone never mistakes one for the other.
+    /// The site's zone: the scheduling control reads and writes its clock,
+    /// and the name stands next to it so a writer elsewhere is never in doubt.
     site_zone: String,
-    site_zone_hint: String,
     /// The public origin, so the drawer can show the full address live.
     site_origin: String,
 }
@@ -690,11 +690,6 @@ pub async fn new_content(
         Err(response) => return Ok(response),
     };
     let site_settings = state.site.site_settings().await?;
-    let site_zone_hint = state.translations.format(
-        site_settings.locale,
-        "editor.site_zone_hint",
-        &[("zone", &site_settings.timezone)],
-    );
     let page = state
         .render_admin(
             "admin/editor.html",
@@ -710,7 +705,6 @@ pub async fn new_content(
                 revisions: Vec::new(),
                 trashed: false,
                 site_zone: site_settings.timezone.clone(),
-                site_zone_hint,
                 site_origin: preview_origin(&state).to_owned(),
             },
         )
@@ -950,11 +944,6 @@ pub async fn edit_content(
         _ => String::new(),
     };
     let site_settings = state.site.site_settings().await?;
-    let site_zone_hint = state.translations.format(
-        site_settings.locale,
-        "editor.site_zone_hint",
-        &[("zone", &site_settings.timezone)],
-    );
     let page = state
         .render_admin(
             "admin/editor.html",
@@ -966,9 +955,12 @@ pub async fn edit_content(
                 version: Some(content.version),
                 trashed: content.is_trashed(),
                 site_zone: site_settings.timezone.clone(),
-                site_zone_hint,
                 site_origin: preview_origin(&state).to_owned(),
-                content: EditorContent::from_content(&content, state.clock.now()),
+                content: EditorContent::from_content(
+                    &content,
+                    state.clock.now(),
+                    site_settings.time_zone(),
+                ),
                 cover_url,
                 cover_alt_text,
                 revisions,
@@ -1257,7 +1249,8 @@ pub async fn create_content(
         return Ok(response);
     }
     let now = state.clock.now();
-    let (draft, intent) = match form.to_draft(now, None) {
+    let zone = state.site.site_settings().await?.time_zone();
+    let (draft, intent) = match form.to_draft(now, None, zone) {
         Ok(value) => value,
         Err(error) => {
             return failure(&state, &headers, StatusCode::UNPROCESSABLE_ENTITY, &error).await;
@@ -1359,7 +1352,8 @@ pub async fn update_content(
         )
         .await;
     };
-    let (draft, intent) = match form.to_draft(now, Some(&existing)) {
+    let zone = state.site.site_settings().await?.time_zone();
+    let (draft, intent) = match form.to_draft(now, Some(&existing), zone) {
         Ok(value) => value,
         Err(error) => {
             return failure(&state, &headers, StatusCode::UNPROCESSABLE_ENTITY, &error).await;
@@ -1964,6 +1958,7 @@ impl ContentForm {
         &self,
         now: DateTime<Utc>,
         current: Option<&Content>,
+        zone: Tz,
     ) -> Result<(ContentDraft, SaveIntent), String> {
         let kind = ContentKind::from_str(&self.kind).map_err(str::to_owned)?;
         // An empty slug means "from the title": always for a new piece, and
@@ -1976,7 +1971,7 @@ impl ContentForm {
         } else {
             Slug::parse(&self.slug).map_err(|error| error.to_string())?
         };
-        let requested = parse_publish_at(&self.publish_at)?;
+        let requested = parse_publish_at(&self.publish_at, zone)?;
         let publication = publication_for(&self.status, requested, current, now)?;
         let intent = if self.intent == "autosave" {
             SaveIntent::Autosave
@@ -2072,7 +2067,9 @@ impl EditorContent {
         }
     }
 
-    fn from_content(content: &Content, now: DateTime<Utc>) -> Self {
+    /// `zone` is the site's: the scheduling control shows the site's clock,
+    /// which is what "a minute on the clock in the site's own time" means.
+    fn from_content(content: &Content, now: DateTime<Utc>, zone: Tz) -> Self {
         let publish_at = content.publication.publish_at();
         Self {
             kind: content.kind.as_str(),
@@ -2091,7 +2088,7 @@ impl EditorContent {
                 .map(|at| at.to_rfc3339_opts(SecondsFormat::Secs, true))
                 .unwrap_or_default(),
             publish_at_input: publish_at
-                .map(|at| at.format("%Y-%m-%dT%H:%M").to_string())
+                .map(|at| at.with_timezone(&zone).format("%Y-%m-%dT%H:%M").to_string())
                 .unwrap_or_default(),
             seo_title: content.seo_title.clone().unwrap_or_default(),
             seo_description: content.seo_description.clone().unwrap_or_default(),
@@ -2271,7 +2268,12 @@ fn save_response(content: &Content, now: DateTime<Utc>, site: SiteState) -> serd
 /// Accepts the RFC 3339 instant the browser script sends, or the naive
 /// `datetime-local` value a JavaScript-free form submits, which the editor
 /// labels as UTC. Empty means "no explicit instant".
-fn parse_publish_at(value: &str) -> Result<Option<DateTime<Utc>>, String> {
+/// A publish date as the form sends it. An instant with an offset is taken
+/// as it is; a bare wall-clock time is read on the site's clock (`zone`),
+/// because that is the clock the writer was shown. When a zone's clocks jump
+/// and a minute happens twice, the first one wins; when a minute is skipped,
+/// the piece appears as soon as the clock reaches it.
+fn parse_publish_at(value: &str, zone: Tz) -> Result<Option<DateTime<Utc>>, String> {
     let value = value.trim();
     if value.is_empty() {
         return Ok(None);
@@ -2281,7 +2283,14 @@ fn parse_publish_at(value: &str) -> Result<Option<DateTime<Utc>>, String> {
     }
     for format in ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M"] {
         if let Ok(naive) = NaiveDateTime::parse_from_str(value, format) {
-            return Ok(Some(naive.and_utc()));
+            let instant = match zone.from_local_datetime(&naive) {
+                LocalResult::Single(at) | LocalResult::Ambiguous(at, _) => at,
+                LocalResult::None => zone
+                    .from_local_datetime(&(naive + Duration::hours(1)))
+                    .earliest()
+                    .ok_or_else(|| "publish date does not exist in the site's zone".to_owned())?,
+            };
+            return Ok(Some(instant.with_timezone(&Utc)));
         }
     }
     Err("publish date must be an ISO 8601 date-time".into())
@@ -3288,19 +3297,53 @@ mod tests {
     }
 
     #[test]
-    fn parse_publish_at_accepts_rfc3339_and_naive_utc_and_rejects_garbage() {
+    fn parse_publish_at_reads_bare_times_on_the_site_clock_and_rejects_garbage() {
         let expected = Utc.with_ymd_and_hms(2026, 9, 3, 12, 1, 0).unwrap();
-        assert_eq!(parse_publish_at(""), Ok(None));
-        assert_eq!(parse_publish_at("   "), Ok(None));
-        assert_eq!(parse_publish_at("2026-09-03T12:01:00Z"), Ok(Some(expected)));
+        let utc = Tz::UTC;
+        assert_eq!(parse_publish_at("", utc), Ok(None));
+        assert_eq!(parse_publish_at("   ", utc), Ok(None));
         assert_eq!(
-            parse_publish_at("2026-09-03T21:01:00+09:00"),
+            parse_publish_at("2026-09-03T12:01:00Z", utc),
             Ok(Some(expected))
         );
-        assert_eq!(parse_publish_at("2026-09-03T12:01"), Ok(Some(expected)));
-        assert_eq!(parse_publish_at("2026-09-03T12:01:00"), Ok(Some(expected)));
-        assert!(parse_publish_at("next tuesday").is_err());
-        assert!(parse_publish_at("2026-13-40T99:99").is_err());
+        assert_eq!(
+            parse_publish_at("2026-09-03T21:01:00+09:00", utc),
+            Ok(Some(expected))
+        );
+        assert_eq!(
+            parse_publish_at("2026-09-03T12:01", utc),
+            Ok(Some(expected))
+        );
+        assert_eq!(
+            parse_publish_at("2026-09-03T12:01:00", utc),
+            Ok(Some(expected))
+        );
+        assert!(parse_publish_at("next tuesday", utc).is_err());
+        assert!(parse_publish_at("2026-13-40T99:99", utc).is_err());
+
+        // The site's clock: 21:01 in Tokyo is 12:01 UTC, and an explicit
+        // offset is never reinterpreted.
+        let tokyo: Tz = "Asia/Tokyo".parse().unwrap();
+        assert_eq!(
+            parse_publish_at("2026-09-03T21:01", tokyo),
+            Ok(Some(expected))
+        );
+        assert_eq!(
+            parse_publish_at("2026-09-03T12:01:00Z", tokyo),
+            Ok(Some(expected))
+        );
+
+        // Clock changes: the repeated hour takes its first reading, and a
+        // skipped minute becomes the moment the clock reaches it.
+        let berlin: Tz = "Europe/Berlin".parse().unwrap();
+        assert_eq!(
+            parse_publish_at("2026-10-25T02:30", berlin),
+            Ok(Some(Utc.with_ymd_and_hms(2026, 10, 25, 0, 30, 0).unwrap()))
+        );
+        assert_eq!(
+            parse_publish_at("2026-03-29T02:30", berlin),
+            Ok(Some(Utc.with_ymd_and_hms(2026, 3, 29, 1, 30, 0).unwrap()))
+        );
     }
 
     #[test]
