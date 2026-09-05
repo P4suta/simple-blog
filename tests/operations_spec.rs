@@ -234,6 +234,56 @@ async fn export_and_import_carry_the_trash() {
 }
 
 #[tokio::test]
+async fn doctor_names_every_safety_limit_and_invents_no_quota() {
+    let source = tempfile::tempdir().unwrap();
+    let (config, repository) = seeded(&source).await;
+    let report = Doctor::inspect(&config, repository.as_ref()).await.unwrap();
+
+    assert_eq!(report.limits.upload_bytes, config.max_upload_bytes);
+    assert_eq!(report.limits.backup_generations, config.backup_retention);
+    assert_eq!(report.limits.markdown_bytes, 2 * 1024 * 1024);
+    assert_eq!(report.limits.autosave_revisions_kept, 50);
+    for name in [
+        "limits.upload",
+        "limits.text",
+        "limits.image",
+        "limits.theme",
+        "limits.search",
+        "limits.rate",
+        "limits.history",
+        "limits.backups",
+    ] {
+        let check = report
+            .checks
+            .iter()
+            .find(|check| check.name == name)
+            .unwrap_or_else(|| panic!("doctor is silent about {name}"));
+        assert_eq!(check.status, "ok", "{name}");
+    }
+    let upload = report
+        .checks
+        .iter()
+        .find(|check| check.name == "limits.upload")
+        .unwrap();
+    assert!(upload.detail.contains(&config.max_upload_bytes.to_string()));
+    assert!(
+        upload.detail.contains("max_upload_bytes"),
+        "a configurable limit says where it is changed"
+    );
+    // Every limit is a safety limit on one request or one piece; nothing
+    // caps how many pieces, how many bytes in total, or how many readers.
+    let limits = serde_json::to_value(report.limits).unwrap();
+    for key in limits.as_object().unwrap().keys() {
+        assert!(
+            !["quota", "traffic", "total", "pieces", "posts"]
+                .iter()
+                .any(|word| key.contains(word)),
+            "{key} reads like a quota"
+        );
+    }
+}
+
+#[tokio::test]
 async fn doctor_reports_missing_media_without_mutating_state() {
     let source = tempfile::tempdir().unwrap();
     let (config, repository) = seeded(&source).await;

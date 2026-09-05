@@ -1627,8 +1627,11 @@ impl SiteRepository for SqliteRepository {
     }
 }
 
-/// How many states of the settings are kept; the same bound as autosaves.
-const SETTINGS_REVISIONS_KEPT: i64 = 50;
+/// How many autosave revisions a piece keeps (explicit saves are never
+/// pruned), and how many states of the settings are kept. `doctor` reports
+/// both.
+pub const AUTOSAVE_REVISIONS_KEPT: i64 = 50;
+pub const SETTINGS_REVISIONS_KEPT: i64 = 50;
 
 /// Before the very first recorded save, the state about to be replaced is
 /// kept too, so even the first edit after an upgrade can be undone.
@@ -3018,11 +3021,12 @@ async fn prune_autosaves(
          WHERE content_id = ? AND intent = 'autosave' AND id NOT IN (
             SELECT id FROM revisions
             WHERE content_id = ? AND intent = 'autosave'
-            ORDER BY created_at DESC, id DESC LIMIT 50
+            ORDER BY created_at DESC, id DESC LIMIT ?
          )",
     )
     .bind(content_id.as_i64())
     .bind(content_id.as_i64())
+    .bind(AUTOSAVE_REVISIONS_KEPT)
     .execute(&mut **transaction)
     .await
     .map_err(storage)?;

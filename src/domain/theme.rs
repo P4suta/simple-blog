@@ -8,8 +8,9 @@ use url::Url;
 
 use crate::domain::media::MediaId;
 
-const MAX_NAVIGATION_ITEMS: usize = 16;
-const MAX_CUSTOM_CSS_BYTES: usize = 64 * 1024;
+/// Safety limits on the theme, reported by `doctor`.
+pub const MAX_NAVIGATION_ITEMS: usize = 16;
+pub const MAX_CUSTOM_CSS_BYTES: usize = 64 * 1024;
 const MAX_AUTHOR_NAME_CHARS: usize = 120;
 /// Regions offered in the time zone picker; legacy aliases such as `US/*`
 /// or `Japan` still parse but are not suggested.

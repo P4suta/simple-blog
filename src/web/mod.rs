@@ -147,7 +147,7 @@ impl AppState {
             translations: Arc::new(Translations::embedded()?),
             clock,
             likes,
-            like_rate_limiter: AuthRateLimiter::new(30, chrono::Duration::minutes(1)),
+            like_rate_limiter: AuthRateLimiter::likes_default(),
             engagement,
             release_store,
             publication,
