@@ -1,3 +1,7 @@
+//! The read-only doctor: every check the software can make of its own
+//! installation and every safety limit in force, each reported under a stable
+//! name.
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::OpenOptions,

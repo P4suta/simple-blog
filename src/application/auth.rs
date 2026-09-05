@@ -1,3 +1,8 @@
+//! Sessions, setup tokens, recovery codes, and rate limits: the
+//! authentication use cases behind passkey-only ownership. Secrets are made
+//! here and stored only as hashes; the passkey ceremony itself lives in
+//! `infrastructure::webauthn`.
+
 use std::{
     collections::{HashMap, VecDeque},
     sync::{Arc, Mutex},

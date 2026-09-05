@@ -1,3 +1,7 @@
+//! The site's settings and its public theme contract: language, time zone,
+//! navigation, the writer's stylesheet, the typed context templates receive,
+//! and the kept states a writer can return to.
+
 use std::str::FromStr;
 
 use chrono::{DateTime, Utc};

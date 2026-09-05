@@ -1,3 +1,6 @@
+//! Tracing setup, the panic hook, and the stable diagnostic codes every
+//! failure is traced with.
+
 use std::backtrace::Backtrace;
 
 use thiserror::Error;

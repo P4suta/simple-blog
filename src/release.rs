@@ -1,8 +1,13 @@
-//! Deterministic, host-neutral public release contracts.
+//! Deterministic public release contracts, and the native store for them.
 //!
 //! A release is immutable. Adapters first persist every referenced object and
 //! the manifest, then replace one active pointer. A failed build or store write
 //! therefore cannot expose a partially generated site.
+//!
+//! The model (identifiers, manifests, the builder, the publisher, and the
+//! resolver) is host-neutral and shared with every adapter through
+//! `contracts/release-resolution-v1.json`; `FilesystemReleaseStore` at the end
+//! of this module is the native adapter's implementation of the store port.
 
 use std::{
     collections::{BTreeMap, HashSet},

@@ -82,6 +82,11 @@ jobs:
       - name: Lint with current stable Rust
         if: runner.os == 'Linux'
         run: cargo +stable clippy --locked --all-targets --all-features -- -D warnings
+      - name: Document the library without warnings
+        if: runner.os == 'Linux'
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo +stable doc --no-deps --locked --all-features
       - name: Test
         env:
           PROPTEST_CASES: 1024

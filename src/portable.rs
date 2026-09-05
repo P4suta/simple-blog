@@ -1,8 +1,11 @@
-//! Host-neutral `.simple-blog` migration archive.
+//! The `.simple-blog` migration archive: its logical model, and the reader
+//! and writer that carry it between conforming hosts.
 //!
 //! The logical site model is independent of SQLite, D1, R2, or a particular
 //! runtime. Derived public releases are deliberately excluded and rebuilt by
-//! the destination adapter from canonical Markdown and media bytes.
+//! the destination adapter from canonical Markdown and media bytes. The tar
+//! and zstd framing in this module is the native implementation of that
+//! model on a filesystem.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
