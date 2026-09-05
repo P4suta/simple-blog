@@ -74,6 +74,29 @@ fn package() -> PortablePackage {
 }
 
 #[test]
+fn the_portable_site_contract_reads_writes_and_travels_unchanged() {
+    // A CRLF checkout must not change what the test proves.
+    let fixture = include_str!("../contracts/portable-site-v1.json").replace("\r\n", "\n");
+    let site: PortableSiteV1 = serde_json::from_str(&fixture).unwrap();
+    site.validate().unwrap();
+
+    // Field order and omissions are part of the contract: a second
+    // implementation must produce these bytes from this site.
+    let written = serde_json::to_string_pretty(&site).unwrap() + "\n";
+    assert_eq!(written, fixture);
+
+    // Through an archive and back, the site is the same site.
+    let temp = tempfile::tempdir().unwrap();
+    let archive = temp.path().join("contract.simple-blog");
+    let package = PortablePackage {
+        site: site.clone(),
+        media_files: BTreeMap::new(),
+    };
+    PortableArchive::write(&package, &archive).unwrap();
+    assert_eq!(PortableArchive::read(&archive).unwrap().site, site);
+}
+
+#[test]
 fn settings_history_travels_and_an_empty_one_leaves_older_archives_untouched() {
     let without = serde_json::to_string(&package().site).unwrap();
     assert!(
