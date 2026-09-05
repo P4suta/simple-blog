@@ -5,6 +5,8 @@ diagnostic evidence and recoverability over development speed.
 
 ## Before opening a change
 
+- Read [the vision](docs/vision.md). A change that breaks one of its promises must
+  change that document in the same pull request.
 - Search existing issues and architectural decisions in [`docs/adr`](docs/adr/README.md).
 - Open a design proposal before changing a durable format, public contract,
   security boundary, or host-adapter invariant.

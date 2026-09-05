@@ -84,7 +84,7 @@ bun audit --audit-level=high
 bash tests/repository_policy.sh
 ```
 
-Architectural decisions live only in [`docs/adr`](docs/adr/README.md). Changes follow Red–Green–Refactor and may not use unscoped lint suppression.
+What the project is for, and the promises it makes to writers and readers, live in [`docs/vision.md`](docs/vision.md). Architectural decisions live only in [`docs/adr`](docs/adr/README.md). Changes follow Red–Green–Refactor and may not use unscoped lint suppression.
 
 For a reproducible incident report, keep the first failing request ID and run the read-only doctor with machine-readable traces:
 
