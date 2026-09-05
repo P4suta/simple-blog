@@ -27,10 +27,11 @@ use crate::{
     },
     domain::media::{MediaAsset, MediaId, MediaVariant},
     domain::search::{self, SearchTerms},
-    domain::theme::{Locale, NavigationItem, SiteSettings},
+    domain::theme::{Locale, NavigationItem, SettingsRevision, SiteSettings},
     portable::{
         PortableContent, PortableEngagement, PortableOwner, PortablePasskey,
-        PortablePublicationState, PortableRecoveryCode, PortableRedirect, PortableSiteV1,
+        PortablePublicationState, PortableRecoveryCode, PortableRedirect, PortableSettingsRevision,
+        PortableSiteV1,
     },
 };
 use uuid::Uuid;
@@ -1555,6 +1556,7 @@ impl SiteRepository for SqliteRepository {
         now: DateTime<Utc>,
     ) -> Result<(), RepositoryError> {
         let mut transaction = self.write_transaction().await.map_err(storage)?;
+        keep_first_settings_state(&mut transaction, now).await?;
         sqlx::query(
             "UPDATE site_settings SET
                 site_title = ?, site_description = ?, locale = ?, logo_media_id = ?,
@@ -1592,10 +1594,125 @@ impl SiteRepository for SqliteRepository {
             .await
             .map_err(storage)?;
         }
+        keep_settings_state(&mut transaction, settings, navigation, now).await?;
         refresh_publication_state(&mut transaction, now, true).await?;
         transaction.commit().await.map_err(storage)?;
         Ok(())
     }
+
+    async fn list_settings_revisions(&self) -> Result<Vec<SettingsRevision>, RepositoryError> {
+        let rows = sqlx::query(
+            "SELECT id, settings_json, navigation_json, created_at
+             FROM site_settings_revisions ORDER BY id DESC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage)?;
+        rows.iter().map(settings_revision_from_row).collect()
+    }
+
+    async fn find_settings_revision(
+        &self,
+        id: i64,
+    ) -> Result<Option<SettingsRevision>, RepositoryError> {
+        let row = sqlx::query(
+            "SELECT id, settings_json, navigation_json, created_at
+             FROM site_settings_revisions WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(storage)?;
+        row.as_ref().map(settings_revision_from_row).transpose()
+    }
+}
+
+/// How many states of the settings are kept; the same bound as autosaves.
+const SETTINGS_REVISIONS_KEPT: i64 = 50;
+
+/// Before the very first recorded save, the state about to be replaced is
+/// kept too, so even the first edit after an upgrade can be undone.
+async fn keep_first_settings_state(
+    transaction: &mut Transaction<'_, Sqlite>,
+    now: DateTime<Utc>,
+) -> Result<(), RepositoryError> {
+    let kept: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM site_settings_revisions")
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(storage)?;
+    if kept > 0 {
+        return Ok(());
+    }
+    let settings = snapshot_settings(transaction).await?;
+    let navigation = snapshot_navigation(transaction).await?;
+    insert_settings_revision(transaction, &settings, &navigation, now).await
+}
+
+/// Records the state a save wrote, unless it is the newest state already,
+/// and forgets everything older than the newest fifty.
+async fn keep_settings_state(
+    transaction: &mut Transaction<'_, Sqlite>,
+    settings: &SiteSettings,
+    navigation: &[NavigationItem],
+    now: DateTime<Utc>,
+) -> Result<(), RepositoryError> {
+    let newest: Option<(String, String)> = sqlx::query_as(
+        "SELECT settings_json, navigation_json FROM site_settings_revisions
+         ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(storage)?;
+    let settings_json = serde_json::to_string(settings).map_err(storage)?;
+    let navigation_json = serde_json::to_string(navigation).map_err(storage)?;
+    if newest.is_some_and(|(kept_settings, kept_navigation)| {
+        kept_settings == settings_json && kept_navigation == navigation_json
+    }) {
+        return Ok(());
+    }
+    insert_settings_revision(transaction, settings, navigation, now).await?;
+    sqlx::query(
+        "DELETE FROM site_settings_revisions WHERE id NOT IN (
+            SELECT id FROM site_settings_revisions ORDER BY id DESC LIMIT ?
+         )",
+    )
+    .bind(SETTINGS_REVISIONS_KEPT)
+    .execute(&mut **transaction)
+    .await
+    .map_err(storage)?;
+    Ok(())
+}
+
+async fn insert_settings_revision(
+    transaction: &mut Transaction<'_, Sqlite>,
+    settings: &SiteSettings,
+    navigation: &[NavigationItem],
+    created_at: DateTime<Utc>,
+) -> Result<(), RepositoryError> {
+    sqlx::query(
+        "INSERT INTO site_settings_revisions (settings_json, navigation_json, created_at)
+         VALUES (?, ?, ?)",
+    )
+    .bind(serde_json::to_string(settings).map_err(storage)?)
+    .bind(serde_json::to_string(navigation).map_err(storage)?)
+    .bind(created_at)
+    .execute(&mut **transaction)
+    .await
+    .map_err(storage)?;
+    Ok(())
+}
+
+fn settings_revision_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<SettingsRevision, RepositoryError> {
+    let settings: String = row.try_get("settings_json").map_err(storage)?;
+    let navigation: String = row.try_get("navigation_json").map_err(storage)?;
+    Ok(SettingsRevision {
+        id: row.try_get("id").map_err(storage)?,
+        settings: serde_json::from_str(&settings).map_err(storage)?,
+        navigation: serde_json::from_str(&navigation).map_err(storage)?,
+        created_at: row.try_get("created_at").map_err(storage)?,
+    })
 }
 
 #[async_trait]
@@ -1698,8 +1815,10 @@ impl PortableRepository for SqliteRepository {
         let engagement = portable_engagement(&mut transaction).await?;
         let owner = portable_owner(&mut transaction).await?;
         let publication = portable_publication(&mut transaction).await?;
+        let settings_revisions = portable_settings_revisions(&mut transaction).await?;
         transaction.commit().await.map_err(storage)?;
         let site = PortableSiteV1 {
+            settings_revisions,
             format_version: crate::portable::PORTABLE_SITE_FORMAT_VERSION,
             exported_at,
             canonical_origin: canonical_origin.to_owned(),
@@ -1749,6 +1868,7 @@ impl PortableRepository for SqliteRepository {
         clear_portable_state(&mut transaction).await?;
         insert_portable_media(&mut transaction, &site.media).await?;
         insert_portable_settings(&mut transaction, site).await?;
+        insert_portable_settings_revisions(&mut transaction, &site.settings_revisions).await?;
         insert_portable_contents(&mut transaction, &site.contents, markdown).await?;
         insert_portable_redirects(&mut transaction, &site.redirects).await?;
         insert_portable_engagement(&mut transaction, &site.engagement).await?;
@@ -1961,6 +2081,7 @@ async fn clear_portable_state(
         "DELETE FROM tags",
         "DELETE FROM contents",
         "DELETE FROM navigation",
+        "DELETE FROM site_settings_revisions",
         "UPDATE site_settings SET logo_media_id = NULL, favicon_media_id = NULL WHERE singleton = 1",
         "DELETE FROM media_variants",
         "DELETE FROM media",
@@ -2052,6 +2173,44 @@ async fn insert_portable_settings(
         .execute(&mut **transaction)
         .await
         .map_err(storage)?;
+    }
+    Ok(())
+}
+
+async fn portable_settings_revisions(
+    transaction: &mut Transaction<'_, Sqlite>,
+) -> Result<Vec<PortableSettingsRevision>, RepositoryError> {
+    let rows = sqlx::query(
+        "SELECT id, settings_json, navigation_json, created_at
+         FROM site_settings_revisions ORDER BY id",
+    )
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(storage)?;
+    rows.iter()
+        .map(|row| {
+            let revision = settings_revision_from_row(row)?;
+            Ok(PortableSettingsRevision {
+                settings: revision.settings,
+                navigation: revision.navigation,
+                created_at: revision.created_at,
+            })
+        })
+        .collect()
+}
+
+async fn insert_portable_settings_revisions(
+    transaction: &mut Transaction<'_, Sqlite>,
+    revisions: &[PortableSettingsRevision],
+) -> Result<(), RepositoryError> {
+    for revision in revisions {
+        insert_settings_revision(
+            transaction,
+            &revision.settings,
+            &revision.navigation,
+            revision.created_at,
+        )
+        .await?;
     }
     Ok(())
 }
@@ -2297,6 +2456,21 @@ impl RevisionMediaReferences for SqliteRepository {
                     referenced.insert(cover);
                 }
             }
+        }
+        // A kept state of the settings may name a logo or favicon the current
+        // settings no longer do; restoring it must not bring back a broken
+        // image, so those stay alive for as long as the state is kept.
+        let theme_images: Vec<(Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT json_extract(settings_json, '$.logo_media_id'),
+                    json_extract(settings_json, '$.favicon_media_id')
+             FROM site_settings_revisions",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage)?;
+        for (logo, favicon) in theme_images {
+            referenced.extend(logo);
+            referenced.extend(favicon);
         }
         Ok(referenced)
     }

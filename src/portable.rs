@@ -53,6 +53,20 @@ pub struct PortableSiteV1 {
     pub engagement: BTreeMap<i64, PortableEngagement>,
     pub owner: Option<PortableOwner>,
     pub publication: PortablePublicationState,
+    /// The kept states of the settings, oldest first. Omitted while empty so
+    /// archives without a history stay byte-identical to older ones.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub settings_revisions: Vec<PortableSettingsRevision>,
+}
+
+/// One kept state of the settings and navigation. Navigation items carry no
+/// durable identity here; the destination assigns its own on import.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PortableSettingsRevision {
+    pub settings: SiteSettings,
+    pub navigation: Vec<NavigationItem>,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -197,6 +211,7 @@ impl PortableSiteV1 {
             return invalid("site settings are not normalized");
         }
         validate_portable_navigation(&self.navigation)?;
+        validate_settings_revisions(&self.settings_revisions)?;
         let (content_ids, slugs) = validate_contents(&self.contents)?;
         validate_redirects(&self.redirects, &content_ids, &slugs)?;
         validate_engagement(&self.engagement, &content_ids)?;
@@ -225,6 +240,34 @@ fn validate_portable_navigation(items: &[NavigationItem]) -> Result<(), Portable
                 "navigation identities and positions are not canonical".into(),
             ));
         }
+    }
+    Ok(())
+}
+
+/// A kept state must be one the destination could have saved itself:
+/// normalized settings and a normalized navigation, in time order.
+fn validate_settings_revisions(
+    revisions: &[PortableSettingsRevision],
+) -> Result<(), PortableArchiveError> {
+    let mut previous: Option<DateTime<Utc>> = None;
+    for revision in revisions {
+        let normalized = revision
+            .settings
+            .clone()
+            .validated()
+            .map_err(|error| PortableArchiveError::InvalidPackage(error.to_string()))?;
+        if normalized != revision.settings {
+            return invalid("a settings revision is not normalized");
+        }
+        let navigation = validate_navigation(revision.navigation.clone())
+            .map_err(|error| PortableArchiveError::InvalidPackage(error.to_string()))?;
+        if navigation != revision.navigation {
+            return invalid("a settings revision's navigation is not normalized");
+        }
+        if previous.is_some_and(|at| at > revision.created_at) {
+            return invalid("settings revisions are not in time order");
+        }
+        previous = Some(revision.created_at);
     }
     Ok(())
 }

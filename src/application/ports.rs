@@ -15,7 +15,7 @@ use crate::domain::content::{
 };
 use crate::domain::media::{MediaAsset, MediaId};
 use crate::domain::search::SearchTerms;
-use crate::domain::theme::{NavigationItem, SiteSettings};
+use crate::domain::theme::{NavigationItem, SettingsRevision, SiteSettings};
 use crate::portable::PortableSiteV1;
 use uuid::Uuid;
 
@@ -241,12 +241,24 @@ pub trait LikeRepository: Send + Sync {
 pub trait SiteRepository: Send + Sync {
     async fn site_settings(&self) -> Result<SiteSettings, RepositoryError>;
     async fn navigation(&self) -> Result<Vec<NavigationItem>, RepositoryError>;
+    /// Saves settings and navigation together and keeps the saved state as
+    /// a revision (the newest fifty; an unchanged save adds none). The very
+    /// first save also keeps the state it replaces.
     async fn save_configuration(
         &self,
         settings: &SiteSettings,
         navigation: &[NavigationItem],
         now: DateTime<Utc>,
     ) -> Result<(), RepositoryError>;
+
+    /// Every kept state of the settings and navigation, newest first.
+    async fn list_settings_revisions(&self) -> Result<Vec<SettingsRevision>, RepositoryError>;
+
+    /// One kept state, or `None` when it was pruned or never existed.
+    async fn find_settings_revision(
+        &self,
+        id: i64,
+    ) -> Result<Option<SettingsRevision>, RepositoryError>;
 
     /// Every historical address and the piece it leads to, oldest address first.
     async fn list_redirects(&self) -> Result<Vec<RedirectEntry>, RepositoryError>;

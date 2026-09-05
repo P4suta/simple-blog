@@ -468,6 +468,10 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/settings/theme/reset/", post(admin::reset_theme))
         .route("/admin/backup/", post(admin::download_backup))
         .route("/admin/settings/theme/undo/", post(admin::undo_theme_reset))
+        .route(
+            "/admin/settings/revisions/{id}/restore/",
+            post(admin::restore_settings),
+        )
         .route("/admin/redirects/", post(admin::add_redirect))
         .route("/admin/redirects/remove/", post(admin::remove_redirect))
         .route(

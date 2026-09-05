@@ -1,5 +1,6 @@
 use std::str::FromStr;
 
+use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -160,6 +161,19 @@ impl SiteSettings {
             &self.author_name
         }
     }
+}
+
+/// One kept state of the site's settings and navigation.
+///
+/// Exactly what a save wrote, so a later mistake is undone by restoring it.
+/// Restoring is itself a save, so the state it replaces joins the history.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SettingsRevision {
+    pub id: i64,
+    pub settings: SiteSettings,
+    pub navigation: Vec<NavigationItem>,
+    pub created_at: DateTime<Utc>,
 }
 
 /// One `<optgroup>` of the time zone picker.

@@ -14,7 +14,7 @@ use simple_blog::{
     },
     portable::{
         PortableArchive, PortableArchiveError, PortableContent, PortableEngagement,
-        PortablePackage, PortablePublicationState, PortableSiteV1,
+        PortablePackage, PortablePublicationState, PortableSettingsRevision, PortableSiteV1,
     },
 };
 
@@ -67,9 +67,47 @@ fn package() -> PortablePackage {
                 public_revision: 12,
                 next_publish_at: None,
             },
+            settings_revisions: Vec::new(),
         },
         media_files: BTreeMap::new(),
     }
+}
+
+#[test]
+fn settings_history_travels_and_an_empty_one_leaves_older_archives_untouched() {
+    let without = serde_json::to_string(&package().site).unwrap();
+    assert!(
+        !without.contains("settings_revisions"),
+        "an empty history must not change the bytes of an archive"
+    );
+
+    let mut site = package().site;
+    let earlier = PortableSettingsRevision {
+        settings: SiteSettings {
+            site_title: "Before the rename".into(),
+            ..site.settings.clone()
+        },
+        navigation: Vec::new(),
+        created_at: site.exported_at - chrono::Duration::hours(1),
+    };
+    let current = PortableSettingsRevision {
+        settings: site.settings.clone(),
+        navigation: Vec::new(),
+        created_at: site.exported_at,
+    };
+    site.settings_revisions = vec![earlier.clone(), current.clone()];
+    site.validate().unwrap();
+    let json = serde_json::to_string(&site).unwrap();
+    assert_eq!(serde_json::from_str::<PortableSiteV1>(&json).unwrap(), site);
+
+    // A history a conforming host could not have written is refused: out of
+    // time order, or settings it would have normalized on save.
+    let mut disordered = site.clone();
+    disordered.settings_revisions = vec![current, earlier];
+    assert!(disordered.validate().is_err());
+    let mut unnormalized = site;
+    unnormalized.settings_revisions[0].settings.site_title = "  padded  ".into();
+    assert!(unnormalized.validate().is_err());
 }
 
 #[test]

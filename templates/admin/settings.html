@@ -75,6 +75,13 @@
     </form>
   </section>
 </div>
+<div class="settings-form history-section" id="history">
+  <section>
+    <h2>{{ t["settings.history"] }}</h2>
+    <p>{{ t["settings.history_note"] }}</p>
+    {% if history %}<table class="redirect-list history-list"><tbody>{% for item in history %}<tr><td><time data-local-time datetime="{{ item.created_at }}">{{ item.created_at }}</time></td><td><small>{{ item.site_title }}</small></td><td><form method="post" action="/admin/settings/revisions/{{ item.id }}/restore/"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="row-action">{{ t["settings.history_restore"] }}</button></form></td></tr>{% endfor %}</tbody></table>{% else %}<p class="content-empty">{{ t["settings.history_empty"] }}</p>{% endif %}
+  </section>
+</div>
 <form id="theme-reset-form" method="post" action="/admin/settings/theme/reset/" hidden><input type="hidden" name="csrf" value="{{ csrf }}"></form>
 <form id="theme-undo-form" method="post" action="/admin/settings/theme/undo/" hidden><input type="hidden" name="csrf" value="{{ csrf }}"></form>
 <div class="settings-form security-section">

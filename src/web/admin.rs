@@ -335,6 +335,16 @@ struct SettingsContext {
     favicon_url: Option<String>,
     passkeys: Vec<PasskeyView>,
     reauth_ok: bool,
+    /// Earlier states of the settings, newest first; the current one is not
+    /// listed, since restoring it would change nothing.
+    history: Vec<SettingsHistoryItem>,
+}
+
+#[derive(Serialize)]
+struct SettingsHistoryItem {
+    id: i64,
+    created_at: String,
+    site_title: String,
 }
 
 #[derive(Serialize)]
@@ -763,10 +773,25 @@ pub async fn settings_page(
         })
         .collect();
     let reauth_ok = recently_reauthenticated(&identity, state.clock.now());
+    let history = state
+        .site_service
+        .settings_history()
+        .await?
+        .into_iter()
+        .skip(1)
+        .map(|revision| SettingsHistoryItem {
+            id: revision.id,
+            created_at: revision
+                .created_at
+                .to_rfc3339_opts(SecondsFormat::Secs, true),
+            site_title: revision.settings.site_title,
+        })
+        .collect();
     let page = state
         .render_admin(
             "admin/settings.html",
             SettingsContext {
+                history,
                 csrf: identity.csrf.clone(),
                 timezones: timezone_choices_including(&settings.timezone),
                 redirects: state
@@ -872,6 +897,44 @@ pub async fn undo_theme_reset(
             } else {
                 Ok(redirect(StatusCode::SEE_OTHER, "/admin/settings/"))
             }
+        }
+        Err(error) => application_error(&state, &headers, error).await,
+    }
+}
+
+/// Brings back a kept state of the settings. The restore is an ordinary save,
+/// so what it replaces stays in the history and can be brought back in turn.
+pub async fn restore_settings(
+    State(state): State<AppState>,
+    Path(revision_id): Path<i64>,
+    headers: HeaderMap,
+    Form(form): Form<CsrfForm>,
+) -> Result<Response, WebError> {
+    if let Err(response) = authenticate(&state, &headers, Some(&form.csrf)).await? {
+        return Ok(response);
+    }
+    match state
+        .site_service
+        .restore_settings(revision_id, state.clock.now())
+        .await
+    {
+        Ok(()) => {
+            let site = state.publish_after_commit("settings_restore").await;
+            run_media_gc(&state).await;
+            if wants_json(&headers) {
+                Ok(Json(json!({ "ok": true, "site": site })).into_response())
+            } else {
+                Ok(redirect(StatusCode::SEE_OTHER, "/admin/settings/"))
+            }
+        }
+        Err(RepositoryError::NotFound) => {
+            failure(
+                &state,
+                &headers,
+                StatusCode::NOT_FOUND,
+                "that state of the settings is no longer kept",
+            )
+            .await
         }
         Err(error) => application_error(&state, &headers, error).await,
     }

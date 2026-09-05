@@ -2693,6 +2693,100 @@ async fn sessions_extend_on_use_without_changing_csrf() {
 
 // ---- Site zone and author ---------------------------------------------------
 
+#[tokio::test]
+async fn settings_history_keeps_earlier_states_and_restores_one() {
+    let harness = Harness::new().await;
+    let (cookie, csrf) = harness.session_cookie().await;
+    let original = harness.repository.site_settings().await.unwrap().site_title;
+    let titled = |title: &str| {
+        serde_urlencoded::to_string([
+            ("csrf", csrf.as_str()),
+            ("site_title", title),
+            ("site_description", ""),
+            ("locale", "en"),
+            ("logo_media_id", ""),
+            ("favicon_media_id", ""),
+            ("custom_css", "body {}"),
+            ("navigation", ""),
+            ("timezone", "UTC"),
+            ("author_name", ""),
+        ])
+        .unwrap()
+    };
+    for title in ["Renamed once", "Renamed twice"] {
+        let saved = harness
+            .send(
+                Method::POST,
+                "/admin/settings/",
+                Some("application/x-www-form-urlencoded"),
+                titled(title),
+                Some(&cookie),
+            )
+            .await;
+        assert_eq!(saved.status(), StatusCode::SEE_OTHER);
+    }
+
+    // The page lists the two earlier states (the first save kept what it
+    // replaced) and not the current one.
+    let page = text(
+        harness
+            .send(
+                Method::GET,
+                "/admin/settings/",
+                None,
+                Body::empty(),
+                Some(&cookie),
+            )
+            .await,
+    )
+    .await;
+    assert!(page.contains("id=\"history\""), "{page}");
+    assert_eq!(
+        page.matches("action=\"/admin/settings/revisions/").count(),
+        2,
+        "{page}"
+    );
+
+    let first = harness
+        .repository
+        .list_settings_revisions()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|revision| revision.settings.site_title == original)
+        .expect("the state before the first save is kept");
+    let (harness_ref, cookie_ref, csrf_ref) = (&harness, cookie.as_str(), csrf.as_str());
+    let restore = move |id: i64| async move {
+        let path = format!("/admin/settings/revisions/{id}/restore/");
+        harness_ref
+            .send(
+                Method::POST,
+                &path,
+                Some("application/x-www-form-urlencoded"),
+                serde_urlencoded::to_string([("csrf", csrf_ref)]).unwrap(),
+                Some(cookie_ref),
+            )
+            .await
+    };
+    let restored = restore(first.id).await;
+    assert_eq!(restored.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        harness.repository.site_settings().await.unwrap().site_title,
+        original
+    );
+    // The restore was a save: what it replaced is still there to go back to.
+    let titles = harness
+        .repository
+        .list_settings_revisions()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|revision| revision.settings.site_title)
+        .collect::<Vec<_>>();
+    assert_eq!(titles[..2], [original.clone(), "Renamed twice".to_owned()]);
+    assert_eq!(restore(424_242).await.status(), StatusCode::NOT_FOUND);
+}
+
 fn settings_form_with(csrf: &str, timezone: &str, author_name: &str, custom_css: &str) -> String {
     serde_urlencoded::to_string([
         ("csrf", csrf),

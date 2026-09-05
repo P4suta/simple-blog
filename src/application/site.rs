@@ -8,7 +8,7 @@ use chrono_tz::Tz;
 
 use crate::{
     application::ports::{RepositoryError, SiteRepository},
-    domain::theme::{NavigationItem, SiteSettings, validate_navigation},
+    domain::theme::{NavigationItem, SettingsRevision, SiteSettings, validate_navigation},
 };
 
 #[derive(Clone)]
@@ -35,6 +35,31 @@ impl SiteService {
             .map_err(|error| RepositoryError::Validation(error.to_string()))?;
         self.repository
             .save_configuration(&settings, &navigation, now)
+            .await
+    }
+
+    /// The kept states of the settings, newest first. The newest is what the
+    /// site has now; everything older can be brought back.
+    pub async fn settings_history(&self) -> Result<Vec<SettingsRevision>, RepositoryError> {
+        self.repository.list_settings_revisions().await
+    }
+
+    /// Puts a kept state back. It goes through the ordinary save, so it is
+    /// validated like any other and becomes the newest revision itself; the
+    /// state it replaces stays in the history. `NotFound` when the revision
+    /// was pruned or never existed.
+    #[tracing::instrument(name = "site.restore_settings", skip(self))]
+    pub async fn restore_settings(
+        &self,
+        id: i64,
+        now: DateTime<Utc>,
+    ) -> Result<(), RepositoryError> {
+        let revision = self
+            .repository
+            .find_settings_revision(id)
+            .await?
+            .ok_or(RepositoryError::NotFound)?;
+        self.update(revision.settings, revision.navigation, now)
             .await
     }
 
