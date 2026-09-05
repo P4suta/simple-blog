@@ -64,6 +64,7 @@
   "status.trashed": "回收站",
 
   "editor.back": "← 列表",
+  "editor.save": "保存",
   "editor.saved": "已保存",
   "editor.saving": "保存中…",
   "editor.unsaved": "未保存",

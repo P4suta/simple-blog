@@ -60,6 +60,20 @@ async fn test_state() -> (tempfile::TempDir, Arc<SqliteRepository>, AppState) {
     (temp, repository, state)
 }
 
+#[tokio::test]
+async fn unauthenticated_json_save_reports_401_and_a_server_inquiry_id() {
+    let (_temp, _repository, state) = test_state().await;
+    let response = router(state).oneshot(Request::builder()
+        .method("POST").uri("/admin/content/1/").header(header::HOST, "localhost:8080")
+        .header(header::ACCEPT, "application/json")
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .body(Body::from("csrf=synthetic&title=Keep+this&body_markdown=Writing&kind=post&status=draft&slug=keep"))
+        .unwrap()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert!(uuid::Uuid::parse_str(response.headers()["x-request-id"].to_str().unwrap()).is_ok());
+    assert!(!response.headers().contains_key(header::LOCATION));
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn trace_correlates_the_response_without_recording_query_secrets() {
     let (_temp, _repository, state) = test_state().await;
@@ -154,4 +168,48 @@ async fn internal_failure_has_a_stable_error_code_and_the_same_request_id() {
         .expect("completion event");
     assert_eq!(completed["span"]["request_id"], request_id);
     assert_eq!(completed["span"]["status"], 500);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn capability_and_unmatched_paths_are_never_recorded() {
+    let (_temp, _repository, state) = test_state().await;
+    let traces = TraceBuffer::default();
+    let subscriber = tracing_subscriber::fmt()
+        .json()
+        .without_time()
+        .with_writer(traces.clone())
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+    for path in [
+        "/admin/share/synthetic-capability/",
+        "/synthetic-private-path",
+        "/admin/share/synthetic-capability/extra",
+    ] {
+        let response = router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .method("synthetic-private-method")
+                    .header("cookie", "synthetic-private-cookie")
+                    .header("x-request-id", "synthetic-client-id")
+                    .body(Body::from("synthetic-private-body"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(response.headers()["x-request-id"], "synthetic-client-id");
+    }
+    let output = String::from_utf8(traces.0.lock().unwrap().clone()).unwrap();
+    for secret in [
+        "synthetic-capability",
+        "synthetic-private-path",
+        "synthetic-private-cookie",
+        "synthetic-client-id",
+        "synthetic-private-method",
+        "synthetic-private-body",
+    ] {
+        assert!(!output.contains(secret), "trace leaked {secret}");
+    }
+    assert!(output.contains("/admin/share/{token}/"));
+    assert!(output.contains("<unmatched>"));
 }

@@ -11,7 +11,7 @@ fail() {
 }
 
 ((BASH_VERSINFO[0] >= 3)) || fail 'Bash 3 or newer is required'
-for command in awk cargo find grep jq sort; do
+for command in awk cargo find grep jq sort tr; do
   command -v "$command" >/dev/null || fail "required command is unavailable: $command"
 done
 
@@ -33,6 +33,9 @@ required_public_files=(
   .github/rulesets/release-tags.json
   .github/workflows/codeql.yml
   docs/repository-governance.md
+  AGENTS.md
+  docs/verification-review.md
+  .github/actions/verification/action.yml
 )
 
 for path in "${required_public_files[@]}"; do
@@ -114,9 +117,9 @@ third_party_actions="$({
   awk '
     $1 == "-" && $2 == "uses:" {
       split($3, reference, "@")
-      if (reference[1] !~ /^(actions|github)\//) print reference[1]
+      if (reference[1] !~ /^(actions|github)\// && reference[1] !~ /^\.\//) print reference[1]
     }
-  ' .github/workflows/*.yml | sort -u
+  ' .github/workflows/*.yml .github/actions/verification/action.yml | sort -u
 })"
 
 while IFS= read -r action; do
@@ -132,10 +135,13 @@ actual_checks="$({
     .rules[]
     | select(.type == "required_status_checks")
     | .parameters.required_status_checks[].context
-  ' .github/rulesets/main.json | sort
+  ' .github/rulesets/main.json | tr -d '\r' | sort
 })"
 
 ci_checks=(
+  'Windows release symbols'
+  'Browser and recovery evidence'
+  'Parser and critical decision evidence'
   'Coverage floor'
   'Dependency policy'
   'Embedded frontend is reproducible'
@@ -199,7 +205,7 @@ if ! awk '
     finish_step()
     exit failed
   }
-' .github/workflows/*.yml; then
+' .github/workflows/*.yml .github/actions/verification/action.yml; then
   fail 'every checkout step must disable persisted credentials'
 fi
 
@@ -276,10 +282,11 @@ grep -Fq '* @P4suta' .github/CODEOWNERS \
   || fail 'the repository must retain an explicit default code owner'
 
 while IFS= read -r reference; do
+  [[ "$reference" == ./* ]] && continue
   version="${reference##*@}"
   [[ "$version" =~ ^[0-9a-f]{40}$ ]] \
     || fail "GitHub Action is not pinned to a full commit SHA: $reference"
-done < <(awk '$1 == "-" && $2 == "uses:" { print $3 }' .github/workflows/*.yml)
+done < <(awk '$1 == "-" && $2 == "uses:" { print $3 }' .github/workflows/*.yml .github/actions/verification/action.yml)
 
 rust_sources=(build.rs)
 while IFS= read -r path; do

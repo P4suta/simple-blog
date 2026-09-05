@@ -2436,6 +2436,7 @@ dependencies = [
  "kamadak-exif",
  "minijinja",
  "openssl",
+ "openssl-sys",
  "proptest",
  "rand 0.10.2",
  "scraper",

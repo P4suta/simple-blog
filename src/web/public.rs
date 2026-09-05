@@ -43,7 +43,7 @@ pub async fn release_site(
             if method == Method::GET
                 && let Some(content_id) = asset.content_id
                 && !is_probably_bot(&headers)
-                && let Err(error) = state
+                && let Err(_error) = state
                     .engagement
                     .record_view(ContentId::from_i64(content_id))
                     .await
@@ -52,7 +52,7 @@ pub async fn release_site(
                     event = "views.record_failed",
                     content_id,
                     release_id = %asset.release_id,
-                    error = %error
+                    error_code = "views.record_failed"
                 );
             }
             asset_response(asset, &method, &headers)

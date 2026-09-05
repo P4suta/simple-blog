@@ -660,27 +660,26 @@ impl<S: ReleaseStore + ?Sized> ReleasePublisher<S> {
                 tracing::error!(
                     event = "release.publish.failed",
                     error_code = "release_object_store_failed",
-                    phase = "object",
-                    error = %error
+                    phase = "object"
                 );
                 return Err(error);
             }
         }
+        tracing::info!(event = "release.publish.objects_stored");
         if let Err(error) = self.store.put_manifest(release).await {
             tracing::error!(
                 event = "release.publish.failed",
                 error_code = "release_manifest_store_failed",
-                phase = "manifest",
-                error = %error
+                phase = "manifest"
             );
             return Err(error);
         }
+        tracing::info!(event = "release.publish.manifest_stored");
         if let Err(error) = self.store.activate(expected, &release.id).await {
             tracing::error!(
                 event = "release.publish.failed",
                 error_code = "release_activation_failed",
-                phase = "activation",
-                error = %error
+                phase = "activation"
             );
             return Err(error);
         }
@@ -853,7 +852,7 @@ async fn atomic_create(path: &Path, bytes: &[u8]) -> Result<(), ReleaseError> {
         tracing::warn!(
             event = "release.temporary_cleanup_failed",
             path = %temporary.display(),
-            error = %error
+            error_kind = ?error.kind()
         );
     }
     result
@@ -892,7 +891,7 @@ async fn atomic_replace(path: &Path, bytes: &[u8]) -> Result<(), ReleaseError> {
         tracing::warn!(
             event = "release.active_cleanup_failed",
             path = %temporary.display(),
-            error = %error
+            error_kind = ?error.kind()
         );
     }
     result

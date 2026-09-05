@@ -69,6 +69,9 @@ enum Command {
     Doctor {
         #[arg(long)]
         json: bool,
+        /// Explicitly create, synchronize and remove filesystem probe files.
+        #[arg(long)]
+        probe_writes: bool,
     },
     Owner {
         #[command(subcommand)]
@@ -97,6 +100,16 @@ enum MigrateCommand {
 impl Cli {
     pub async fn run(self) -> Result<()> {
         let overrides = self.overrides();
+        // Hold across configuration loading, DB use and replacement. The OS
+        // releases the lease after a crash; doctor neither locks nor recovers.
+        let _lease = if matches!(self.command, Command::Doctor { .. }) {
+            None
+        } else {
+            let destination = data_dir(&overrides);
+            let lease = crate::operations::activation::InstallationLease::acquire(&destination)?;
+            crate::operations::activation::recover(&destination)?;
+            Some(lease)
+        };
         match self.command {
             Command::Init => init(overrides).await,
             Command::Build { output } => build(overrides, output).await,
@@ -118,7 +131,7 @@ impl Cli {
                     migrate_import(overrides, archive, force).await
                 }
             },
-            Command::Doctor { json } => doctor(overrides, json).await,
+            Command::Doctor { json, probe_writes } => doctor(overrides, json, probe_writes).await,
             Command::Owner { command } => match command {
                 OwnerCommand::Recover => owner_recover(overrides).await,
             },
@@ -144,7 +157,7 @@ pub async fn run() -> Result<()> {
         command = cli.command.name(),
         "command started"
     );
-    cli.run().await
+    crate::observability::operation(cli.command.name(), Box::pin(cli.run())).await
 }
 
 impl Command {
@@ -280,8 +293,7 @@ async fn serve(overrides: Overrides) -> Result<()> {
         Err(error) => tracing::error!(
             event = "server.initial_release.deferred",
             error_code = error.code(),
-            phase = error.phase(),
-            error = %error
+            phase = error.phase()
         ),
     }
     let app = router(state.clone());
@@ -441,15 +453,9 @@ async fn migrate_import(mut overrides: Overrides, archive: PathBuf, force: bool)
     Ok(())
 }
 
-async fn doctor(overrides: Overrides, json: bool) -> Result<()> {
+async fn doctor(overrides: Overrides, json: bool, probe_writes: bool) -> Result<()> {
     let config = Config::load(overrides).context("could not load configuration")?;
-    ensure_initialized(&config)?;
-    let repository = open_database(&config)
-        .await
-        .context("could not open SQLite")?;
-    let report = Doctor::inspect(&config, &repository)
-        .await
-        .context("could not inspect installation")?;
+    let report = Doctor::inspect_installation(&config, probe_writes).await;
     let healthy = report.is_healthy();
     if json {
         println!(
@@ -458,6 +464,7 @@ async fn doctor(overrides: Overrides, json: bool) -> Result<()> {
                 "diagnostics_schema": 1,
                 "application_version": env!("CARGO_PKG_VERSION"),
                 "healthy": healthy,
+                "inspection_scope": if probe_writes { "write_probes" } else { "read_only" },
                 "checks": report.checks,
                 "issues": report.issues,
             }))?

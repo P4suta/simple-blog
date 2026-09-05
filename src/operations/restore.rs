@@ -29,14 +29,23 @@ impl RestoreService {
         data_dir: &Path,
         force: bool,
     ) -> Result<(), OperationError> {
+        crate::observability::operation("restore", Self::restore_inner(archive, data_dir, force))
+            .await
+    }
+
+    async fn restore_inner(
+        archive: &Path,
+        data_dir: &Path,
+        force: bool,
+    ) -> Result<(), OperationError> {
         if installation_exists(data_dir) && !force {
             return Err(OperationError::DestinationExists);
         }
         let parent = data_dir.parent().unwrap_or_else(|| Path::new("."));
         std::fs::create_dir_all(parent)?;
-        let staging = parent.join(format!(".simple-blog-restore-{}", Uuid::new_v4()));
+        let staging = parent.join(format!(".simple-blog-restore-{}.staging", Uuid::new_v4()));
         std::fs::create_dir(&staging)?;
-        let guard = DirectoryGuard(staging.clone());
+        let mut guard = DirectoryGuard(Some(staging.clone()));
         extract(archive, &staging)?;
         tracing::debug!(event = "backup.restore.extracted");
         verify(&staging)?;
@@ -53,54 +62,35 @@ impl RestoreService {
         }
         tracing::debug!(event = "backup.restore.database_verified");
 
-        std::fs::create_dir_all(data_dir)?;
-        let rollback = parent.join(format!(".simple-blog-rollback-{}", Uuid::new_v4()));
-        std::fs::create_dir(&rollback)?;
-        let rollback_guard = DirectoryGuard(rollback.clone());
-        for name in [
-            "simple-blog.sqlite3",
-            "simple-blog.sqlite3-wal",
-            "simple-blog.sqlite3-shm",
-            "config.toml",
-            "media",
-        ] {
-            let source = data_dir.join(name);
-            if source.exists() {
-                std::fs::rename(&source, rollback.join(name))?;
+        std::fs::rename(&database, staging.join("simple-blog.sqlite3"))?;
+        std::fs::remove_file(staging.join("manifest.json"))?;
+        // Keep the existing public release, backups and unrelated installation
+        // files available until the restored database is published successfully.
+        if data_dir.is_dir() {
+            for entry in std::fs::read_dir(data_dir)? {
+                let entry = entry?;
+                if matches!(
+                    entry.file_name().to_str(),
+                    Some(
+                        "simple-blog.sqlite3"
+                            | "simple-blog.sqlite3-wal"
+                            | "simple-blog.sqlite3-shm"
+                            | "simple-blog.sqlite3-journal"
+                            | "config.toml"
+                            | "media"
+                    )
+                ) {
+                    continue;
+                }
+                super::activation::copy_tree(&entry.path(), &staging.join(entry.file_name()))?;
             }
         }
-        let install = (|| {
-            std::fs::rename(
-                staging.join("database.sqlite3"),
-                data_dir.join("simple-blog.sqlite3"),
-            )?;
-            for name in ["config.toml", "media"] {
-                let source = staging.join(name);
-                if source.exists() {
-                    std::fs::rename(source, data_dir.join(name))?;
-                }
-            }
-            Ok::<_, std::io::Error>(())
-        })();
-        if let Err(error) = install {
-            tracing::error!(event = "backup.restore.install_failed", error = %error);
-            for name in ["simple-blog.sqlite3", "config.toml", "media"] {
-                let installed = data_dir.join(name);
-                if installed.exists() {
-                    if installed.is_dir() {
-                        let _ = std::fs::remove_dir_all(&installed);
-                    } else {
-                        let _ = std::fs::remove_file(&installed);
-                    }
-                }
-                let previous = rollback.join(name);
-                if previous.exists() {
-                    let _ = std::fs::rename(previous, installed);
-                }
-            }
-            return Err(OperationError::Io(error));
+        for name in ["media", "backups", "releases"] {
+            std::fs::create_dir_all(staging.join(name))?;
         }
-        drop(rollback_guard);
+        // Once an intent can reference staging, cleanup must never destroy it.
+        guard.0 = None;
+        super::activation::activate(&staging, data_dir, force)?;
         drop(guard);
         tracing::info!(event = "backup.restore.completed");
         Ok(())
@@ -265,11 +255,13 @@ fn installation_exists(data_dir: &Path) -> bool {
         .any(|name| data_dir.join(name).exists())
 }
 
-struct DirectoryGuard(PathBuf);
+struct DirectoryGuard(Option<PathBuf>);
 
 impl Drop for DirectoryGuard {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        if let Some(path) = &self.0 {
+            let _ = std::fs::remove_dir_all(path);
+        }
     }
 }
 

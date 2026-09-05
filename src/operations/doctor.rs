@@ -22,6 +22,8 @@ pub struct DoctorCheck {
     pub name: &'static str,
     pub status: &'static str,
     pub detail: String,
+    pub code: String,
+    pub hint: &'static str,
 }
 
 #[derive(Debug, Default)]
@@ -41,6 +43,8 @@ impl DoctorReport {
             name,
             status: "ok",
             detail: detail.into(),
+            code: format!("{name}.ok"),
+            hint: "No action required for this check's inspection scope.",
         });
     }
 
@@ -51,6 +55,8 @@ impl DoctorReport {
             name,
             status: "error",
             detail,
+            code: format!("{name}.failed"),
+            hint: diagnostic_hint(name),
         });
     }
 }
@@ -58,24 +64,76 @@ impl DoctorReport {
 pub struct Doctor;
 
 impl Doctor {
+    /// Opens its own non-migrating connection and continues independent checks
+    /// when SQLite is absent, damaged or inaccessible.
+    pub async fn inspect_installation(config: &Config, probe_writes: bool) -> DoctorReport {
+        let mut report = DoctorReport::default();
+        match super::activation::pending(&config.data_dir) {
+            Ok(false) => report.ok("installation.activation", "No interrupted activation record."),
+            Ok(true) => report.fail("installation.activation", "A replacement was interrupted. Preserve sibling staging and previous directories. Stop the server, then run a normal command to recover; doctor does not recover."),
+            Err(_) => report.fail("installation.activation", "Activation state could not be inspected."),
+        }
+        match SqliteRepository::connect_diagnostics(&config.database_path()).await {
+            Ok(repository) => {
+                report.ok("sqlite.connection", "Read-only connection; no migration or repair was attempted.");
+                check_database(config, &repository, &mut report).await;
+                repository.close().await;
+            }
+            Err(_) => report.fail("sqlite.connection", "Read-only database inspection is unavailable; no migration or repair was attempted."),
+        }
+        check_directories(config, probe_writes, &mut report);
+        check_releases(config, &mut report).await;
+        report
+    }
+
     #[tracing::instrument(name = "operation.doctor", skip_all)]
     pub async fn inspect(
         config: &Config,
         repository: &SqliteRepository,
     ) -> Result<DoctorReport, OperationError> {
         let mut report = DoctorReport::default();
-        check_quick_check(repository, &mut report).await;
-        check_foreign_keys(repository, &mut report).await;
-        check_runtime_pragmas(repository, &mut report).await;
-        check_migrations(repository, &mut report).await;
-        check_directory("filesystem.data", &config.data_dir, &mut report);
-        check_directory("filesystem.media", &config.media_dir(), &mut report);
-        check_directory("filesystem.backups", &config.backup_dir(), &mut report);
-        check_directory("filesystem.releases", &config.release_dir(), &mut report);
-        check_media(config, repository, &mut report).await;
-        check_content_trash(repository, &mut report).await;
+        check_database(config, repository, &mut report).await;
+        check_directories(config, false, &mut report);
         check_releases(config, &mut report).await;
         Ok(report)
+    }
+}
+
+async fn check_database(config: &Config, repository: &SqliteRepository, report: &mut DoctorReport) {
+    check_quick_check(repository, report).await;
+    check_foreign_keys(repository, report).await;
+    check_runtime_pragmas(repository, report).await;
+    check_migrations(repository, report).await;
+    check_media(config, repository, report).await;
+    check_content_trash(repository, report).await;
+}
+
+fn check_directories(config: &Config, probe_writes: bool, report: &mut DoctorReport) {
+    for (name, path) in [
+        ("filesystem.data", config.data_dir.clone()),
+        ("filesystem.media", config.media_dir()),
+        ("filesystem.backups", config.backup_dir()),
+        ("filesystem.releases", config.release_dir()),
+    ] {
+        check_directory(name, &path, probe_writes, report);
+    }
+}
+
+fn diagnostic_hint(name: &str) -> &'static str {
+    match name.split('.').next().unwrap_or("") {
+        "sqlite" => {
+            "Preserve the database and its WAL together. Check access and locks; restore a verified backup or use normal startup for pending migrations."
+        }
+        "filesystem" => {
+            "Check directory access and free space. Use --probe-writes to explicitly test creation, synchronization and removal."
+        }
+        "media" => {
+            "Preserve the affected files and compare them with a verified backup before recovery."
+        }
+        "release" => {
+            "Keep the last verified release available; inspect publication events before rebuilding."
+        }
+        _ => "Preserve the installation and investigate this check before changing data.",
     }
 }
 
@@ -296,14 +354,21 @@ async fn check_runtime_pragmas(repository: &SqliteRepository, report: &mut Docto
     match repository.pragmas().await {
         Ok(pragmas)
             if pragmas.foreign_keys
-                && pragmas.journal_mode.eq_ignore_ascii_case("wal")
+                && (repository.is_diagnostic_snapshot()
+                    || pragmas.journal_mode.eq_ignore_ascii_case("wal"))
                 && pragmas.busy_timeout_ms >= 5_000 =>
         {
             report.ok(
                 "sqlite.runtime_pragmas",
                 format!(
-                    "foreign_keys=on, journal_mode={}, busy_timeout={}ms",
-                    pragmas.journal_mode, pragmas.busy_timeout_ms
+                    "foreign_keys=on, journal_mode={}, busy_timeout={}ms; connection_scope={}",
+                    pragmas.journal_mode,
+                    pragmas.busy_timeout_ms,
+                    if repository.is_diagnostic_snapshot() {
+                        "diagnostic snapshot; live runtime settings are not observed"
+                    } else {
+                        "application"
+                    }
                 ),
             );
         }
@@ -370,7 +435,17 @@ async fn check_migrations(repository: &SqliteRepository, report: &mut DoctorRepo
     }
 }
 
-fn check_directory(name: &'static str, path: &Path, report: &mut DoctorReport) {
+fn check_directory(name: &'static str, path: &Path, probe_writes: bool, report: &mut DoctorReport) {
+    if !probe_writes {
+        match std::fs::read_dir(path) {
+            Ok(_) => report.ok(
+                name,
+                format!("{} is readable; writability was not tested", path.display()),
+            ),
+            Err(error) => report.fail(name, format!("{}: {error}", path.display())),
+        }
+        return;
+    }
     match write_probe(path) {
         Ok(()) => report.ok(name, format!("{} is writable", path.display())),
         Err(error) => report.fail(name, format!("{}: {error}", path.display())),
@@ -378,6 +453,21 @@ fn check_directory(name: &'static str, path: &Path, report: &mut DoctorReport) {
 }
 
 fn write_probe(directory: &Path) -> std::io::Result<()> {
+    write_probe_with(
+        directory,
+        |file| {
+            file.write_all(b"simple-blog doctor\n")
+                .and_then(|()| file.sync_all())
+        },
+        |path| std::fs::remove_file(path),
+    )
+}
+
+fn write_probe_with(
+    directory: &Path,
+    write_and_sync: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
+    cleanup: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
     if !directory.is_dir() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
@@ -385,13 +475,21 @@ fn write_probe(directory: &Path) -> std::io::Result<()> {
         ));
     }
     let path = directory.join(format!(".simple-blog-doctor-probe-{}", Uuid::new_v4()));
-    let guard = ProbeGuard(path.clone());
-    let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
-    file.write_all(b"simple-blog doctor\n")?;
-    file.sync_all()?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)?;
+    let guard = ProbeGuard(path);
+    let result = write_and_sync(&mut file);
     drop(file);
-    drop(guard);
-    Ok(())
+    let cleanup = cleanup(&guard.0);
+    match (result, cleanup) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Err(error), Err(cleanup)) => Err(std::io::Error::other(format!(
+            "probe failed: {error}; cleanup failed: {cleanup}"
+        ))),
+    }
 }
 
 async fn check_media(config: &Config, repository: &SqliteRepository, report: &mut DoctorReport) {
@@ -593,5 +691,42 @@ struct ProbeGuard(PathBuf);
 impl Drop for ProbeGuard {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+#[cfg(test)]
+mod probe_tests {
+    use super::*;
+    #[test]
+    fn sync_and_cleanup_failures_are_reported_and_cleanup_is_attempted() {
+        let temporary = tempfile::tempdir().unwrap();
+        let mut writes = 0;
+        let mut removals = 0;
+        let result = write_probe_with(
+            temporary.path(),
+            |_file| {
+                writes += 1;
+                Err(std::io::Error::other("synthetic sync failure"))
+            },
+            |_path| {
+                removals += 1;
+                Err(std::io::Error::other("synthetic cleanup failure"))
+            },
+        );
+        let message = result.unwrap_err().to_string();
+        assert_eq!((writes, removals), (1, 1));
+        assert!(message.contains("sync failure") && message.contains("cleanup failure"));
+        assert_eq!(
+            std::fs::read_dir(temporary.path()).unwrap().count(),
+            0,
+            "guard retries cleanup without hiding the failed operation"
+        );
+    }
+    #[test]
+    fn success_and_creation_failure_leave_no_probe_files() {
+        let temporary = tempfile::tempdir().unwrap();
+        write_probe(temporary.path()).unwrap();
+        assert_eq!(std::fs::read_dir(temporary.path()).unwrap().count(), 0);
+        assert!(write_probe(&temporary.path().join("absent")).is_err());
     }
 }

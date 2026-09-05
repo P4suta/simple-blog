@@ -1,7 +1,7 @@
 use std::{any::Any, time::Instant};
 
 use axum::{
-    extract::Request,
+    extract::{MatchedPath, Request},
     http::{HeaderName, HeaderValue, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
@@ -17,18 +17,30 @@ pub(super) async fn request_trace(mut request: Request, next: Next) -> Response 
     request
         .headers_mut()
         .insert(REQUEST_ID, request_id_header.clone());
-    let method = request.method().clone();
-    let path = request.uri().path().to_owned();
+    let method = match request.method().as_str() {
+        method @ ("GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS" | "CONNECT"
+        | "TRACE") => method,
+        _ => "<other>",
+    };
+    let path = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map_or("<unmatched>", MatchedPath::as_str)
+        .to_owned();
     let span = tracing::info_span!(
         "http.request",
         request_id = %request_id,
+        operation_id = %request_id,
         method = %method,
         path = %path,
         status = field::Empty,
         elapsed_ms = field::Empty,
     );
     let started = Instant::now();
-    let mut response = next.run(request).instrument(span.clone()).await;
+    let id = Uuid::parse_str(&request_id).expect("generated UUID");
+    let mut response = crate::observability::request_scope(id, next.run(request))
+        .instrument(span.clone())
+        .await;
     let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     span.record("status", response.status().as_u16());
     span.record("elapsed_ms", elapsed_ms);

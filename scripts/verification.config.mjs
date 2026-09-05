@@ -1,0 +1,42 @@
+const cargo = (...args) => ({ command: 'cargo', args });
+const bun = (...args) => ({ command: process.platform === 'win32' ? 'bun.exe' : 'bun', args });
+const node = (...args) => ({ command: process.execPath, args });
+export const checks = {
+  format: cargo('fmt', '--all', '--', '--check'),
+  lint: cargo('clippy', '--locked', '--all-targets', '--all-features', '--', '-D', 'warnings'),
+  rust: { ...cargo('test', '--locked', '--all-targets', '--all-features'), env: { PROPTEST_CASES: '1024' } },
+  'rust-verification': { ...cargo('test', '--locked', '--profile', 'verification', '--all-targets', '--all-features'), env: { PROPTEST_CASES: '1024' } },
+  frontend: node('--test', 'frontend/*.test.cjs'),
+  cloudflare: node('--test', 'adapters/cloudflare/test/*.test.ts'),
+  tools: node('--test', 'scripts/*.test.mjs'),
+  'asset-build': bun('run', 'build:admin'),
+  'asset-fresh': node('scripts/check-asset.mjs'),
+  types: bun('run', 'check:admin'),
+  'cloudflare-types': bun('run', 'check:cloudflare'),
+  dependencies: cargo('deny', 'check'),
+  workflows: { command: 'actionlint', args: [] },
+  secrets: node('scripts/secret-scan.mjs'),
+  'frontend-audit': bun('audit', '--audit-level=high'),
+  coverage: { ...cargo('llvm-cov', '--locked', '--profile', 'verification', '--all-features', '--all-targets', '--lcov', '--output-path', 'target/verification/lcov.info',
+    '--fail-under-lines', '79.5', '--fail-under-functions', '75', '--fail-under-regions', '76', '--fail-under-file-lines', '35'), env: { PROPTEST_CASES: '512' } },
+  policy: { command: process.platform === 'win32' ? 'C:/Program Files/Git/bin/bash.exe' : 'bash', args: ['tests/repository_policy.sh'],
+    ...(process.platform === 'win32' ? { env: { PATH: `C:/Program Files/Git/usr/bin;${process.cwd()}/target/dev-tools/repository;${process.env.PATH}` } } : {}) },
+  'release-build': cargo('build', '--release', '--locked'),
+  'release-smoke': node('scripts/release-smoke.mjs'),
+  'browser-build': cargo('build', '--locked', '--example', 'verification_fixture', '--bin', 'simple-blog'),
+  browser: { ...node('node_modules/playwright/cli.js', 'test'), timeoutMs: 45 * 60_000 },
+  recovery: { ...node('--test', 'tests/recovery/*.test.mjs'), timeoutMs: 15 * 60_000 },
+  'deep-pr': { ...node('scripts/deep-checks.mjs', 'pr'), timeoutMs: 5 * 60 * 60_000 },
+  'deep-daily': { ...node('scripts/deep-checks.mjs', 'daily'), timeoutMs: 4 * 60 * 60_000 },
+  'deep-weekly': { ...node('scripts/deep-checks.mjs', 'weekly'), timeoutMs: 5 * 60 * 60_000 },
+  performance: node('scripts/performance.mjs'),
+  symbols: node('scripts/symbols.mjs'),
+};
+export const profiles = {
+  all: ['format', 'lint', 'rust', 'frontend', 'cloudflare', 'tools', 'types', 'cloudflare-types', 'asset-fresh',
+    'dependencies', 'frontend-audit', 'coverage', 'policy', 'workflows', 'secrets', 'browser-build', 'browser', 'recovery', 'performance'],
+  frontend: ['types', 'cloudflare-types', 'frontend', 'cloudflare', 'tools', 'asset-fresh', 'frontend-audit'],
+  browser: ['browser-build', 'browser', 'recovery'],
+  performance: ['browser-build', 'performance'],
+  release: ['release-build', 'symbols', 'release-smoke'],
+};
