@@ -285,9 +285,19 @@ pub struct AlternateFeed {
     pub title: String,
 }
 
+/// A theme image with the intrinsic dimensions the markup reserves for it, so
+/// nothing on the page moves when the file arrives.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ThemeImage {
+    pub url: String,
+    pub width: u32,
+    pub height: u32,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ThemeAssets {
-    pub logo_url: Option<String>,
+    /// The header logo, sized, because the header is on every page.
+    pub logo: Option<ThemeImage>,
     pub favicon_url: Option<String>,
     /// The stylesheet URL: a fingerprinted release asset on the public site,
     /// the live stylesheet in an owner preview.

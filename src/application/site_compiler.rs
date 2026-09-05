@@ -24,7 +24,7 @@ use crate::{
         search,
         theme::{
             AlternateFeed, MetaImage, NavigationItem, PageMeta, SiteSettings, ThemeAssets,
-            ThemeContext,
+            ThemeContext, ThemeImage,
         },
     },
     i18n::{TranslationError, Translations},
@@ -438,7 +438,10 @@ impl SiteCompiler {
         tags: &BTreeMap<String, TagGroup<'_>>,
     ) -> Result<ReleaseBuilder, SiteCompilerError> {
         let Scope {
-            snapshot, origin, ..
+            snapshot,
+            origin,
+            dates,
+            ..
         } = *scope;
         let locale = snapshot.settings.locale;
         builder = builder.redirect("/archive", "/archive/", 308)?;
@@ -493,6 +496,7 @@ impl SiteCompiler {
                 .collect::<Vec<_>>();
             let feed = self.render_feed(
                 snapshot,
+                dates,
                 FeedPresentation {
                     title: format!("{} — #{}", snapshot.settings.site_title, group.name),
                     subtitle: None,
@@ -761,9 +765,12 @@ impl SiteCompiler {
         }
     }
 
+    /// Atom timestamps carry the site's own offset, exactly as the JSON Feed
+    /// and every page do: the same instant is never written two ways.
     fn render_feed(
         &self,
         snapshot: &SiteSnapshotV1,
+        dates: &SiteDates,
         presentation: FeedPresentation,
         posts: &[&Content],
     ) -> Result<String, SiteCompilerError> {
@@ -781,8 +788,8 @@ impl SiteCompiler {
                 FeedEntry {
                     title: post.title.clone(),
                     url: format!("{}/{}/", site_origin(&origin), post.slug),
-                    published: iso(published),
-                    updated: iso(post.updated_at),
+                    published: dates.iso(published),
+                    updated: dates.iso(post.updated_at),
                     summary: post.summary.clone(),
                     content_html: post.body_html.clone(),
                     tags: post.tags.clone(),
@@ -797,7 +804,7 @@ impl SiteCompiler {
                 author: snapshot.settings.author().to_owned(),
                 page_url: presentation.page_url,
                 feed_url: presentation.feed_url,
-                updated: iso(updated),
+                updated: dates.iso(updated),
                 entries,
             },
         )?)
@@ -841,6 +848,7 @@ impl SiteCompiler {
         let post_refs = posts.iter().collect::<Vec<_>>();
         let feed = self.render_feed(
             snapshot,
+            dates,
             FeedPresentation {
                 title: snapshot.settings.site_title.clone(),
                 subtitle: (!snapshot.settings.site_description.is_empty())
@@ -972,10 +980,6 @@ impl SiteCompiler {
                 og_type: "website",
             },
             StaticSearchPage {
-                query: "",
-                searched: false,
-                results: Vec::<StaticSearchResult>::new(),
-                static_search: true,
                 search_js_version: fingerprint(SEARCH_JS),
                 // The index is served immutable for a year; a versioned URL is
                 // the only thing that keeps a returning reader's search fresh.
@@ -1054,7 +1058,16 @@ impl SiteCompiler {
                 .clone(),
             site: snapshot.settings.clone(),
             assets: ThemeAssets {
-                logo_url: media_url(snapshot.settings.logo_media_id.as_deref()),
+                logo: snapshot
+                    .settings
+                    .logo_media_id
+                    .as_deref()
+                    .and_then(|id| media.get(id))
+                    .map(|asset| ThemeImage {
+                        url: format!("/media/{}", asset.original_filename),
+                        width: asset.width,
+                        height: asset.height,
+                    }),
                 favicon_url: media_url(snapshot.settings.favicon_media_id.as_deref()),
                 css_url: format!(
                     "/assets/site.css?v={}",
@@ -1169,10 +1182,6 @@ fn site_origin(page_url: &str) -> &str {
     page_url[scheme_end..]
         .find('/')
         .map_or(page_url, |at| &page_url[..scheme_end + at])
-}
-
-fn iso(at: DateTime<Utc>) -> String {
-    at.to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
 /// Serializes structured data so it can sit inside a `<script>` data block:
@@ -1546,17 +1555,10 @@ struct SitemapEntry {
 }
 
 #[derive(Serialize)]
-struct StaticSearchPage<'a> {
-    query: &'a str,
-    searched: bool,
-    results: Vec<StaticSearchResult>,
-    static_search: bool,
+struct StaticSearchPage {
     search_js_version: String,
     search_index_url: String,
 }
-
-#[derive(Serialize)]
-struct StaticSearchResult;
 
 fn public_order(left: &Content, right: &Content) -> std::cmp::Ordering {
     let left_at = left.publication.publish_at().unwrap_or(left.created_at);
