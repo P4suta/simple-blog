@@ -242,6 +242,9 @@ fn reject_link(path: &Path) -> io::Result<()> {
         Ok(metadata) if metadata.file_type().is_symlink() => Err(invalid(
             "symbolic links are not permitted in an installation replacement",
         )),
+        Ok(metadata) if !metadata.is_file() && !metadata.is_dir() => Err(invalid(
+            "special files are not permitted in an installation replacement",
+        )),
         Ok(_) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
@@ -456,5 +459,57 @@ mod tests {
                 "keep"
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn special_activation_files_are_rejected_before_blocking_io() {
+        use std::os::unix::fs::FileTypeExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let destination = temp.path().join("site");
+        std::fs::create_dir(&destination).unwrap();
+        std::fs::write(destination.join("keep"), "original").unwrap();
+        for suffix in ["activation.json", "lock"] {
+            let path = sibling_path(&destination, suffix).unwrap();
+            assert!(
+                Command::new("mkfifo")
+                    .arg(&path)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            assert!(
+                std::fs::symlink_metadata(&path)
+                    .unwrap()
+                    .file_type()
+                    .is_fifo()
+            );
+            // This first assertion fails immediately in the old implementation,
+            // before an attempted FIFO read could block the test process.
+            assert_eq!(
+                reject_link(&path).unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
+            if suffix == "activation.json" {
+                assert_eq!(
+                    recover(&destination).unwrap_err().kind(),
+                    io::ErrorKind::InvalidData
+                );
+            } else {
+                assert!(InstallationLease::acquire(&destination).is_err());
+            }
+            assert!(
+                std::fs::symlink_metadata(&path)
+                    .unwrap()
+                    .file_type()
+                    .is_fifo()
+            );
+            std::fs::remove_file(path).unwrap();
+        }
+        assert_eq!(
+            std::fs::read_to_string(destination.join("keep")).unwrap(),
+            "original"
+        );
     }
 }

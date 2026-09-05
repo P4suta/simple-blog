@@ -19,11 +19,16 @@ jobs:
     name: Sustained parser and decision tests (${{ matrix.shard }})
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    env:
+      VERIFY_JOB_TIMEOUT_MINUTES: "360"
     strategy:
       fail-fast: false
       matrix:
         shard: [0, 1, 2, 3, 4, 5, 6, 7]
     steps:
+      - name: Start the verification deadline
+        shell: bash
+        run: echo "VERIFY_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false

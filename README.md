@@ -129,11 +129,26 @@ doctor only reports it. Keep sibling staging, previous and activation files
 together until recovery is verified. Never delete the retained directory as an
 automatic cleanup step. Windows directory flushes remain best effort; process
 crash tests do not certify hardware power-loss behavior.
+Creating the initial sibling lease and replacing directories require access to
+the installation's parent. A writable data directory alone does not establish
+those capabilities; doctor reports only the inspection scope and paths listed.
 
 Release verification pairs Windows binaries and PDBs by compiler GUID and age;
 Linux exports separate debug information with a debug link. Artifact manifests
 include SHA-256 hashes of both. `target/verification/symbols-release` contains
 the matching set; keep it when diagnosing that build.
+
+`node scripts/verify.mjs performance` builds the disposable fixture and records
+three samples against a fixed 100-article dataset. Set `PERFORMANCE_BASELINE` to
+`docs/performance-baseline.json` for an environment-aware comparison. Different
+platforms or toolchains are marked incomparable. The checked-in debug-profile
+baseline documents time, peak memory and SQL counts; it is not a production SLA.
+Verification retains private source snapshots and rejects changes during a run;
+raw snapshots stay out of shared artifacts.
+CI records the job's start before setup and stops verification early enough to
+reserve five minutes for evidence. Exhausted work is `not_run` with
+`verification.budget_exhausted`; timed-out children remain `timeout`. A forcibly
+terminated runner or unavailable artifact service cannot guarantee an upload.
 
 The native adapter is runnable today. The [Cloudflare host adapter](adapters/cloudflare/README.md) has executable conformance, staging, activation, registration, scheduling, and diagnostic boundaries; deployment additionally requires the compatible multi-site internal Core service described there.
 

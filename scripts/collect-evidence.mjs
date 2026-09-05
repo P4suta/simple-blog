@@ -1,11 +1,12 @@
 // Only deliberate exports enter CI artifacts. Databases, raw browser output,
 // authentication state, raw traces and error-context.md remain private.
-import { readdirSync, readFileSync, mkdirSync, writeFileSync, renameSync, rmSync, existsSync } from 'node:fs';
+import { readdirSync, readFileSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { join, relative, resolve, dirname, sep } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { writeJson } from './runner.mjs';
 import { safeEvidenceText, assertSafeEvidence } from './evidence-security.mjs';
 import { summarizeBrowser } from './browser-evidence.mjs';
+import { publishEvidence } from './publish-evidence.mjs';
 
 const published = resolve('target/shareable');
 const destination = resolve(`target/.shareable-${randomUUID()}`);
@@ -21,27 +22,33 @@ function save(name, bytes) {
 function walk(directory) {
   if (!existsSync(directory)) return [];
   return readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
+    if (entry.name === '_source') return [];
     const path = join(directory, entry.name);
     if (entry.isSymbolicLink()) throw new Error('Evidence symlink refused');
     return entry.isDirectory() ? walk(path) : [path];
   });
 }
 const verificationFiles = walk('target/verification');
+const symbolFiles = new Set();
 for (const profile of ['release', 'debug']) {
   const directory = `target/verification/symbols-${profile}`;
   if (!existsSync(directory)) continue;
   const manifest = JSON.parse(readFileSync(join(directory, 'symbols.json')));
   if (manifest.schema !== 1 || manifest.files.length !== 2) throw new Error('Incomplete symbol manifest');
+  const names = manifest.files.map(entry => entry.name).sort().join(',');
+  if (!['simple-blog.exe,simple_blog.pdb', 'simple-blog,simple-blog.debug'].includes(names)) throw new Error('Incomplete binary/symbol pair');
+  symbolFiles.add(resolve(directory, 'symbols.json'));
   for (const entry of manifest.files) {
     if (!/^(?:simple-blog(?:\.exe|\.debug)?|simple_blog\.pdb)$/.test(entry.name)) throw new Error('Unclassified symbol artifact');
     const bytes = readFileSync(join(directory, entry.name));
     if (bytes.length !== entry.bytes || createHash('sha256').update(bytes).digest('hex') !== entry.sha256) throw new Error('Symbol artifacts do not match their identity manifest');
+    symbolFiles.add(resolve(directory, entry.name));
   }
 }
 for (const path of verificationFiles) {
   const name = relative('target/verification', path).replaceAll('\\', '/');
   if (/^symbols-(?:release|debug)\//.test(name)) {
-    save(`symbols/${name}`, readFileSync(path));
+    if (symbolFiles.has(resolve(path))) save(`symbols/${name}`, readFileSync(path));
     continue;
   }
   if (name.includes('mutants.out') && !name.endsWith('outcomes.json')) continue;
@@ -59,6 +66,13 @@ for (const path of browserReports) {
   const output = resolve(dirname(path), '../browser-results');
   const prefix = `browser/${createHash('sha256').update(resolve(path)).digest('hex').slice(0, 16)}`;
   for (const attachment of report.attachments) {
+          if (attachment.name === 'server events' && attachment.body) {
+            const bytes = Buffer.from(attachment.body, 'base64');
+            if (bytes.toString('base64') !== attachment.body) throw new Error('Invalid inline log encoding');
+            const name = createHash('sha256').update(bytes).digest('hex').slice(0, 16);
+            save(`${prefix}/${name}.log`, Buffer.from(safeEvidenceText(bytes.toString('utf8'))));
+            continue;
+          }
           const source = resolve(attachment.path);
           if (!source.startsWith(output + sep)) throw new Error('Trace is outside the disposable test output');
           const bytes = readFileSync(source);
@@ -74,10 +88,5 @@ for (const path of browserReports) {
   save(`${prefix}/results.json`, Buffer.from(safeEvidenceText(JSON.stringify(report.summary))));
 }
 writeJson(join(destination, 'evidence.json'), { schema: 1, createdAt: new Date().toISOString(), files: index });
-if (existsSync(published)) {
-  const previous = resolve(`target/.shareable-previous-${randomUUID()}`);
-  renameSync(published, previous);
-  rmSync(previous, { recursive: true, force: true });
-}
-renameSync(destination, published);
+publishEvidence(destination, published);
 console.log(`Prepared ${index.length} shareable evidence files`);

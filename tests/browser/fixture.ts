@@ -97,7 +97,9 @@ export const test = base.extend<{ site: Site; unowned: boolean; injectFaults: bo
         for (const secret of secrets) if (secret) value = value.replaceAll(secret, '[redacted]');
         return value;
       }).join('\n');
-      await info.attach('server events', { body: safeLog, contentType: 'text/plain' });
+      const serverEvents = info.outputPath('server-events.log');
+      await writeFile(serverEvents, safeLog);
+      await info.attach('server events', { path: serverEvents, contentType: 'text/plain' });
       } finally {
       server.kill('SIGKILL');
       await exited;

@@ -6,7 +6,8 @@ import { resolve, join, delimiter } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runStep, writeJson } from './runner.mjs';
 import { checks, profiles } from './verification.config.mjs';
-import { fingerprintInputs } from './source-inputs.mjs';
+import { fingerprintInputs, snapshotInputs, assertInputsUnchanged } from './source-inputs.mjs';
+import { verificationBudget, stepTimeout } from './verification-budget.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 process.chdir(root);
@@ -20,12 +21,12 @@ const selected = [...new Set((requested.length ? requested : ['all']).flatMap(na
 if (selected.some(name => !checks[name])) throw new Error(`Unknown checks: ${selected.filter(name => !checks[name]).join(', ')}`);
 const directory = resolve('target/verification', `${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID().slice(0, 8)}`);
 mkdirSync(directory, { recursive: true });
-const capture = (command, args) => {
+const capture = (command, args, trim = true) => {
   const result = spawnSync(command, args, { encoding: 'utf8', timeout: 10_000, windowsHide: true });
-  return result.status === 0 ? result.stdout.trim() : null;
+  return result.status === 0 ? trim ? result.stdout.trim() : result.stdout : null;
 };
 const diff = capture('git', ['diff', '--binary', 'HEAD']);
-const sourceFiles = capture('git', ['ls-files', '-co', '--exclude-standard', '-z']);
+const sourceFiles = capture('git', ['ls-files', '-co', '--exclude-standard', '-z'], false);
 const inputs = fingerprintInputs(root, (sourceFiles ?? '').split('\0').filter(Boolean));
 const report = { schema: 1, revision: capture('git', ['rev-parse', 'HEAD']),
   dirty: (capture('git', ['status', '--porcelain']) ?? '') !== '',
@@ -40,16 +41,29 @@ const report = { schema: 1, revision: capture('git', ['rev-parse', 'HEAD']),
     fuzz: capture('cargo', ['fuzz', '--version']), mutants: capture('cargo', ['mutants', '--version']),
     llvmCov: capture('cargo', ['llvm-cov', '--version']), actionlint: capture('actionlint', ['--version']),
     gitleaks: capture('gitleaks', ['version']) },
-  inputs, rerun: { command: process.execPath, args: ['scripts/verify.mjs', ...requested], seed: process.env.PROPTEST_RNG_SEED },
+  inputs, sourceSnapshot: '_source (private, not exported)',
+  rerun: { command: process.execPath, args: ['scripts/verify.mjs', ...requested], seed: process.env.PROPTEST_RNG_SEED },
   selected, steps: [], status: 'running' };
 const manifest = join(directory, 'run.json');
 writeJson(manifest, report);
 console.log(`Evidence: ${directory}`);
 try {
+  if (!report.revision || sourceFiles === null || diff === null) throw new Error('Source revision metadata unavailable');
+  report.budget = verificationBudget(process.env);
+  snapshotInputs(root, inputs, join(directory, '_source'));
   for (const name of selected) {
     console.log(`Running ${name}`);
     const definition = { ...checks[name], args: [...checks[name].args] };
     if (name === 'coverage') definition.args[definition.args.indexOf('--output-path') + 1] = join(directory, 'lcov.info');
+    const timeoutMs = stepTimeout(report.budget, definition.timeoutMs);
+    if (timeoutMs === 0) {
+      report.steps.push({ name, command: definition.command, args: definition.args, status: 'not_run',
+        exitCode: null, errorCode: 'verification.budget_exhausted', durationMs: 0 });
+      writeJson(manifest, report);
+      console.log(`${name}: not_run (verification budget exhausted; preserving evidence)`);
+      continue;
+    }
+    definition.timeoutMs = timeoutMs;
     const result = await runStep({ name, ...definition, env: { ...checks[name].env, VERIFY_RUN_DIRECTORY: directory }, cwd: root, outputDirectory: directory });
     report.steps.push(result);
     writeJson(manifest, report);
@@ -59,6 +73,10 @@ try {
       writeJson(manifest, report);
     }
   }
+  const finalSources = capture('git', ['ls-files', '-co', '--exclude-standard', '-z'], false);
+  if (finalSources === null) throw new Error('Final source enumeration unavailable');
+  assertInputsUnchanged(inputs, fingerprintInputs(root, finalSources.split('\0').filter(Boolean)));
+  report.inputStability = 'unchanged';
   report.status = report.steps.every(step => step.status === 'passed') ? 'passed' : 'failed';
 } catch (error) {
   report.status = 'evidence_failed';

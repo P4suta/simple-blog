@@ -9,6 +9,9 @@ test('measurement summarizes comparable work and rejects inactive instrumentatio
   assert.equal(summary.median_ms.publish_ms, 5);
   assert.equal(summarizeSamples([{ ...sample, peak_resident_bytes: null }]).peak_resident_bytes, null);
   assert.throws(() => summarizeSamples([{ ...sample, db_operations: { publish: 0 } }]));
+  assert.throws(() => summarizeSamples([{ ...sample, db_operations: {} }]));
+  assert.throws(() => summarizeSamples([{ ...sample, dataset_time: undefined }]));
+  assert.equal(summarizeSamples([{ ...sample, peak_resident_bytes: null }]).memory_status, 'unavailable');
   assert.throws(() => summarizeSamples([sample, { ...sample, dataset: 'other' }]));
   const baseline = { environment: { platform: 'synthetic' }, summary };
   assert.equal(comparePerformance(baseline, baseline).time_ratios.publish_ms, 1);

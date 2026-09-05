@@ -23,8 +23,13 @@ jobs:
   repository-policy:
     name: Repository policy
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
+    env:
+      VERIFY_JOB_TIMEOUT_MINUTES: "30"
     steps:
+      - name: Start the verification deadline
+        shell: bash
+        run: echo "VERIFY_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -43,8 +48,13 @@ jobs:
   msrv:
     name: MSRV 1.96 contract
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
+    env:
+      VERIFY_JOB_TIMEOUT_MINUTES: "60"
     steps:
+      - name: Start the verification deadline
+        shell: bash
+        run: echo "VERIFY_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -60,12 +70,17 @@ jobs:
   stable:
     name: Stable compatibility (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 60
+    env:
+      VERIFY_JOB_TIMEOUT_MINUTES: "60"
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
+      - name: Start the verification deadline
+        shell: bash
+        run: echo "VERIFY_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -78,8 +93,13 @@ jobs:
   frontend:
     name: Embedded frontend is reproducible
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
+    env:
+      VERIFY_JOB_TIMEOUT_MINUTES: "15"
     steps:
+      - name: Start the verification deadline
+        shell: bash
+        run: echo "VERIFY_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -97,8 +117,13 @@ jobs:
   supply-chain:
     name: Dependency policy
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
+    env:
+      VERIFY_JOB_TIMEOUT_MINUTES: "30"
     steps:
+      - name: Start the verification deadline
+        shell: bash
+        run: echo "VERIFY_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -113,8 +138,13 @@ jobs:
   coverage:
     name: Coverage floor
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
+    env:
+      VERIFY_JOB_TIMEOUT_MINUTES: "45"
     steps:
+      - name: Start the verification deadline
+        shell: bash
+        run: echo "VERIFY_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -129,14 +159,21 @@ jobs:
   release-smoke:
     name: Release binary contract
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
+    env:
+      VERIFY_JOB_TIMEOUT_MINUTES: "60"
     steps:
+      - name: Start the verification deadline
+        shell: bash
+        run: echo "VERIFY_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install MSRV
+        timeout-minutes: 10
         run: rustup toolchain install 1.96.0 --profile minimal
       - name: Build without development-time Node.js
+        timeout-minutes: 30
         run: |
           mkdir -p target/verification
           cargo +1.96.0 build --release --locked >target/verification/release-build.log 2>&1
@@ -150,7 +187,12 @@ jobs:
     name: Windows release symbols
     runs-on: windows-latest
     timeout-minutes: 60
+    env:
+      VERIFY_JOB_TIMEOUT_MINUTES: "60"
     steps:
+      - name: Start the verification deadline
+        shell: bash
+        run: echo "VERIFY_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -162,8 +204,13 @@ jobs:
   browser-recovery:
     name: Browser and recovery evidence
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
+    env:
+      VERIFY_JOB_TIMEOUT_MINUTES: "90"
     steps:
+      - name: Start the verification deadline
+        shell: bash
+        run: echo "VERIFY_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -187,11 +234,16 @@ jobs:
     name: Parser and critical decision shard (${{ matrix.shard }})
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    env:
+      VERIFY_JOB_TIMEOUT_MINUTES: "360"
     strategy:
       fail-fast: false
       matrix:
         shard: [0, 1, 2, 3, 4, 5, 6, 7]
     steps:
+      - name: Start the verification deadline
+        shell: bash
+        run: echo "VERIFY_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false

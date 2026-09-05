@@ -21,3 +21,7 @@ const report = { schema: 1, environment: { platform: platform(), arch: arch(), o
 if (process.env.PERFORMANCE_BASELINE) report.comparison = comparePerformance(JSON.parse(readFileSync(process.env.PERFORMANCE_BASELINE)), report);
 writeJson(join(directory, 'performance.json'), report);
 console.log(JSON.stringify(report));
+if (report.summary.memory_status !== 'measured') {
+  console.error('Memory instrumentation is unavailable; partial measurements were retained.');
+  process.exitCode = 1;
+}

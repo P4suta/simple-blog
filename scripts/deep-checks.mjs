@@ -30,10 +30,12 @@ export function mutationVerdict(value) {
   const mutants = value.outcomes.filter(outcome => outcome.scenario !== 'Baseline');
   if (!mutants.length) return 'not_run';
   const statuses = value.outcomes.map(outcome => outcome.summary);
-  if (statuses.some(status => /Timeout/i.test(status))) return 'timeout';
-  if (statuses.some(status => status === 'Missed' || status === 'Failure')) return 'failed';
-  if (statuses.some(status => !['Success', 'Caught', 'Unviable'].includes(status))) return 'evidence_failed';
-  return mutants.some(outcome => outcome.summary === 'Caught') ? 'passed' : 'not_run';
+  if (statuses.some(status => status === 'Timeout')) return 'timeout';
+  if (statuses.some(status => status === 'MissedMutant' || status === 'Failure')) return 'failed';
+  if (statuses.some(status => !['Success', 'CaughtMutant', 'Unviable'].includes(status))) return 'evidence_failed';
+  const baseline = value.outcomes.filter(outcome => outcome.scenario === 'Baseline');
+  if (baseline.length !== 1 || baseline[0].summary !== 'Success' || mutants.some(outcome => outcome.summary === 'Success')) return 'evidence_failed';
+  return mutants.some(outcome => outcome.summary === 'CaughtMutant') ? 'passed' : 'not_run';
 }
 
 export function shardChecks(selected, index = 0, count = 1) {

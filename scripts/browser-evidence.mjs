@@ -6,7 +6,8 @@ export function summarizeBrowser(report) {
         expectedStatus: test.expectedStatus, status: test.status,
         results: test.results.map(result => ({ status: result.status, duration: result.duration, retry: result.retry })) });
       for (const result of test.results) for (const item of result.attachments ?? []) {
-        if (['sanitized trace', 'server events'].includes(item.name) && item.path) attachments.push(item);
+        if ((item.name === 'sanitized trace' && item.path) ||
+            (item.name === 'server events' && (item.path || item.body))) attachments.push(item);
       }
     }
     for (const child of suite.suites ?? []) visit(child);

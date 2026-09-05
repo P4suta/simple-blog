@@ -11,3 +11,9 @@ test('browser summaries preserve failures but omit private diagnostic arguments'
   assert.equal(result.summary.tests[0].results[0].status, 'failed');
   assert.deepEqual(result.attachments, [{ name: 'sanitized trace', path: 'trace.zip' }]);
 });
+
+test('existing inline server logs can be vetted and recovered without accepting raw error contexts', () => {
+  const safe = { name: 'server events', body: Buffer.from('{"event":"synthetic"}').toString('base64') };
+  const report = { specs: [{ tests: [{ results: [{ status: 'failed', attachments: [safe, { name: 'error context', body: 'private' }] }] }] }] };
+  assert.deepEqual(summarizeBrowser(report).attachments, [safe]);
+});

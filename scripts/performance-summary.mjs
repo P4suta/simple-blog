@@ -3,12 +3,14 @@ const median = values => values.toSorted((a, b) => a - b)[Math.floor(values.leng
 export function summarizeSamples(samples) {
   if (!samples.length) throw new Error('No performance samples');
   const first = samples[0];
+  if (typeof first.dataset !== 'string' || !first.dataset || !Number.isFinite(Date.parse(first.dataset_time))) throw new Error('Performance dataset identity is unavailable');
   for (const sample of samples) {
     if (sample.dataset !== first.dataset || sample.dataset_time !== first.dataset_time) throw new Error('Performance dataset changed');
     for (const key of timings) if (!Number.isFinite(sample[key]) || sample[key] < 0) throw new Error('Performance timing unavailable');
-    if (!sample.db_operations || Object.values(sample.db_operations).some(value => !Number.isInteger(value) || value <= 0)) throw new Error('Database instrumentation did not observe the workload');
+    if (!sample.db_operations || ['render_store', 'publish', 'search_100'].some(key => !Number.isInteger(sample.db_operations[key]) || sample.db_operations[key] <= 0)) throw new Error('Database instrumentation did not observe the workload');
   }
   return { dataset: first.dataset, dataset_time: first.dataset_time, samples: samples.length,
+    memory_status: samples.every(sample => Number.isFinite(sample.peak_resident_bytes) && sample.peak_resident_bytes > 0) ? 'measured' : 'unavailable',
     median_ms: Object.fromEntries(timings.map(key => [key, median(samples.map(sample => sample[key]))])),
     peak_resident_bytes: samples.every(sample => Number.isFinite(sample.peak_resident_bytes) && sample.peak_resident_bytes > 0)
       ? median(samples.map(sample => sample.peak_resident_bytes)) : null,
