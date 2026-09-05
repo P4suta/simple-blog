@@ -130,12 +130,12 @@ mod tests {
 
     #[test]
     fn catalogs_leave_no_english_behind_except_acronyms() {
-        let en = parse("locales/en.json", include_str!("../locales/en.json")).unwrap();
-        let ja = parse("locales/ja.json", include_str!("../locales/ja.json")).unwrap();
-        let zh = parse("locales/zh.json", include_str!("../locales/zh.json")).unwrap();
         // Spelled the same in every language because they are acronyms, not
         // because nobody translated them.
         const SHARED: [&str; 2] = ["editor.seo", "settings.css"];
+        let en = parse("locales/en.json", include_str!("../locales/en.json")).unwrap();
+        let ja = parse("locales/ja.json", include_str!("../locales/ja.json")).unwrap();
+        let zh = parse("locales/zh.json", include_str!("../locales/zh.json")).unwrap();
 
         for (locale, catalog) in [("ja", ja), ("zh", zh)] {
             let mut untranslated = catalog
