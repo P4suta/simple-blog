@@ -31,6 +31,8 @@ pub(super) async fn auth_rate_limit(
         RateLimitDecision::Allowed => next.run(request).await,
         RateLimitDecision::Limited { retry_after } => {
             tracing::warn!(
+                event = "security.rate_limited",
+                error_code = "security.rate_limited",
                 retry_after,
                 path = request.uri().path(),
                 "rate limit exceeded"

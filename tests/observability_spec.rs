@@ -104,6 +104,57 @@ async fn trace_correlates_the_response_without_recording_query_secrets() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn a_rate_limited_request_carries_a_stable_error_code() {
+    let (_temp, _repository, state) = test_state().await;
+    let traces = TraceBuffer::default();
+    let subscriber = tracing_subscriber::fmt()
+        .json()
+        .without_time()
+        .with_current_span(true)
+        .with_span_list(true)
+        .with_writer(traces.clone())
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    // Likes are limited per client and minute; without a peer address every
+    // request here is the same client, so the limit is reached quickly.
+    let mut refused = None;
+    for _ in 0..=30 {
+        let response = router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/likes/7")
+                    .header(header::HOST, "localhost:8080")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"op":"like"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        if response.status() == StatusCode::TOO_MANY_REQUESTS {
+            refused = Some(response);
+            break;
+        }
+    }
+    let refused = refused.expect("the limit refuses a request within the window");
+    assert!(refused.headers().contains_key(header::RETRY_AFTER));
+    let request_id = refused.headers()["x-request-id"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+
+    let output = String::from_utf8(traces.0.lock().unwrap().clone()).unwrap();
+    let refusal = output
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .find(|event| event["fields"]["event"] == "security.rate_limited")
+        .expect("typed refusal event");
+    assert_eq!(refusal["fields"]["error_code"], "security.rate_limited");
+    assert_eq!(refusal["span"]["request_id"], request_id);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn internal_failure_has_a_stable_error_code_and_the_same_request_id() {
     let (_temp, repository, state) = test_state().await;
     repository.close().await;
