@@ -1,5 +1,6 @@
-//! Sessions, setup tokens, recovery codes, and rate limits: the
-//! authentication use cases behind passkey-only ownership. Secrets are made
+//! The authentication use cases behind passkey-only ownership.
+//!
+//! Sessions, setup tokens, recovery codes, and rate limits. Secrets are made
 //! here and stored only as hashes; the passkey ceremony itself lives in
 //! `infrastructure::webauthn`.
 

@@ -1,6 +1,8 @@
-//! Where the site lives and what it may do: data directory, bind address,
-//! public origin, upload and backup limits, resolved from the command line,
-//! the environment, and an optional `config.toml`, in that order.
+//! Where the site lives and what it may do.
+//!
+//! Data directory, bind address, public origin, upload and backup limits,
+//! resolved from the command line, the environment, and an optional
+//! `config.toml`, in that order.
 
 use std::{
     collections::BTreeMap,
