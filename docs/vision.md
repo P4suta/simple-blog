@@ -34,7 +34,8 @@ told exactly what and why, without a secret leaking into the explanation.
 
 **The future self** is the writer years from now, moving to another host,
 another domain, or away from simple-blog altogether. They lose nothing: not a
-page, not a URL, not the passkey that opens the door.
+page, not an address, not their ownership. A passkey is bound to its domain by
+design, so a new domain means a new passkey; nothing else changes hands.
 
 ## The ideal, in scenes
 
@@ -103,8 +104,9 @@ the provider does not hand out subdomains of its own as a substitute.
 Markdown is the original. An export returns it as folders of plain files and
 images that any other tool can read. A backup is one archive that holds
 everything. A migration archive holds the entire site, with its history,
-redirects, settings, media, trash, and passkeys, and moving it between
-conforming hosts keeps every public address and the passkey identity intact.
+redirects, settings, media, trash, and passkeys. Moving it between conforming
+hosts on the same domain keeps every public address and the passkey identity
+intact.
 
 Nothing is rationed. There is no post limit, no byte limit, and no traffic
 tier invented by the product. The only limits are the ones that keep the
@@ -197,8 +199,10 @@ begins.
 - **Official hosting is live.** Reserve a domain, register a passkey, write:
   minutes after deciding to. The host adapter's contracts exist; the
   multi-site Core service behind them is not yet deployed.
-- **Changing a domain loses nothing.** Public addresses and the passkey
-  identity survive a move to a new name. The migration record already names
+- **Changing a domain loses nothing that can be kept.** Old addresses redirect
+  to the new ones for as long as the old name is held, and the owner registers
+  a passkey for the new name by proving ownership with the old one, because a
+  passkey is bound to its domain by design. The migration record already names
   this as a separate protocol.
 - **Apex domains on the official host**, not only CNAME routing.
 - **Writing from a phone is as good as writing from a desk.** A piece can be
