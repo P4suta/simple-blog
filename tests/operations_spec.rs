@@ -164,6 +164,76 @@ async fn export_writes_front_matter_markdown_and_plain_media_files() {
 }
 
 #[tokio::test]
+async fn export_and_import_carry_the_trash() {
+    let source = tempfile::tempdir().unwrap();
+    let (config, repository) = seeded(&source).await;
+    let content = ContentService::new(
+        repository.clone(),
+        Arc::new(ComrakMarkdownRenderer::default()),
+    );
+    let discarded = content
+        .create(
+            ContentDraft {
+                kind: ContentKind::Page,
+                title: "Discarded".into(),
+                slug: Slug::parse("discarded").unwrap(),
+                summary: String::new(),
+                body_markdown: "Not yet.".into(),
+                tags: Vec::new(),
+                cover_media_id: None,
+                seo_title: None,
+                seo_description: None,
+                publication: Publication::Draft,
+            },
+            SaveIntent::Explicit,
+            Utc::now(),
+        )
+        .await
+        .unwrap();
+    content
+        .move_to_trash(discarded.id, discarded.version, Utc::now())
+        .await
+        .unwrap();
+
+    let output = source.path().join("with-trash");
+    Exporter::export(&config, repository.as_ref(), &output, Utc::now())
+        .await
+        .unwrap();
+    let exported = std::fs::read_to_string(output.join("trash/discarded.md"))
+        .expect("the trash travels in its own folder");
+    assert!(exported.contains("kind: page"));
+    assert!(!output.join("pages/discarded.md").exists());
+
+    let destination = tempfile::tempdir().unwrap();
+    let target_config = config_for(destination.path());
+    std::fs::create_dir_all(target_config.media_dir()).unwrap();
+    let target = Arc::new(
+        SqliteRepository::connect(&target_config.database_path())
+            .await
+            .unwrap(),
+    );
+    let report = Importer::import(&target_config, &target, &output, false, Utc::now())
+        .await
+        .unwrap();
+    assert!(
+        report.imported.contains(&"discarded".to_owned()),
+        "{report:?}"
+    );
+    let back = target
+        .list_all_content()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|piece| piece.slug.as_str() == "discarded")
+        .unwrap();
+    assert!(
+        back.is_trashed(),
+        "it comes back into the trash, not onto the site"
+    );
+    assert_eq!(back.kind, ContentKind::Page);
+}
+
+#[tokio::test]
 async fn doctor_reports_missing_media_without_mutating_state() {
     let source = tempfile::tempdir().unwrap();
     let (config, repository) = seeded(&source).await;

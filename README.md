@@ -48,7 +48,7 @@ cargo run --locked -- migrate import site.simple-blog
 
 The existing installation must be absent for import unless `--force` is supplied. A forced native import preserves the previous directory for recovery.
 
-Move writing, not installations, as Markdown. `export` writes `posts/`, `pages/`, and `media/`; `import` reads that folder back, or any folder of plain `.md` files (titled from their first heading), into the current site:
+Move writing, not installations, as Markdown. `export` writes `posts/`, `pages/`, `trash/`, and `media/`; `import` reads that folder back (pieces under `trash/` return to the trash), or any folder of plain `.md` files (titled from their first heading), into the current site:
 
 ```sh
 cargo run --locked -- export --output ./writing

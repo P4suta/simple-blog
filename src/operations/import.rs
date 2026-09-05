@@ -6,7 +6,8 @@
 //! front matter at all, which becomes a draft titled from its first heading
 //! or its file name. Images under `media/` are stored the same way an upload
 //! is, so a `cover_media_id` or `/media/…` reference keeps pointing at the
-//! same content-addressed file.
+//! same content-addressed file. Files under `trash/` come back into the
+//! trash, exactly as an export left them.
 
 use std::{
     path::{Path, PathBuf},
@@ -42,9 +43,10 @@ pub struct ImportReport {
 pub struct Importer;
 
 impl Importer {
-    /// Reads `source/posts`, `source/pages` and `source/media`. A piece whose
-    /// slug is already taken is skipped unless `force`, which replaces the
-    /// existing piece's text and metadata in place (keeping its history).
+    /// Reads `source/posts`, `source/pages`, `source/trash` and
+    /// `source/media`. A piece whose slug is already taken is skipped unless
+    /// `force`, which replaces the existing piece's text and metadata in
+    /// place (keeping its history).
     pub async fn import(
         config: &Config,
         repository: &Arc<SqliteRepository>,
@@ -64,10 +66,25 @@ impl Importer {
             repository.clone(),
             Arc::new(ComrakMarkdownRenderer::default()),
         );
-        for (directory, kind) in [("posts", ContentKind::Post), ("pages", ContentKind::Page)] {
+        for (directory, kind, trashed) in [
+            ("posts", ContentKind::Post, false),
+            ("pages", ContentKind::Page, false),
+            // A trashed file names its own kind in the front matter; a bare
+            // one is a post, like any other bare file.
+            ("trash", ContentKind::Post, true),
+        ] {
             for path in markdown_files(&source.join(directory))? {
-                Self::import_file(&content, repository, &path, kind, force, now, &mut report)
-                    .await?;
+                Self::import_file(
+                    &content,
+                    repository,
+                    &path,
+                    kind,
+                    trashed,
+                    force,
+                    now,
+                    &mut report,
+                )
+                .await?;
             }
         }
         Ok(report)
@@ -114,11 +131,16 @@ impl Importer {
         Ok(())
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one call site; a struct would only rename the same eight facts"
+    )]
     async fn import_file(
         content: &ContentService,
         repository: &Arc<SqliteRepository>,
         path: &Path,
         kind: ContentKind,
+        trashed: bool,
         force: bool,
         now: DateTime<Utc>,
         report: &mut ImportReport,
@@ -140,7 +162,15 @@ impl Importer {
             .create(draft.clone(), SaveIntent::Explicit, now)
             .await
         {
-            Ok(_) => report.imported.push(slug),
+            Ok(created) => {
+                if trashed {
+                    content
+                        .move_to_trash(created.id, created.version, now)
+                        .await
+                        .map_err(|error| OperationError::Database(error.to_string()))?;
+                }
+                report.imported.push(slug);
+            }
             Err(RepositoryError::SlugTaken(_)) if force => {
                 let existing = repository
                     .list_all_content()
