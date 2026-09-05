@@ -12,6 +12,7 @@ use crate::{
         ports::{PublicSnapshotRepository, PublicationState, RepositoryError},
         site_compiler::{SiteCompiler, SiteCompilerError},
     },
+    observability::codes,
     release::{
         PreparedRelease, ReleaseBuilder, ReleaseError, ReleaseId, ReleasePublisher, ReleaseReader,
         ReleaseStore,
@@ -283,9 +284,9 @@ impl PublicationServiceError {
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
-            Self::Repository(_) => "publication_repository_failed",
-            Self::Compiler(_) => "publication_compile_failed",
-            Self::Release(_) => "publication_release_store_failed",
+            Self::Repository(_) => codes::PUBLICATION_REPOSITORY_FAILED,
+            Self::Compiler(_) => codes::PUBLICATION_COMPILE_FAILED,
+            Self::Release(_) => codes::PUBLICATION_RELEASE_STORE_FAILED,
         }
     }
 

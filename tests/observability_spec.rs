@@ -103,6 +103,36 @@ async fn trace_correlates_the_response_without_recording_query_secrets() {
     assert!(!output.contains("must-never-be-logged"));
 }
 
+#[test]
+fn the_diagnostics_contract_lists_exactly_the_codes_the_binary_can_emit() {
+    let contract: serde_json::Value =
+        serde_json::from_str(include_str!("../contracts/diagnostics-v1.json")).unwrap();
+    let listed = contract["error_codes"]["native"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| {
+            assert!(
+                entry["meaning"]
+                    .as_str()
+                    .is_some_and(|text| !text.is_empty()),
+                "{entry} explains nothing"
+            );
+            entry["code"].as_str().unwrap()
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    let emitted = simple_blog::observability::diagnostic_codes()
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(listed, emitted, "the contract and the binary disagree");
+    assert_eq!(
+        emitted.len(),
+        simple_blog::observability::diagnostic_codes().len(),
+        "a code is listed twice"
+    );
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn a_rate_limited_request_carries_a_stable_error_code() {
     let (_temp, _repository, state) = test_state().await;

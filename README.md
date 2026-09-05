@@ -95,7 +95,7 @@ RUST_LOG=simple_blog=debug \
 cargo run --locked -- doctor --json
 ```
 
-The JSON diagnostic schema, stable error codes, and secret-redaction rules are compatibility contracts; query strings, cookies, bearer capabilities, and request bodies do not belong in traces.
+The JSON diagnostic schema, stable error codes, and secret-redaction rules are compatibility contracts; query strings, cookies, bearer capabilities, and request bodies do not belong in traces. Every code and every doctor check is listed in [`contracts/diagnostics-v1.json`](contracts/diagnostics-v1.json) and explained in [`docs/diagnostics.md`](docs/diagnostics.md).
 
 The native adapter is runnable today. The [Cloudflare host adapter](adapters/cloudflare/README.md) has executable conformance, staging, activation, registration, scheduling, and diagnostic boundaries; deployment additionally requires the compatible multi-site internal Core service described there.
 

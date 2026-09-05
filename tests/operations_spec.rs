@@ -234,6 +234,28 @@ async fn export_and_import_carry_the_trash() {
 }
 
 #[tokio::test]
+async fn doctor_runs_exactly_the_checks_the_diagnostics_contract_lists() {
+    let source = tempfile::tempdir().unwrap();
+    let (config, repository) = seeded(&source).await;
+    let report = Doctor::inspect(&config, repository.as_ref()).await.unwrap();
+    let contract: serde_json::Value =
+        serde_json::from_str(include_str!("../contracts/diagnostics-v1.json")).unwrap();
+    let listed = contract["doctor_checks"]["native"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|name| name.as_str().unwrap())
+        .collect::<std::collections::BTreeSet<_>>();
+    let ran = report
+        .checks
+        .iter()
+        .map(|check| check.name)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(ran, listed, "the contract and doctor disagree");
+    assert_eq!(report.checks.len(), ran.len(), "a check reported twice");
+}
+
+#[tokio::test]
 async fn doctor_names_every_safety_limit_and_invents_no_quota() {
     let source = tempfile::tempdir().unwrap();
     let (config, repository) = seeded(&source).await;

@@ -335,4 +335,25 @@ if ! awk '
   fail 'expect attributes require an explicit reason'
 fi
 
+# Diagnostic codes are a compatibility contract: emitted only through the
+# named constants, listed in the contract, and explained in the catalogue.
+if grep -En 'error_code = "' src; then
+  fail 'error codes are named constants in src/observability.rs, not literals'
+fi
+diagnostics_contract=contracts/diagnostics-v1.json
+while IFS= read -r identifier; do
+  grep -Fq -- "\`$identifier\`" docs/diagnostics.md \
+    || fail "docs/diagnostics.md does not explain $identifier"
+done < <(jq -r '
+  .error_codes.native[].code,
+  .error_codes.cloudflare[].code,
+  .doctor_checks.native[],
+  .doctor_checks.cloudflare[],
+  .cloudflare_internal_api_errors[]
+' "$diagnostics_contract")
+while IFS= read -r code; do
+  grep -Fq -- "\"$code\"" adapters/cloudflare/src/doctor.ts \
+    || fail "the Cloudflare adapter does not emit $code"
+done < <(jq -r '.error_codes.cloudflare[].code' "$diagnostics_contract")
+
 printf 'repository policy: ok\n'

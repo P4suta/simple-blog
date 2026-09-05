@@ -18,6 +18,8 @@ use thiserror::Error;
 use tokio::{io::AsyncWriteExt, sync::Mutex};
 use url::Url;
 
+use crate::observability::codes;
+
 pub const RELEASE_FORMAT_VERSION: u16 = 1;
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -659,7 +661,7 @@ impl<S: ReleaseStore + ?Sized> ReleasePublisher<S> {
             if let Err(error) = self.store.put_object(id, bytes).await {
                 tracing::error!(
                     event = "release.publish.failed",
-                    error_code = "release_object_store_failed",
+                    error_code = codes::RELEASE_OBJECT_STORE_FAILED,
                     phase = "object",
                     error = %error
                 );
@@ -669,7 +671,7 @@ impl<S: ReleaseStore + ?Sized> ReleasePublisher<S> {
         if let Err(error) = self.store.put_manifest(release).await {
             tracing::error!(
                 event = "release.publish.failed",
-                error_code = "release_manifest_store_failed",
+                error_code = codes::RELEASE_MANIFEST_STORE_FAILED,
                 phase = "manifest",
                 error = %error
             );
@@ -678,7 +680,7 @@ impl<S: ReleaseStore + ?Sized> ReleasePublisher<S> {
         if let Err(error) = self.store.activate(expected, &release.id).await {
             tracing::error!(
                 event = "release.publish.failed",
-                error_code = "release_activation_failed",
+                error_code = codes::RELEASE_ACTIVATION_FAILED,
                 phase = "activation",
                 error = %error
             );
