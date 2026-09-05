@@ -1,3 +1,7 @@
+//! Pieces of writing and their history: identities, addresses, tags,
+//! publication, revisions, and the trash, as pure rules with no storage
+//! attached.
+
 use std::{fmt, str::FromStr};
 
 use chrono::{DateTime, Utc};

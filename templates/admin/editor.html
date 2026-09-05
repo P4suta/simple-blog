@@ -22,9 +22,9 @@
       data-msg-status-public="{{ t["status.public"] }}"
       data-msg-publish="{{ t["editor.publish"] }}"
       data-msg-schedule="{{ t["editor.schedule"] }}"
-      data-msg-publish-at-hint="{{ t["editor.publish_at_hint"] }}"
+      data-msg-device-zone="{{ t["editor.device_zone_hint"] }}"
       data-msg-count="{{ t["editor.count"] }}"
-      data-msg-shortcuts="{{ t["editor.shortcuts"] }}"
+      data-shortcut-labels='{{ shortcut_labels|tojson }}'
       data-msg-slug-invalid="{{ t["editor.slug_invalid"] }}"
       data-msg-upload-failed="{{ t["editor.upload_failed"] }}"
       data-msg-error-session="{{ t["editor.error_session"] }}"
@@ -55,7 +55,12 @@
     <span class="editor-save-state" data-save-state aria-live="polite">{{ t["editor.saved"] }}</span>
     <span class="editor-count" data-count hidden></span>
     <span class="editor-bar-spacer"></span>
-    <small class="editor-shortcuts" data-shortcuts hidden></small>
+    {# Every key binding, listed by the script from the same table that
+       binds them. Without a script there are no bindings to list. #}
+    <details class="editor-confirm editor-shortcuts" data-shortcuts hidden>
+      <summary class="editor-bar-button">{{ t["editor.shortcuts"] }}</summary>
+      <div class="editor-confirm-panel editor-shortcuts-panel" data-shortcut-list></div>
+    </details>
     <span class="editor-status" data-status-label>{{ t["status." ~ content.status] }}</span>
     <time class="editor-status-time" data-status-time datetime="{{ content.publish_at }}"{% if content.status != 'scheduled' %} hidden{% endif %}>{{ content.publish_at }}</time>
     {% if not trashed %}
@@ -83,7 +88,7 @@
   <dialog class="editor-drawer" data-drawer aria-label="{{ t["editor.details"] }}">
     <label><span>{{ t["editor.kind"] }}</span><select name="kind"><option value="post"{% if content.kind == 'post' %} selected{% endif %}>Post</option><option value="page"{% if content.kind == 'page' %} selected{% endif %}>Page</option></select></label>
     <label><span>{{ t["editor.slug"] }}</span><input name="slug" value="{% if not content.slug_auto %}{{ content.slug }}{% endif %}" placeholder="{% if content.slug %}{{ content.slug }}{% else %}{{ t["editor.slug_auto"] }}{% endif %}" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" maxlength="120" data-slug data-slug-auto="{% if content.slug_auto %}true{% else %}false{% endif %}" data-published="{% if content.status == 'draft' %}false{% else %}true{% endif %}"><small><output data-url-preview data-origin="{{ site_origin }}">{{ site_origin }}/{{ content.slug }}/</output></small><small data-slug-redirect-note hidden>{{ t["editor.slug_redirect_note"] }}</small></label>
-    <label><span>{{ t["editor.publish_at"] }}</span><input type="datetime-local" name="publish_at" value="{{ content.publish_at_input }}" data-publish-at data-publish-at-utc="{{ content.publish_at }}" data-initial="{{ content.publish_at_input }}"><small data-publish-at-hint>{{ t["editor.publish_at_hint"]|replace("{zone}", "UTC") }}</small> <small data-site-zone-hint>{{ site_zone_hint }}</small></label>
+    <label><span>{{ t["editor.publish_at"] }}</span><input type="datetime-local" name="publish_at" value="{{ content.publish_at_input }}" data-publish-at data-publish-at-utc="{{ content.publish_at }}" data-initial="{{ content.publish_at_input }}"><small data-publish-at-hint>{{ t["editor.publish_at_hint"]|replace("{zone}", site_zone) }}</small> <small data-device-zone-hint hidden></small></label>
     <label><span>{{ t["editor.summary"] }}</span><textarea name="summary" maxlength="500" rows="3">{{ content.summary }}</textarea></label>
     <label class="tags-field"><span>{{ t["editor.tags"] }}</span><input name="tags" value="{{ content.tags }}" autocomplete="off" data-tags></label>
     <section class="cover-field" data-media-target>

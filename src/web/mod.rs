@@ -26,6 +26,7 @@ use tower_http::{
     catch_panic::CatchPanicLayer, compression::CompressionLayer, limit::RequestBodyLimitLayer,
 };
 
+use crate::observability::codes;
 use crate::{
     application::{
         auth::{AuthRateLimiter, AuthService, PasskeyAccountService},
@@ -147,7 +148,7 @@ impl AppState {
             translations: Arc::new(Translations::embedded()?),
             clock,
             likes,
-            like_rate_limiter: AuthRateLimiter::new(30, chrono::Duration::minutes(1)),
+            like_rate_limiter: AuthRateLimiter::likes_default(),
             engagement,
             release_store,
             publication,
@@ -258,7 +259,7 @@ impl AppState {
                 ),
                 Err(error) => tracing::error!(
                     event = "backup.scheduled.failed",
-                    error_code = "backup_scheduled_failed",
+                    error_code = codes::BACKUP_SCHEDULED_FAILED,
                     error = %error
                 ),
             }
@@ -319,7 +320,7 @@ impl AppState {
                 let retry = schedule.delay(*failures - 1);
                 tracing::error!(
                     event = "publication.scheduler.state_failed",
-                    error_code = "publication_scheduler_state_failed",
+                    error_code = codes::PUBLICATION_SCHEDULER_STATE_FAILED,
                     retry_ms = retry.as_millis(),
                     error = %error
                 );
@@ -468,6 +469,10 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/settings/theme/reset/", post(admin::reset_theme))
         .route("/admin/backup/", post(admin::download_backup))
         .route("/admin/settings/theme/undo/", post(admin::undo_theme_reset))
+        .route(
+            "/admin/settings/revisions/{id}/restore/",
+            post(admin::restore_settings),
+        )
         .route("/admin/redirects/", post(admin::add_redirect))
         .route("/admin/redirects/remove/", post(admin::remove_redirect))
         .route(
@@ -682,24 +687,27 @@ impl WebError {
         Self::MediaRepository(error)
     }
 
-    const fn diagnostic_code(&self) -> &'static str {
+    /// The stable code a failed request is traced with; `docs/diagnostics.md`
+    /// explains each one.
+    #[must_use]
+    pub const fn diagnostic_code(&self) -> &'static str {
         match self {
-            Self::Repository(RepositoryError::Conflict { .. }) => "repository.conflict",
-            Self::Repository(RepositoryError::SlugTaken(_)) => "repository.slug_taken",
-            Self::Repository(RepositoryError::NotFound) => "repository.not_found",
-            Self::Repository(RepositoryError::Validation(_)) => "repository.validation",
-            Self::Repository(RepositoryError::Storage(_)) => "repository.storage",
-            Self::Template(_) => "template.render",
-            Self::Auth(_) => "auth.storage",
-            Self::Passkey(_) => "auth.passkey",
-            Self::Media(_) => "media.processing",
-            Self::MediaRepository(_) => "media.storage",
-            Self::Publication(_) => "publication.build",
-            Self::Compiler(_) => "site.compile",
-            Self::Release(ReleaseError::Integrity { .. }) => "release.integrity",
-            Self::Release(ReleaseError::NotFound { .. }) => "release.not_found",
-            Self::Release(_) => "release.read",
-            Self::Internal(_) => "web.internal",
+            Self::Repository(RepositoryError::Conflict { .. }) => codes::REPOSITORY_CONFLICT,
+            Self::Repository(RepositoryError::SlugTaken(_)) => codes::REPOSITORY_SLUG_TAKEN,
+            Self::Repository(RepositoryError::NotFound) => codes::REPOSITORY_NOT_FOUND,
+            Self::Repository(RepositoryError::Validation(_)) => codes::REPOSITORY_VALIDATION,
+            Self::Repository(RepositoryError::Storage(_)) => codes::REPOSITORY_STORAGE,
+            Self::Template(_) => codes::TEMPLATE_RENDER,
+            Self::Auth(_) => codes::AUTH_STORAGE,
+            Self::Passkey(_) => codes::AUTH_PASSKEY,
+            Self::Media(_) => codes::MEDIA_PROCESSING,
+            Self::MediaRepository(_) => codes::MEDIA_STORAGE,
+            Self::Publication(_) => codes::PUBLICATION_BUILD,
+            Self::Compiler(_) => codes::SITE_COMPILE,
+            Self::Release(ReleaseError::Integrity { .. }) => codes::RELEASE_INTEGRITY,
+            Self::Release(ReleaseError::NotFound { .. }) => codes::RELEASE_NOT_FOUND,
+            Self::Release(_) => codes::RELEASE_READ,
+            Self::Internal(_) => codes::WEB_INTERNAL,
         }
     }
 }

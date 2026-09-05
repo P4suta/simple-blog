@@ -25,6 +25,8 @@ struct ContractCase {
     object_id: Option<String>,
     location: Option<String>,
     fallback: Option<bool>,
+    content_type: Option<String>,
+    cache_control: Option<String>,
 }
 
 struct FixtureStore {
@@ -113,6 +115,20 @@ async fn rust_and_cloudflare_resolvers_share_the_same_versioned_contract() {
                     scenario.path
                 );
                 assert_eq!(Some(asset.fallback), scenario.fallback, "{}", scenario.path);
+                // The headers a reader's cache sees are part of the contract,
+                // not an adapter's taste.
+                assert_eq!(
+                    Some(asset.content_type),
+                    scenario.content_type,
+                    "{}",
+                    scenario.path
+                );
+                assert_eq!(
+                    Some(asset.cache_control),
+                    scenario.cache_control,
+                    "{}",
+                    scenario.path
+                );
             }
             ResolvedRoute::Redirect(redirect) => {
                 assert_eq!(scenario.kind, "redirect", "{}", scenario.path);

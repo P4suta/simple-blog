@@ -1,0 +1,81 @@
+{
+  "format_version": 1,
+  "description": "Every stable diagnostic identifier a conforming adapter emits. Codes never change meaning; a new one is added here, explained in docs/diagnostics.md, and emitted only through a named constant.",
+  "error_codes": {
+    "native": [
+      { "code": "repository.conflict", "emitter": "web", "meaning": "A save carried a version that is no longer current; the writer sees both versions and loses nothing." },
+      { "code": "repository.slug_taken", "emitter": "web", "meaning": "The requested address belongs to another piece, live or historical." },
+      { "code": "repository.not_found", "emitter": "web", "meaning": "The piece, revision, or media the request named does not exist." },
+      { "code": "repository.validation", "emitter": "web", "meaning": "A field broke a rule the editor also enforces; the message names the field." },
+      { "code": "repository.storage", "emitter": "web", "meaning": "SQLite refused or failed a query; check the database file and the disk." },
+      { "code": "template.render", "emitter": "web", "meaning": "An admin page could not be rendered from its embedded template." },
+      { "code": "auth.storage", "emitter": "web", "meaning": "Sessions, tokens, or recovery codes could not be read or written." },
+      { "code": "auth.passkey", "emitter": "web", "meaning": "A passkey ceremony failed or did not match the site's origin." },
+      { "code": "media.processing", "emitter": "web", "meaning": "An upload could not be decoded or re-encoded; the limit or the file is named." },
+      { "code": "media.storage", "emitter": "web", "meaning": "Media records or files could not be read or written." },
+      { "code": "publication.build", "emitter": "web", "meaning": "Publishing on request failed; the last complete release stays visible." },
+      { "code": "site.compile", "emitter": "web", "meaning": "The public site could not be compiled from the current snapshot." },
+      { "code": "release.integrity", "emitter": "web", "meaning": "A stored release object or manifest failed its checksum; run doctor." },
+      { "code": "release.not_found", "emitter": "web", "meaning": "The active release names an object that is not in the store." },
+      { "code": "release.read", "emitter": "web", "meaning": "The release store could not be read." },
+      { "code": "web.internal", "emitter": "web", "meaning": "An unexpected failure; the request ID leads to the trace with the cause." },
+      { "code": "security.rate_limited", "emitter": "web", "meaning": "A client exceeded the authentication or like rate limit; Retry-After says when to try again." },
+      { "code": "publication_repository_failed", "emitter": "publication", "meaning": "The public snapshot could not be read from the database." },
+      { "code": "publication_compile_failed", "emitter": "publication", "meaning": "The compiler rejected the snapshot; the site keeps its last release." },
+      { "code": "publication_release_store_failed", "emitter": "publication", "meaning": "The compiled release could not be stored or activated." },
+      { "code": "publication_scheduler_state_failed", "emitter": "scheduler", "meaning": "The scheduler could not read the publication clock; it retries with backoff." },
+      { "code": "release_object_store_failed", "emitter": "release", "meaning": "Writing a content-addressed object to the release store failed." },
+      { "code": "release_manifest_store_failed", "emitter": "release", "meaning": "Writing the release manifest failed; nothing was activated." },
+      { "code": "release_activation_failed", "emitter": "release", "meaning": "The active pointer could not be switched; the previous release stays active." },
+      { "code": "backup_scheduled_failed", "emitter": "scheduler", "meaning": "A scheduled backup could not be written; the next run tries again." }
+    ],
+    "cloudflare": [
+      { "code": "CF_CONFIGURATION_INVALID", "component": "configuration", "meaning": "A required binding, secret, or zone setting of the worker is missing or malformed." },
+      { "code": "CF_D1_UNREACHABLE", "component": "d1", "meaning": "The site registry database did not answer a probe." },
+      { "code": "CF_DURABLE_OBJECT_UNREACHABLE", "component": "durable_object", "meaning": "A site's durable object did not answer a probe." },
+      { "code": "CF_KV_UNREACHABLE", "component": "kv", "meaning": "The host routing store did not answer a probe." },
+      { "code": "CF_R2_UNREACHABLE", "component": "r2", "meaning": "The release object store did not answer a probe." },
+      { "code": "CF_CORE_UNHEALTHY", "component": "core", "meaning": "The multi-site Core service did not answer its health check." }
+    ]
+  },
+  "doctor_checks": {
+    "native": [
+      "content.trash",
+      "filesystem.backups",
+      "filesystem.data",
+      "filesystem.media",
+      "filesystem.releases",
+      "limits.backups",
+      "limits.history",
+      "limits.image",
+      "limits.rate",
+      "limits.search",
+      "limits.text",
+      "limits.theme",
+      "limits.upload",
+      "media.orphans",
+      "media.records",
+      "release.active",
+      "release.history",
+      "release.temporary_files",
+      "sqlite.foreign_keys",
+      "sqlite.migrations",
+      "sqlite.quick_check",
+      "sqlite.runtime_pragmas"
+    ],
+    "cloudflare": ["configuration", "core", "d1", "durable_object", "kv", "r2"]
+  },
+  "cloudflare_internal_api_errors": [
+    "diagnostic_capability_required",
+    "diagnostic_method_not_allowed",
+    "diagnostic_route_not_found",
+    "owner_activation_capability_required",
+    "owner_activation_invalid",
+    "owner_activation_method_not_allowed",
+    "owner_activation_route_not_found",
+    "publication_capability_required",
+    "publication_method_not_allowed",
+    "publication_route_invalid",
+    "publication_route_not_found"
+  ]
+}

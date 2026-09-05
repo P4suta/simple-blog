@@ -458,6 +458,7 @@ async fn doctor(overrides: Overrides, json: bool) -> Result<()> {
                 "diagnostics_schema": 1,
                 "application_version": env!("CARGO_PKG_VERSION"),
                 "healthy": healthy,
+                "limits": report.limits,
                 "checks": report.checks,
                 "issues": report.issues,
             }))?

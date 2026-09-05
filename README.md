@@ -12,7 +12,9 @@ A writing-focused, single-owner CMS with a host-neutral Rust Core.
 - Dynamic CMS/admin with immutable, content-addressed public releases
 - Markdown as the canonical content source, rendered to sanitized HTML
 - Passkey-only owner authentication
-- Exact scheduled publishing, revisions, redirects, media variants, Atom and JSON feeds, instant search, and backups
+- Exact scheduled publishing on the site's clock, revisions, redirects, media variants, Atom and JSON feeds, instant search, and backups
+- A trash that restores exactly, a revision for every save, a history for the settings, and media cleanup that respects all of them
+- Reader preferences (measure, text size, colour scheme) kept in the reader's browser and applied before first paint; a table of contents, related pieces, and previous/next links
 - Dates in the site's own time zone and language; a real preview of drafts through the public theme, shareable by short-lived links
 - Markdown import and export, backups from the settings page, and a daily backup schedule with rotation
 - Atomic release activation and incremental reuse of unchanged generated objects
@@ -48,7 +50,7 @@ cargo run --locked -- migrate import site.simple-blog
 
 The existing installation must be absent for import unless `--force` is supplied. A forced native import preserves the previous directory for recovery.
 
-Move writing, not installations, as Markdown. `export` writes `posts/`, `pages/`, and `media/`; `import` reads that folder back, or any folder of plain `.md` files (titled from their first heading), into the current site:
+Move writing, not installations, as Markdown. `export` writes `posts/`, `pages/`, `trash/`, and `media/`; `import` reads that folder back (pieces under `trash/` return to the trash), or any folder of plain `.md` files (titled from their first heading), into the current site:
 
 ```sh
 cargo run --locked -- export --output ./writing
@@ -70,6 +72,7 @@ The site's time zone is adopted from the browser when the first passkey is regis
 ```sh
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
+RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --locked --all-features
 PROPTEST_CASES=1024 cargo test --locked --all-targets --all-features
 cargo deny check
 PROPTEST_CASES=512 cargo llvm-cov --locked --all-features --all-targets \
@@ -84,7 +87,7 @@ bun audit --audit-level=high
 bash tests/repository_policy.sh
 ```
 
-What the project is for, and the promises it makes to writers and readers, live in [`docs/vision.md`](docs/vision.md). Architectural decisions live only in [`docs/adr`](docs/adr/README.md). Changes follow Red–Green–Refactor and may not use unscoped lint suppression.
+What the project is for, and the promises it makes to writers and readers, live in [`docs/vision.md`](docs/vision.md). Architectural decisions live only in [`docs/adr`](docs/adr/README.md); [`docs/README.md`](docs/README.md) indexes every document, and [`contracts/README.md`](contracts/README.md) explains the fixtures a conforming host adapter must satisfy. Changes follow Red–Green–Refactor and may not use unscoped lint suppression.
 
 For a reproducible incident report, keep the first failing request ID and run the read-only doctor with machine-readable traces:
 
@@ -95,7 +98,7 @@ RUST_LOG=simple_blog=debug \
 cargo run --locked -- doctor --json
 ```
 
-The JSON diagnostic schema, stable error codes, and secret-redaction rules are compatibility contracts; query strings, cookies, bearer capabilities, and request bodies do not belong in traces.
+The JSON diagnostic schema, stable error codes, and secret-redaction rules are compatibility contracts; query strings, cookies, bearer capabilities, and request bodies do not belong in traces. Every code and every doctor check is listed in [`contracts/diagnostics-v1.json`](contracts/diagnostics-v1.json) and explained in [`docs/diagnostics.md`](docs/diagnostics.md).
 
 The native adapter is runnable today. The [Cloudflare host adapter](adapters/cloudflare/README.md) has executable conformance, staging, activation, registration, scheduling, and diagnostic boundaries; deployment additionally requires the compatible multi-site internal Core service described there.
 

@@ -12,7 +12,7 @@ use simple_blog::{
         ports::{Clock, ContentRepository, EngagementRepository},
     },
     config::{Config, ConfigSources, Overrides},
-    domain::content::{ContentDraft, ContentKind, Publication, Slug},
+    domain::content::{ContentDraft, ContentId, ContentKind, Publication, Slug},
     infrastructure::{markdown::ComrakMarkdownRenderer, sqlite::SqliteRepository},
     release::{FilesystemReleaseStore, ReleaseReader, ReleaseStore},
     web::{AppState, router},
@@ -514,8 +514,9 @@ async fn page_views_are_counted_server_side_but_never_shown() {
 
     let body = body_text(harness.request("/counted/").await).await;
     harness.request("/counted/").await;
-    let totals = harness.repository.engagement_totals().await.unwrap();
-    assert_eq!(totals.get(&content.id).unwrap().views, 2);
+    // The counter is written after the page has been answered, on a task of
+    // its own, so the test waits for it the way no reader ever has to.
+    assert_eq!(views_recorded(&harness.repository, content.id, 2).await, 2);
     // The public page carries no counter of any kind ("view" alone would
     // trip on the viewport meta tag).
     assert!(!body.contains("views"));
@@ -532,8 +533,77 @@ async fn page_views_are_counted_server_side_but_never_shown() {
         .oneshot(request)
         .await
         .unwrap();
+    tokio::task::yield_now().await;
     let totals = harness.repository.engagement_totals().await.unwrap();
     assert_eq!(totals.get(&content.id).unwrap().views, 2);
+}
+
+#[tokio::test]
+async fn a_save_never_fails_because_readers_are_arriving() {
+    let harness = Harness::new().await;
+    let now = Utc::now() - Duration::seconds(1);
+    let first = harness
+        .service
+        .create(
+            draft("Busy", "busy", Publication::Public { publish_at: now }),
+            SaveIntent::Explicit,
+            now,
+        )
+        .await
+        .unwrap();
+
+    // Views are written off the response path, so they land while the writer
+    // is saving. A write transaction that only discovers the contention when
+    // it tries to commit fails with "database is locked"; one that takes the
+    // write lock up front simply waits its turn.
+    let mut views = Vec::new();
+    for _ in 0..40 {
+        let repository = harness.repository.clone();
+        let id = first.id;
+        views.push(tokio::spawn(
+            async move { repository.record_view(id).await },
+        ));
+    }
+    for index in 0..8 {
+        harness
+            .service
+            .create(
+                draft(
+                    &format!("Meanwhile {index}"),
+                    &format!("meanwhile-{index}"),
+                    Publication::Public { publish_at: now },
+                ),
+                SaveIntent::Explicit,
+                now,
+            )
+            .await
+            .expect("a save must not fail while views are recorded");
+    }
+    for view in views {
+        view.await
+            .unwrap()
+            .expect("a view record must not fail while saves happen");
+    }
+    assert_eq!(views_recorded(&harness.repository, first.id, 40).await, 40);
+}
+
+/// Waits for background view writes to land, bounded so a lost write fails
+/// the test instead of hanging it.
+async fn views_recorded(repository: &SqliteRepository, id: ContentId, expected: u64) -> u64 {
+    let mut views = 0;
+    for _ in 0..500 {
+        views = repository
+            .engagement_totals()
+            .await
+            .unwrap()
+            .get(&id)
+            .map_or(0, |totals| totals.views);
+        if views >= expected {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+    views
 }
 
 #[tokio::test]

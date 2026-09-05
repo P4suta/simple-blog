@@ -27,10 +27,11 @@ use crate::{
     },
     domain::media::{MediaAsset, MediaId, MediaVariant},
     domain::search::{self, SearchTerms},
-    domain::theme::{Locale, NavigationItem, SiteSettings},
+    domain::theme::{Locale, NavigationItem, SettingsRevision, SiteSettings},
     portable::{
         PortableContent, PortableEngagement, PortableOwner, PortablePasskey,
-        PortablePublicationState, PortableRecoveryCode, PortableRedirect, PortableSiteV1,
+        PortablePublicationState, PortableRecoveryCode, PortableRedirect, PortableSettingsRevision,
+        PortableSiteV1,
     },
 };
 use uuid::Uuid;
@@ -153,7 +154,7 @@ impl AuthRepository for SqliteRepository {
         replacement: &SessionRecord,
         now: DateTime<Utc>,
     ) -> Result<bool, AuthError> {
-        let mut transaction = self.pool.begin().await.map_err(auth_storage)?;
+        let mut transaction = self.write_transaction().await.map_err(auth_storage)?;
         let result = sqlx::query("DELETE FROM sessions WHERE token_hash = ? AND expires_at > ?")
             .bind(old_token_hash.as_bytes().as_slice())
             .bind(now)
@@ -196,7 +197,7 @@ impl AuthRepository for SqliteRepository {
         code_hashes: &[SecretHash],
         now: DateTime<Utc>,
     ) -> Result<(), AuthError> {
-        let mut transaction = self.pool.begin().await.map_err(auth_storage)?;
+        let mut transaction = self.write_transaction().await.map_err(auth_storage)?;
         sqlx::query("DELETE FROM recovery_codes")
             .execute(&mut *transaction)
             .await
@@ -236,7 +237,7 @@ impl AuthRepository for SqliteRepository {
         session: &SessionRecord,
         now: DateTime<Utc>,
     ) -> Result<bool, AuthError> {
-        let mut transaction = self.pool.begin().await.map_err(auth_storage)?;
+        let mut transaction = self.write_transaction().await.map_err(auth_storage)?;
         let consumed = sqlx::query(
             "UPDATE recovery_codes SET consumed_at = ?
              WHERE code_hash = ? AND consumed_at IS NULL",
@@ -322,7 +323,7 @@ impl PasskeyRepository for SqliteRepository {
             recovery_code_hashes,
             now,
         } = registration;
-        let mut transaction = self.pool.begin().await.map_err(auth_storage)?;
+        let mut transaction = self.write_transaction().await.map_err(auth_storage)?;
         let consumed = sqlx::query(
             "UPDATE setup_tokens SET consumed_at = ?
              WHERE token_hash = ? AND purpose = ? AND consumed_at IS NULL AND expires_at >= ?",
@@ -408,7 +409,7 @@ impl PasskeyRepository for SqliteRepository {
         session: &SessionRecord,
         now: DateTime<Utc>,
     ) -> Result<bool, AuthError> {
-        let mut transaction = self.pool.begin().await.map_err(auth_storage)?;
+        let mut transaction = self.write_transaction().await.map_err(auth_storage)?;
         let updated = sqlx::query(
             "UPDATE passkeys SET passkey_json = ?, last_used_at = ? WHERE credential_id = ?",
         )
@@ -536,7 +537,7 @@ impl SqliteRepository {
         if rows.is_empty() {
             return Ok(());
         }
-        let mut transaction = self.pool.begin().await.map_err(storage)?;
+        let mut transaction = self.write_transaction().await.map_err(storage)?;
         for row in rows {
             let id: i64 = row.try_get("id").map_err(storage)?;
             let title: String = row.try_get("title").map_err(storage)?;
@@ -555,6 +556,16 @@ impl SqliteRepository {
     #[must_use]
     pub const fn pool(&self) -> &SqlitePool {
         &self.pool
+    }
+
+    /// Every transaction that writes takes the write lock as it begins. A
+    /// deferred `BEGIN` that reads first and writes later cannot wait for a
+    /// concurrent commit under WAL: it fails at once with "database is
+    /// locked" (`SQLITE_BUSY_SNAPSHOT`), which `busy_timeout` never retries.
+    /// `BEGIN IMMEDIATE` queues behind the other writer instead, so a save
+    /// never fails merely because a reader's view was being counted.
+    async fn write_transaction(&self) -> Result<Transaction<'static, Sqlite>, sqlx::Error> {
+        self.pool.begin_with("BEGIN IMMEDIATE").await
     }
 
     pub async fn close(&self) {
@@ -618,7 +629,7 @@ impl ContentRepository for SqliteRepository {
         intent: SaveIntent,
         now: DateTime<Utc>,
     ) -> Result<Content, RepositoryError> {
-        let mut transaction = self.pool.begin().await.map_err(storage)?;
+        let mut transaction = self.write_transaction().await.map_err(storage)?;
         ensure_slug_available(&mut transaction, &prepared.draft.slug, None).await?;
         let (status, publish_at) = publication_columns(&prepared.draft.publication);
         let result = sqlx::query(
@@ -666,7 +677,7 @@ impl ContentRepository for SqliteRepository {
         intent: SaveIntent,
         now: DateTime<Utc>,
     ) -> Result<Content, RepositoryError> {
-        let mut transaction = self.pool.begin().await.map_err(storage)?;
+        let mut transaction = self.write_transaction().await.map_err(storage)?;
         let UpdateTarget {
             old_slug,
             created_at,
@@ -963,7 +974,7 @@ impl ContentRepository for SqliteRepository {
         expected_version: i64,
         now: DateTime<Utc>,
     ) -> Result<Content, RepositoryError> {
-        let mut transaction = self.pool.begin().await.map_err(storage)?;
+        let mut transaction = self.write_transaction().await.map_err(storage)?;
         let current = load_content_in(&mut transaction, id)
             .await?
             .ok_or(RepositoryError::NotFound)?;
@@ -1009,7 +1020,7 @@ impl ContentRepository for SqliteRepository {
         id: ContentId,
         now: DateTime<Utc>,
     ) -> Result<Content, RepositoryError> {
-        let mut transaction = self.pool.begin().await.map_err(storage)?;
+        let mut transaction = self.write_transaction().await.map_err(storage)?;
         let current = load_content_in(&mut transaction, id)
             .await?
             .ok_or(RepositoryError::NotFound)?;
@@ -1057,7 +1068,7 @@ impl ContentRepository for SqliteRepository {
     }
 
     async fn delete_permanently(&self, id: ContentId) -> Result<(), RepositoryError> {
-        let mut transaction = self.pool.begin().await.map_err(storage)?;
+        let mut transaction = self.write_transaction().await.map_err(storage)?;
         let result = sqlx::query("DELETE FROM contents WHERE id = ? AND deleted_at IS NOT NULL")
             .bind(id.as_i64())
             .execute(&mut *transaction)
@@ -1467,7 +1478,7 @@ impl SiteRepository for SqliteRepository {
         content_id: ContentId,
         now: DateTime<Utc>,
     ) -> Result<(), RepositoryError> {
-        let mut transaction = self.pool.begin().await.map_err(storage)?;
+        let mut transaction = self.write_transaction().await.map_err(storage)?;
         let exists: Option<i64> = sqlx::query_scalar("SELECT id FROM contents WHERE id = ?")
             .bind(content_id.as_i64())
             .fetch_optional(&mut *transaction)
@@ -1494,7 +1505,7 @@ impl SiteRepository for SqliteRepository {
         old_slug: &Slug,
         now: DateTime<Utc>,
     ) -> Result<bool, RepositoryError> {
-        let mut transaction = self.pool.begin().await.map_err(storage)?;
+        let mut transaction = self.write_transaction().await.map_err(storage)?;
         let result = sqlx::query("DELETE FROM redirects WHERE old_slug = ?")
             .bind(old_slug.as_str())
             .execute(&mut *transaction)
@@ -1544,7 +1555,8 @@ impl SiteRepository for SqliteRepository {
         navigation: &[NavigationItem],
         now: DateTime<Utc>,
     ) -> Result<(), RepositoryError> {
-        let mut transaction = self.pool.begin().await.map_err(storage)?;
+        let mut transaction = self.write_transaction().await.map_err(storage)?;
+        keep_first_settings_state(&mut transaction, now).await?;
         sqlx::query(
             "UPDATE site_settings SET
                 site_title = ?, site_description = ?, locale = ?, logo_media_id = ?,
@@ -1582,10 +1594,128 @@ impl SiteRepository for SqliteRepository {
             .await
             .map_err(storage)?;
         }
+        keep_settings_state(&mut transaction, settings, navigation, now).await?;
         refresh_publication_state(&mut transaction, now, true).await?;
         transaction.commit().await.map_err(storage)?;
         Ok(())
     }
+
+    async fn list_settings_revisions(&self) -> Result<Vec<SettingsRevision>, RepositoryError> {
+        let rows = sqlx::query(
+            "SELECT id, settings_json, navigation_json, created_at
+             FROM site_settings_revisions ORDER BY id DESC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage)?;
+        rows.iter().map(settings_revision_from_row).collect()
+    }
+
+    async fn find_settings_revision(
+        &self,
+        id: i64,
+    ) -> Result<Option<SettingsRevision>, RepositoryError> {
+        let row = sqlx::query(
+            "SELECT id, settings_json, navigation_json, created_at
+             FROM site_settings_revisions WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(storage)?;
+        row.as_ref().map(settings_revision_from_row).transpose()
+    }
+}
+
+/// How many autosave revisions a piece keeps (explicit saves are never
+/// pruned), and how many states of the settings are kept. `doctor` reports
+/// both.
+pub const AUTOSAVE_REVISIONS_KEPT: i64 = 50;
+pub const SETTINGS_REVISIONS_KEPT: i64 = 50;
+
+/// Before the very first recorded save, the state about to be replaced is
+/// kept too, so even the first edit after an upgrade can be undone.
+async fn keep_first_settings_state(
+    transaction: &mut Transaction<'_, Sqlite>,
+    now: DateTime<Utc>,
+) -> Result<(), RepositoryError> {
+    let kept: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM site_settings_revisions")
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(storage)?;
+    if kept > 0 {
+        return Ok(());
+    }
+    let settings = snapshot_settings(transaction).await?;
+    let navigation = snapshot_navigation(transaction).await?;
+    insert_settings_revision(transaction, &settings, &navigation, now).await
+}
+
+/// Records the state a save wrote, unless it is the newest state already,
+/// and forgets everything older than the newest fifty.
+async fn keep_settings_state(
+    transaction: &mut Transaction<'_, Sqlite>,
+    settings: &SiteSettings,
+    navigation: &[NavigationItem],
+    now: DateTime<Utc>,
+) -> Result<(), RepositoryError> {
+    let newest: Option<(String, String)> = sqlx::query_as(
+        "SELECT settings_json, navigation_json FROM site_settings_revisions
+         ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(storage)?;
+    let settings_json = serde_json::to_string(settings).map_err(storage)?;
+    let navigation_json = serde_json::to_string(navigation).map_err(storage)?;
+    if newest.is_some_and(|(kept_settings, kept_navigation)| {
+        kept_settings == settings_json && kept_navigation == navigation_json
+    }) {
+        return Ok(());
+    }
+    insert_settings_revision(transaction, settings, navigation, now).await?;
+    sqlx::query(
+        "DELETE FROM site_settings_revisions WHERE id NOT IN (
+            SELECT id FROM site_settings_revisions ORDER BY id DESC LIMIT ?
+         )",
+    )
+    .bind(SETTINGS_REVISIONS_KEPT)
+    .execute(&mut **transaction)
+    .await
+    .map_err(storage)?;
+    Ok(())
+}
+
+async fn insert_settings_revision(
+    transaction: &mut Transaction<'_, Sqlite>,
+    settings: &SiteSettings,
+    navigation: &[NavigationItem],
+    created_at: DateTime<Utc>,
+) -> Result<(), RepositoryError> {
+    sqlx::query(
+        "INSERT INTO site_settings_revisions (settings_json, navigation_json, created_at)
+         VALUES (?, ?, ?)",
+    )
+    .bind(serde_json::to_string(settings).map_err(storage)?)
+    .bind(serde_json::to_string(navigation).map_err(storage)?)
+    .bind(created_at)
+    .execute(&mut **transaction)
+    .await
+    .map_err(storage)?;
+    Ok(())
+}
+
+fn settings_revision_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<SettingsRevision, RepositoryError> {
+    let settings: String = row.try_get("settings_json").map_err(storage)?;
+    let navigation: String = row.try_get("navigation_json").map_err(storage)?;
+    Ok(SettingsRevision {
+        id: row.try_get("id").map_err(storage)?,
+        settings: serde_json::from_str(&settings).map_err(storage)?,
+        navigation: serde_json::from_str(&navigation).map_err(storage)?,
+        created_at: row.try_get("created_at").map_err(storage)?,
+    })
 }
 
 #[async_trait]
@@ -1603,7 +1733,7 @@ impl PublicSnapshotRepository for SqliteRepository {
 
     #[tracing::instrument(name = "publication.clock.advance", skip_all, fields(now = %now))]
     async fn advance_publication_clock(&self, now: DateTime<Utc>) -> Result<bool, RepositoryError> {
-        let mut transaction = self.pool.begin().await.map_err(storage)?;
+        let mut transaction = self.write_transaction().await.map_err(storage)?;
         let next: Option<DateTime<Utc>> =
             sqlx::query_scalar("SELECT next_publish_at FROM publication_state WHERE singleton = 1")
                 .fetch_one(&mut *transaction)
@@ -1688,8 +1818,10 @@ impl PortableRepository for SqliteRepository {
         let engagement = portable_engagement(&mut transaction).await?;
         let owner = portable_owner(&mut transaction).await?;
         let publication = portable_publication(&mut transaction).await?;
+        let settings_revisions = portable_settings_revisions(&mut transaction).await?;
         transaction.commit().await.map_err(storage)?;
         let site = PortableSiteV1 {
+            settings_revisions,
             format_version: crate::portable::PORTABLE_SITE_FORMAT_VERSION,
             exported_at,
             canonical_origin: canonical_origin.to_owned(),
@@ -1735,10 +1867,11 @@ impl PortableRepository for SqliteRepository {
     ) -> Result<(), RepositoryError> {
         site.validate()
             .map_err(|error| RepositoryError::Validation(error.to_string()))?;
-        let mut transaction = self.pool.begin().await.map_err(storage)?;
+        let mut transaction = self.write_transaction().await.map_err(storage)?;
         clear_portable_state(&mut transaction).await?;
         insert_portable_media(&mut transaction, &site.media).await?;
         insert_portable_settings(&mut transaction, site).await?;
+        insert_portable_settings_revisions(&mut transaction, &site.settings_revisions).await?;
         insert_portable_contents(&mut transaction, &site.contents, markdown).await?;
         insert_portable_redirects(&mut transaction, &site.redirects).await?;
         insert_portable_engagement(&mut transaction, &site.engagement).await?;
@@ -1951,6 +2084,7 @@ async fn clear_portable_state(
         "DELETE FROM tags",
         "DELETE FROM contents",
         "DELETE FROM navigation",
+        "DELETE FROM site_settings_revisions",
         "UPDATE site_settings SET logo_media_id = NULL, favicon_media_id = NULL WHERE singleton = 1",
         "DELETE FROM media_variants",
         "DELETE FROM media",
@@ -2042,6 +2176,44 @@ async fn insert_portable_settings(
         .execute(&mut **transaction)
         .await
         .map_err(storage)?;
+    }
+    Ok(())
+}
+
+async fn portable_settings_revisions(
+    transaction: &mut Transaction<'_, Sqlite>,
+) -> Result<Vec<PortableSettingsRevision>, RepositoryError> {
+    let rows = sqlx::query(
+        "SELECT id, settings_json, navigation_json, created_at
+         FROM site_settings_revisions ORDER BY id",
+    )
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(storage)?;
+    rows.iter()
+        .map(|row| {
+            let revision = settings_revision_from_row(row)?;
+            Ok(PortableSettingsRevision {
+                settings: revision.settings,
+                navigation: revision.navigation,
+                created_at: revision.created_at,
+            })
+        })
+        .collect()
+}
+
+async fn insert_portable_settings_revisions(
+    transaction: &mut Transaction<'_, Sqlite>,
+    revisions: &[PortableSettingsRevision],
+) -> Result<(), RepositoryError> {
+    for revision in revisions {
+        insert_settings_revision(
+            transaction,
+            &revision.settings,
+            &revision.navigation,
+            revision.created_at,
+        )
+        .await?;
     }
     Ok(())
 }
@@ -2288,6 +2460,21 @@ impl RevisionMediaReferences for SqliteRepository {
                 }
             }
         }
+        // A kept state of the settings may name a logo or favicon the current
+        // settings no longer do; restoring it must not bring back a broken
+        // image, so those stay alive for as long as the state is kept.
+        let theme_images: Vec<(Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT json_extract(settings_json, '$.logo_media_id'),
+                    json_extract(settings_json, '$.favicon_media_id')
+             FROM site_settings_revisions",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage)?;
+        for (logo, favicon) in theme_images {
+            referenced.extend(logo);
+            referenced.extend(favicon);
+        }
         Ok(referenced)
     }
 }
@@ -2295,7 +2482,7 @@ impl RevisionMediaReferences for SqliteRepository {
 #[async_trait]
 impl MediaRepository for SqliteRepository {
     async fn save_media(&self, media: &MediaAsset) -> Result<MediaAsset, MediaRepositoryError> {
-        let mut transaction = self.pool.begin().await.map_err(media_storage)?;
+        let mut transaction = self.write_transaction().await.map_err(media_storage)?;
         sqlx::query(
             "INSERT INTO media (
                 id, original_name, mime_type, extension, width, height, byte_size,
@@ -2369,7 +2556,7 @@ impl MediaRepository for SqliteRepository {
     }
 
     async fn delete_media(&self, id: &MediaId) -> Result<(), MediaRepositoryError> {
-        let mut transaction = self.pool.begin().await.map_err(media_storage)?;
+        let mut transaction = self.write_transaction().await.map_err(media_storage)?;
         sqlx::query("DELETE FROM media_variants WHERE media_id = ?")
             .bind(id.as_str())
             .execute(&mut *transaction)
@@ -2389,7 +2576,7 @@ impl MediaRepository for SqliteRepository {
         alt_text: &str,
         now: DateTime<Utc>,
     ) -> Result<bool, MediaRepositoryError> {
-        let mut transaction = self.pool.begin().await.map_err(media_storage)?;
+        let mut transaction = self.write_transaction().await.map_err(media_storage)?;
         let result = sqlx::query("UPDATE media SET alt_text = ? WHERE id = ?")
             .bind(alt_text)
             .bind(id.as_str())
@@ -2404,28 +2591,6 @@ impl MediaRepository for SqliteRepository {
             .map_err(media_storage)?;
         transaction.commit().await.map_err(media_storage)?;
         Ok(true)
-    }
-
-    async fn mime_type_for_filename(
-        &self,
-        filename: &str,
-    ) -> Result<Option<String>, MediaRepositoryError> {
-        let original: Option<String> =
-            sqlx::query_scalar("SELECT mime_type FROM media WHERE id || '.' || extension = ?")
-                .bind(filename)
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(media_storage)?;
-        if original.is_some() {
-            return Ok(original);
-        }
-        let variant: Option<String> =
-            sqlx::query_scalar("SELECT media_id FROM media_variants WHERE filename = ?")
-                .bind(filename)
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(media_storage)?;
-        Ok(variant.map(|_| "image/webp".to_owned()))
     }
 
     async fn list_media(&self) -> Result<Vec<MediaAsset>, MediaRepositoryError> {
@@ -2856,11 +3021,12 @@ async fn prune_autosaves(
          WHERE content_id = ? AND intent = 'autosave' AND id NOT IN (
             SELECT id FROM revisions
             WHERE content_id = ? AND intent = 'autosave'
-            ORDER BY created_at DESC, id DESC LIMIT 50
+            ORDER BY created_at DESC, id DESC LIMIT ?
          )",
     )
     .bind(content_id.as_i64())
     .bind(content_id.as_i64())
+    .bind(AUTOSAVE_REVISIONS_KEPT)
     .execute(&mut **transaction)
     .await
     .map_err(storage)?;

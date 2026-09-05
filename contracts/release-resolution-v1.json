@@ -40,6 +40,8 @@
       "kind": "asset",
       "status": 200,
       "object_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "content_type": "text/html; charset=utf-8",
+      "cache_control": "public, max-age=0, must-revalidate",
       "fallback": false
     },
     {
@@ -53,6 +55,8 @@
       "kind": "asset",
       "status": 404,
       "object_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "content_type": "text/html; charset=utf-8",
+      "cache_control": "public, max-age=0, must-revalidate",
       "fallback": true
     }
   ]

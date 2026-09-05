@@ -40,6 +40,29 @@ pub fn media_id_from_path(path: &str) -> Option<MediaId> {
     MediaId::parse(rest.get(..64)?).ok()
 }
 
+/// The media type a public `/media/<filename>` is served as.
+///
+/// Decided from the name alone so a reader's request never asks the
+/// database. Only the two shapes the media store writes are recognised:
+/// `<digest>.<extension>` for an original and `<digest>-<width>w.webp` for a
+/// responsive variant.
+#[must_use]
+pub fn mime_for_media_filename(filename: &str) -> Option<&'static str> {
+    let (id, rest) = filename.split_at_checked(64)?;
+    MediaId::parse(id).ok()?;
+    if let Some(extension) = rest.strip_prefix('.') {
+        return match extension {
+            "webp" => Some("image/webp"),
+            "png" => Some("image/png"),
+            "jpeg" | "jpg" => Some("image/jpeg"),
+            "gif" => Some("image/gif"),
+            _ => None,
+        };
+    }
+    let width = rest.strip_prefix('-')?.strip_suffix("w.webp")?;
+    (!width.is_empty() && width.bytes().all(|byte| byte.is_ascii_digit())).then_some("image/webp")
+}
+
 impl fmt::Display for MediaId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.0)
@@ -105,5 +128,39 @@ mod tests {
         assert!(media_id_from_path(&format!("/media/{}", "B".repeat(64))).is_none());
         assert!(media_id_from_path(&format!("/media/{}", "c".repeat(63))).is_none());
         assert!(media_id_from_path("/media/é").is_none());
+    }
+
+    #[test]
+    fn media_filenames_carry_their_own_media_type() {
+        let id = "a".repeat(64);
+        assert_eq!(
+            mime_for_media_filename(&format!("{id}.webp")),
+            Some("image/webp")
+        );
+        assert_eq!(
+            mime_for_media_filename(&format!("{id}.png")),
+            Some("image/png")
+        );
+        assert_eq!(
+            mime_for_media_filename(&format!("{id}.jpg")),
+            Some("image/jpeg")
+        );
+        assert_eq!(
+            mime_for_media_filename(&format!("{id}-480w.webp")),
+            Some("image/webp")
+        );
+        for rejected in [
+            format!("{id}.svg"),
+            format!("{id}-w.webp"),
+            format!("{id}-480w.png"),
+            format!("{id}-480x.webp"),
+            format!("{}.webp", "a".repeat(63)),
+            format!("{}.webp", "A".repeat(64)),
+            format!("{}é.webp", "a".repeat(63)),
+            ".upload-abc.tmp".into(),
+            id,
+        ] {
+            assert_eq!(mime_for_media_filename(&rejected), None, "{rejected}");
+        }
     }
 }

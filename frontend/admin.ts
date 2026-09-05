@@ -8,8 +8,8 @@ import {
   failureKey,
   formatLocalDateTime,
   formatLocalTime,
-  isoToLocalDateTime,
-  localDateTimeToIso,
+  isoToZonedDateTime,
+  zonedDateTimeToIso,
 } from "./editor-helpers";
 
 // Server stamps are UTC; readers of the dashboard live in their own zone.
@@ -25,7 +25,14 @@ import {
   postFormAsNavigation,
 } from "./form-navigation";
 import { type LocalDraft, createDraftStore, draftKey, shouldOfferRestore } from "./draft-store";
-import { type Edit, insertFence, togglePrefix, toggleWrap } from "./markdown-commands";
+import {
+  EDITOR_SHORTCUTS,
+  type Edit,
+  describeShortcut,
+  insertFence,
+  togglePrefix,
+  toggleWrap,
+} from "./markdown-commands";
 import { applySuggestion, suggestTags } from "./tag-suggest";
 
 // Word-wise cursor movement that actually understands 日本語. CodeMirror's
@@ -738,7 +745,7 @@ if (editor) {
   // Unpublish is a two-step <details>: opening it is the confirmation.
   const unpublishButton = editor.querySelector<HTMLDetailsElement>("[data-unpublish]");
   const publishAt = editor.querySelector<HTMLInputElement>("[data-publish-at]")!;
-  const publishAtHint = editor.querySelector<HTMLElement>("[data-publish-at-hint]");
+  const deviceZoneHint = editor.querySelector<HTMLElement>("[data-device-zone-hint]");
   const counter = editor.querySelector<HTMLElement>("[data-count]");
   const shortcuts = editor.querySelector<HTMLElement>("[data-shortcuts]");
   const focusToggle = editor.querySelector<HTMLButtonElement>("[data-focus-toggle]");
@@ -765,16 +772,19 @@ if (editor) {
   const language = document.documentElement.lang;
   const siteZone = editor.dataset.siteZone ?? "";
   const browserZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
-  // A scheduled instant in the writer's zone, and in the site's when they differ.
+  // A scheduled instant on the site's clock, and on the device's when the
+  // two differ, so a travelling writer sees both readings.
   const describeInstant = (iso: string): string => {
     const instant = new Date(iso);
-    let label = instant.toLocaleString(language || undefined);
-    if (siteZone && siteZone !== browserZone) {
-      try {
-        label += ` (${siteZone}: ${instant.toLocaleString(language || undefined, { timeZone: siteZone })})`;
-      } catch {
-        /* an unknown zone name: the writer's own reading is enough */
-      }
+    let label: string;
+    try {
+      label = instant.toLocaleString(language || undefined, siteZone ? { timeZone: siteZone } : undefined);
+    } catch {
+      /* an unknown zone name: the device's own reading is enough */
+      label = instant.toLocaleString(language || undefined);
+    }
+    if (siteZone && browserZone && siteZone !== browserZone) {
+      label += ` (${browserZone}: ${instant.toLocaleString(language || undefined)})`;
     }
     return label;
   };
@@ -791,9 +801,8 @@ if (editor) {
     statusPublic: editor.dataset.msgStatusPublic ?? "Public",
     publish: editor.dataset.msgPublish ?? "Publish",
     schedule: editor.dataset.msgSchedule ?? "Schedule",
-    publishAtHint: editor.dataset.msgPublishAtHint ?? "",
+    deviceZone: editor.dataset.msgDeviceZone ?? "This device keeps {zone} time; the time above is the site's.",
     count: editor.dataset.msgCount ?? "{chars} characters · {words} words",
-    shortcuts: editor.dataset.msgShortcuts ?? "",
     slugInvalid: editor.dataset.msgSlugInvalid ?? "The slug may only use lowercase letters, digits, and hyphens.",
     shareCopied: editor.dataset.msgShareCopied ?? "Copied",
     shareExpires: editor.dataset.msgShareExpires ?? "Valid until {time}",
@@ -807,17 +816,16 @@ if (editor) {
   let dirty = false;
   let pendingStatus: "public" | "draft" | undefined;
 
-  // The server stores UTC; the control shows the writer's own zone.
-  if (publishAt.dataset.publishAtUtc) {
-    publishAt.value = isoToLocalDateTime(publishAt.dataset.publishAtUtc);
-  }
+  // The control shows the site's clock, filled in by the server, and is
+  // labelled with the site's zone. Only when this device keeps another zone
+  // is the writer told which, so the two clocks are never confused.
   publishAt.dataset.initial = publishAt.value;
-  if (publishAtHint && msg.publishAtHint) {
-    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-    publishAtHint.textContent = msg.publishAtHint.replace("{zone}", zone);
+  if (deviceZoneHint && siteZone && browserZone && siteZone !== browserZone) {
+    deviceZoneHint.textContent = msg.deviceZone.replace("{zone}", browserZone);
+    deviceZoneHint.hidden = false;
   }
   const chosenInstantIsFuture = (): boolean => {
-    const iso = localDateTimeToIso(publishAt.value);
+    const iso = zonedDateTimeToIso(publishAt.value, siteZone);
     return iso !== null && new Date(iso).getTime() > Date.now();
   };
   const refreshPublishLabel = (): void => {
@@ -840,7 +848,7 @@ if (editor) {
     if (publishAtUtc) {
       statusTime.setAttribute("datetime", publishAtUtc);
       statusTime.textContent = describeInstant(publishAtUtc);
-      publishAt.value = isoToLocalDateTime(publishAtUtc);
+      publishAt.value = isoToZonedDateTime(publishAtUtc, siteZone);
       publishAt.dataset.publishAtUtc = publishAtUtc;
     } else {
       publishAt.dataset.publishAtUtc = "";
@@ -901,35 +909,38 @@ if (editor) {
   // that this pipeline never renders, and prose needs none of the rest.
   // markdownKeymap continues lists and quotes on Enter and removes an empty
   // marker on Backspace.
+  // What each binding does; the keys themselves come from the shared table
+  // so the help panel always describes exactly these. Save is bound on the
+  // document below, where it also works from the title and the drawer.
+  const commands: Partial<Record<string, (view: EditorView) => boolean>> = {
+    "editor.shortcut_link": insertLink,
+    "editor.shortcut_bold": wrapWith("**"),
+    "editor.shortcut_italic": wrapWith("*"),
+    "editor.shortcut_code": wrapWith("`"),
+    "editor.shortcut_quote": prefixWith("> "),
+    "editor.shortcut_list": prefixWith("- "),
+    "editor.shortcut_heading1": prefixWith("# "),
+    "editor.shortcut_heading2": prefixWith("## "),
+    "editor.shortcut_heading3": prefixWith("### "),
+    "editor.shortcut_fence": fence,
+    "editor.shortcut_preview": () => {
+      previewToggle.click();
+      return true;
+    },
+    "editor.shortcut_focus": () => {
+      focusToggle?.click();
+      return true;
+    },
+  };
   const codeEditor = new EditorView({
     doc: textarea.value,
     extensions: [
-      keymap.of([
-        { key: "Mod-k", run: insertLink },
-        { key: "Mod-b", run: wrapWith("**") },
-        { key: "Mod-i", run: wrapWith("*") },
-        { key: "Mod-`", run: wrapWith("`") },
-        { key: "Mod-Shift-q", run: prefixWith("> ") },
-        { key: "Mod-Shift-l", run: prefixWith("- ") },
-        { key: "Mod-Alt-1", run: prefixWith("# ") },
-        { key: "Mod-Alt-2", run: prefixWith("## ") },
-        { key: "Mod-Alt-3", run: prefixWith("### ") },
-        { key: "Mod-Alt-c", run: fence },
-        {
-          key: "Mod-Shift-p",
-          run: () => {
-            previewToggle.click();
-            return true;
-          },
-        },
-        {
-          key: "Mod-Shift-f",
-          run: () => {
-            focusToggle?.click();
-            return true;
-          },
-        },
-      ]),
+      keymap.of(
+        EDITOR_SHORTCUTS.flatMap((shortcut) => {
+          const run = commands[shortcut.labelKey];
+          return run ? [{ key: shortcut.key, run }] : [];
+        }),
+      ),
       keymap.of(markdownKeymap),
       segmentKeymap,
       minimalSetup,
@@ -966,10 +977,28 @@ if (editor) {
   };
   refreshCount();
 
-  if (shortcuts && msg.shortcuts) {
+  // Every binding, described in the site's language, from the same table
+  // the keymap is built from, so the help can never fall behind the keys.
+  if (shortcuts) {
     const platform = navigator.platform || navigator.userAgent;
     const mod = /Mac|iPhone|iPad/.test(platform) ? "⌘" : "Ctrl";
-    shortcuts.textContent = msg.shortcuts.replaceAll("{mod}", mod);
+    let labels: Record<string, string> = {};
+    try {
+      labels = JSON.parse(editor.dataset.shortcutLabels ?? "{}") as Record<string, string>;
+    } catch {
+      /* an unreadable label map: the keys are still listed */
+    }
+    const list = document.createElement("dl");
+    for (const shortcut of EDITOR_SHORTCUTS) {
+      const keys = document.createElement("dt");
+      const kbd = document.createElement("kbd");
+      kbd.textContent = describeShortcut(shortcut.key, mod);
+      keys.append(kbd);
+      const meaning = document.createElement("dd");
+      meaning.textContent = labels[shortcut.labelKey] ?? shortcut.labelKey;
+      list.append(keys, meaning);
+    }
+    shortcuts.querySelector("[data-shortcut-list]")?.replaceChildren(list);
     shortcuts.hidden = false;
   }
 
@@ -1128,11 +1157,11 @@ if (editor) {
     }
     parameters.set("intent", "autosave");
     if (slugAuto) parameters.set("slug", "");
-    // The control holds a local time; the server takes an instant. It is
-    // sent only when the writer changed it or is publishing, so an untouched
-    // date never re-dates a piece.
+    // The control holds the site's clock and the server reads it in the
+    // site's zone. It is sent only when the writer changed it or is
+    // publishing, so an untouched date never re-dates a piece.
     if (publishAt.value !== publishAt.dataset.initial || pendingStatus) {
-      parameters.set("publish_at", localDateTimeToIso(publishAt.value) ?? "");
+      parameters.set("publish_at", publishAt.value.trim());
     } else {
       parameters.delete("publish_at");
     }

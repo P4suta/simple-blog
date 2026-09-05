@@ -214,9 +214,17 @@ fn init_to_doctor_and_backup_works_with_only_the_release_binary_contract() {
         "release.active",
         "release.history",
         "release.temporary_files",
+        "limits.upload",
+        "limits.rate",
+        "limits.backups",
     ] {
         assert!(checks.iter().any(|check| check["name"] == expected));
     }
+    // The limits in force are part of the report, so an operator sees them
+    // before anyone runs into one.
+    assert!(report["limits"]["upload_bytes"].as_u64().unwrap() > 0);
+    assert_eq!(report["limits"]["backup_generations"], 14);
+    assert_eq!(report["limits"]["autosave_revisions_kept"], 50);
 
     let backup = binary()
         .args(["--data-dir", data.to_str().unwrap(), "backup"])

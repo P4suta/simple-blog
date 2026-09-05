@@ -32,7 +32,15 @@ required_public_files=(
   .github/rulesets/main.json
   .github/rulesets/release-tags.json
   .github/workflows/codeql.yml
+  docs/README.md
   docs/repository-governance.md
+  docs/vision.md
+  docs/diagnostics.md
+  docs/adr/README.md
+  contracts/README.md
+  contracts/diagnostics-v1.json
+  contracts/domain-registration-v1.json
+  contracts/release-resolution-v1.json
 )
 
 for path in "${required_public_files[@]}"; do
@@ -334,5 +342,47 @@ if ! awk '
 ' "${rust_sources[@]}"; then
   fail 'expect attributes require an explicit reason'
 fi
+
+# Every decision record is in the index, and every relative link in the
+# documentation leads somewhere: the vision, the records, the catalogue, and
+# the contracts refer to one another, and a reader must never hit a dead end.
+for record in docs/adr/[0-9]*.md; do
+  name="$(basename "$record")"
+  grep -Fq -- "](${name})" docs/adr/README.md \
+    || fail "docs/adr/README.md does not list $name"
+done
+while IFS= read -r document; do
+  while IFS= read -r target; do
+    path="${target%%#*}"
+    [[ -n "$path" ]] || continue
+    [[ -e "$(dirname "$document")/$path" ]] \
+      || fail "$document links to a missing file: $target"
+  done < <(grep -oE '\]\([^)[:space:]]+\)' "$document" \
+    | sed -E 's/^\]\((.*)\)$/\1/' \
+    | grep -Ev '^(https?:|mailto:|#)' || true)
+done < <(find . -name '*.md' \
+  -not -path './node_modules/*' -not -path './target/*' -not -path './.claude/*' \
+  -not -path '*/node_modules/*' -print)
+
+# Diagnostic codes are a compatibility contract: emitted only through the
+# named constants, listed in the contract, and explained in the catalogue.
+if grep -rEn 'error_code = "' src; then
+  fail 'error codes are named constants in src/observability.rs, not literals'
+fi
+diagnostics_contract=contracts/diagnostics-v1.json
+while IFS= read -r identifier; do
+  grep -Fq -- "\`$identifier\`" docs/diagnostics.md \
+    || fail "docs/diagnostics.md does not explain $identifier"
+done < <(jq -r '
+  .error_codes.native[].code,
+  .error_codes.cloudflare[].code,
+  .doctor_checks.native[],
+  .doctor_checks.cloudflare[],
+  .cloudflare_internal_api_errors[]
+' "$diagnostics_contract")
+while IFS= read -r code; do
+  grep -Fq -- "\"$code\"" adapters/cloudflare/src/doctor.ts \
+    || fail "the Cloudflare adapter does not emit $code"
+done < <(jq -r '.error_codes.cloudflare[].code' "$diagnostics_contract")
 
 printf 'repository policy: ok\n'

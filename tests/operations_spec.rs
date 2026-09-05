@@ -164,6 +164,207 @@ async fn export_writes_front_matter_markdown_and_plain_media_files() {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one story told in order: export, a fresh import, then forced imports both ways"
+)]
+async fn export_and_import_carry_the_trash() {
+    let source = tempfile::tempdir().unwrap();
+    let (config, repository) = seeded(&source).await;
+    let content = ContentService::new(
+        repository.clone(),
+        Arc::new(ComrakMarkdownRenderer::default()),
+    );
+    let discarded = content
+        .create(
+            ContentDraft {
+                kind: ContentKind::Page,
+                title: "Discarded".into(),
+                slug: Slug::parse("discarded").unwrap(),
+                summary: String::new(),
+                body_markdown: "Not yet.".into(),
+                tags: Vec::new(),
+                cover_media_id: None,
+                seo_title: None,
+                seo_description: None,
+                publication: Publication::Draft,
+            },
+            SaveIntent::Explicit,
+            Utc::now(),
+        )
+        .await
+        .unwrap();
+    content
+        .move_to_trash(discarded.id, discarded.version, Utc::now())
+        .await
+        .unwrap();
+
+    let output = source.path().join("with-trash");
+    Exporter::export(&config, repository.as_ref(), &output, Utc::now())
+        .await
+        .unwrap();
+    let exported = std::fs::read_to_string(output.join("trash/discarded.md"))
+        .expect("the trash travels in its own folder");
+    assert!(exported.contains("kind: page"));
+    assert!(!output.join("pages/discarded.md").exists());
+
+    let destination = tempfile::tempdir().unwrap();
+    let target_config = config_for(destination.path());
+    std::fs::create_dir_all(target_config.media_dir()).unwrap();
+    let target = Arc::new(
+        SqliteRepository::connect(&target_config.database_path())
+            .await
+            .unwrap(),
+    );
+    let report = Importer::import(&target_config, &target, &output, false, Utc::now())
+        .await
+        .unwrap();
+    assert!(
+        report.imported.contains(&"discarded".to_owned()),
+        "{report:?}"
+    );
+    let back = target
+        .list_all_content()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|piece| piece.slug.as_str() == "discarded")
+        .unwrap();
+    assert!(
+        back.is_trashed(),
+        "it comes back into the trash, not onto the site"
+    );
+    assert_eq!(back.kind, ContentKind::Page);
+
+    // A forced import decides by folder as well: the discarded piece was
+    // restored on the destination meanwhile, and a live piece was trashed
+    // there; the export puts each back where the source had it.
+    let target_content =
+        ContentService::new(target.clone(), Arc::new(ComrakMarkdownRenderer::default()));
+    target_content
+        .restore_from_trash(back.id, Utc::now())
+        .await
+        .unwrap();
+    let post = target
+        .list_all_content()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|piece| piece.slug.as_str() == "portable-post")
+        .unwrap();
+    target_content
+        .move_to_trash(post.id, post.version, Utc::now())
+        .await
+        .unwrap();
+    let forced = Importer::import(&target_config, &target, &output, true, Utc::now())
+        .await
+        .unwrap();
+    assert!(forced.skipped.is_empty(), "{:?}", forced.skipped);
+    let after = target.list_all_content().await.unwrap();
+    let discarded = after
+        .iter()
+        .find(|piece| piece.slug.as_str() == "discarded")
+        .unwrap();
+    let post = after
+        .iter()
+        .find(|piece| piece.slug.as_str() == "portable-post")
+        .unwrap();
+    assert!(
+        discarded.is_trashed(),
+        "a trash file keeps the piece in the trash"
+    );
+    assert!(!post.is_trashed(), "a live file brings the piece back");
+
+    // A trash file over a piece already in the trash is not an error either.
+    let once_more = Importer::import(&target_config, &target, &output, true, Utc::now())
+        .await
+        .unwrap();
+    assert!(once_more.skipped.is_empty(), "{:?}", once_more.skipped);
+    assert!(
+        target
+            .list_all_content()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|piece| piece.slug.as_str() == "discarded")
+            .unwrap()
+            .is_trashed()
+    );
+}
+
+#[tokio::test]
+async fn doctor_runs_exactly_the_checks_the_diagnostics_contract_lists() {
+    let source = tempfile::tempdir().unwrap();
+    let (config, repository) = seeded(&source).await;
+    let report = Doctor::inspect(&config, repository.as_ref()).await.unwrap();
+    let contract: serde_json::Value =
+        serde_json::from_str(include_str!("../contracts/diagnostics-v1.json")).unwrap();
+    let listed = contract["doctor_checks"]["native"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|name| name.as_str().unwrap())
+        .collect::<std::collections::BTreeSet<_>>();
+    let ran = report
+        .checks
+        .iter()
+        .map(|check| check.name)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(ran, listed, "the contract and doctor disagree");
+    assert_eq!(report.checks.len(), ran.len(), "a check reported twice");
+}
+
+#[tokio::test]
+async fn doctor_names_every_safety_limit_and_invents_no_quota() {
+    let source = tempfile::tempdir().unwrap();
+    let (config, repository) = seeded(&source).await;
+    let report = Doctor::inspect(&config, repository.as_ref()).await.unwrap();
+
+    assert_eq!(report.limits.upload_bytes, config.max_upload_bytes);
+    assert_eq!(report.limits.backup_generations, config.backup_retention);
+    assert_eq!(report.limits.markdown_bytes, 2 * 1024 * 1024);
+    assert_eq!(report.limits.autosave_revisions_kept, 50);
+    for name in [
+        "limits.upload",
+        "limits.text",
+        "limits.image",
+        "limits.theme",
+        "limits.search",
+        "limits.rate",
+        "limits.history",
+        "limits.backups",
+    ] {
+        let check = report
+            .checks
+            .iter()
+            .find(|check| check.name == name)
+            .unwrap_or_else(|| panic!("doctor is silent about {name}"));
+        assert_eq!(check.status, "ok", "{name}");
+    }
+    let upload = report
+        .checks
+        .iter()
+        .find(|check| check.name == "limits.upload")
+        .unwrap();
+    assert!(upload.detail.contains(&config.max_upload_bytes.to_string()));
+    assert!(
+        upload.detail.contains("max_upload_bytes"),
+        "a configurable limit says where it is changed"
+    );
+    // Every limit is a safety limit on one request or one piece; nothing
+    // caps how many pieces, how many bytes in total, or how many readers.
+    let limits = serde_json::to_value(report.limits).unwrap();
+    for key in limits.as_object().unwrap().keys() {
+        assert!(
+            !["quota", "traffic", "total", "pieces", "posts"]
+                .iter()
+                .any(|word| key.contains(word)),
+            "{key} reads like a quota"
+        );
+    }
+}
+
+#[tokio::test]
 async fn doctor_reports_missing_media_without_mutating_state() {
     let source = tempfile::tempdir().unwrap();
     let (config, repository) = seeded(&source).await;

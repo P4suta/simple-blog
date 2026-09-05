@@ -1,3 +1,7 @@
+//! The read-only doctor: every check the software can make of its own
+//! installation and every safety limit in force, each reported under a stable
+//! name.
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::OpenOptions,
@@ -10,9 +14,20 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use crate::{
-    application::ports::MediaRepository,
+    application::{
+        auth::{AUTHENTICATION_ATTEMPTS_PER_MINUTE, LIKES_PER_MINUTE},
+        content::{MAX_MARKDOWN_BYTES, MAX_SUMMARY_CHARS, MAX_TITLE_CHARS},
+        ports::MediaRepository,
+    },
     config::Config,
-    infrastructure::sqlite::{MIGRATOR, SqliteRepository},
+    domain::{
+        search::{MAX_QUERY_CHARS, MAX_TERMS},
+        theme::{MAX_CUSTOM_CSS_BYTES, MAX_NAVIGATION_ITEMS},
+    },
+    infrastructure::{
+        media::{MAX_PIXELS, MAX_WEBP_SIDE},
+        sqlite::{AUTOSAVE_REVISIONS_KEPT, MIGRATOR, SETTINGS_REVISIONS_KEPT, SqliteRepository},
+    },
     operations::{OperationError, checksum_file},
     release::{FilesystemReleaseStore, ReleaseId, ReleaseReader, ReleaseStore},
 };
@@ -24,13 +39,72 @@ pub struct DoctorCheck {
     pub detail: String,
 }
 
-#[derive(Debug, Default)]
+/// Every limit the software enforces to keep itself safe, in one place, so
+/// an operator can see them before anyone runs into one. None of them is a
+/// quota: there is no cap on pieces, on total bytes, or on traffic.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct SafetyLimits {
+    /// One upload, in bytes; `max_upload_bytes` in the configuration.
+    pub upload_bytes: usize,
+    pub markdown_bytes: usize,
+    pub title_chars: usize,
+    pub summary_chars: usize,
+    pub image_pixels: u64,
+    pub image_side_pixels: u32,
+    pub stylesheet_bytes: usize,
+    pub navigation_items: usize,
+    pub search_query_chars: usize,
+    pub search_terms: usize,
+    pub authentication_attempts_per_minute: usize,
+    pub likes_per_minute: usize,
+    pub autosave_revisions_kept: i64,
+    pub settings_revisions_kept: i64,
+    /// Scheduled backups kept; `backup_retention` in the configuration, where
+    /// zero switches the schedule off.
+    pub backup_generations: usize,
+}
+
+impl SafetyLimits {
+    #[must_use]
+    pub const fn for_config(config: &Config) -> Self {
+        Self {
+            upload_bytes: config.max_upload_bytes,
+            markdown_bytes: MAX_MARKDOWN_BYTES,
+            title_chars: MAX_TITLE_CHARS,
+            summary_chars: MAX_SUMMARY_CHARS,
+            image_pixels: MAX_PIXELS,
+            image_side_pixels: MAX_WEBP_SIDE,
+            stylesheet_bytes: MAX_CUSTOM_CSS_BYTES,
+            navigation_items: MAX_NAVIGATION_ITEMS,
+            search_query_chars: MAX_QUERY_CHARS,
+            search_terms: MAX_TERMS,
+            authentication_attempts_per_minute: AUTHENTICATION_ATTEMPTS_PER_MINUTE,
+            likes_per_minute: LIKES_PER_MINUTE,
+            autosave_revisions_kept: AUTOSAVE_REVISIONS_KEPT,
+            settings_revisions_kept: SETTINGS_REVISIONS_KEPT,
+            backup_generations: config.backup_retention,
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct DoctorReport {
     pub checks: Vec<DoctorCheck>,
     pub issues: Vec<String>,
+    /// The limits in force, so they can be seen without tripping over them.
+    pub limits: SafetyLimits,
 }
 
 impl DoctorReport {
+    #[must_use]
+    pub const fn new(limits: SafetyLimits) -> Self {
+        Self {
+            checks: Vec::new(),
+            issues: Vec::new(),
+            limits,
+        }
+    }
+
     #[must_use]
     pub const fn is_healthy(&self) -> bool {
         self.issues.is_empty()
@@ -63,7 +137,8 @@ impl Doctor {
         config: &Config,
         repository: &SqliteRepository,
     ) -> Result<DoctorReport, OperationError> {
-        let mut report = DoctorReport::default();
+        let mut report = DoctorReport::new(SafetyLimits::for_config(config));
+        check_limits(&mut report);
         check_quick_check(repository, &mut report).await;
         check_foreign_keys(repository, &mut report).await;
         check_runtime_pragmas(repository, &mut report).await;
@@ -77,6 +152,72 @@ impl Doctor {
         check_releases(config, &mut report).await;
         Ok(report)
     }
+}
+
+/// Every safety limit, spelled out as a passing check: the promise is that
+/// each one can be seen and explained, not only met head-on.
+fn check_limits(report: &mut DoctorReport) {
+    let limits = report.limits;
+    report.ok(
+        "limits.upload",
+        format!(
+            "{} byte(s) per upload (max_upload_bytes in config.toml)",
+            limits.upload_bytes
+        ),
+    );
+    report.ok(
+        "limits.text",
+        format!(
+            "{} byte(s) of Markdown, {} title and {} summary characters per piece",
+            limits.markdown_bytes, limits.title_chars, limits.summary_chars
+        ),
+    );
+    report.ok(
+        "limits.image",
+        format!(
+            "{} pixels and {} pixels per side per image",
+            limits.image_pixels, limits.image_side_pixels
+        ),
+    );
+    report.ok(
+        "limits.theme",
+        format!(
+            "{} byte(s) of stylesheet, {} navigation items",
+            limits.stylesheet_bytes, limits.navigation_items
+        ),
+    );
+    report.ok(
+        "limits.search",
+        format!(
+            "{} characters and {} terms per query",
+            limits.search_query_chars, limits.search_terms
+        ),
+    );
+    report.ok(
+        "limits.rate",
+        format!(
+            "{} authentication attempts and {} likes per minute per client",
+            limits.authentication_attempts_per_minute, limits.likes_per_minute
+        ),
+    );
+    report.ok(
+        "limits.history",
+        format!(
+            "{} autosave revisions per piece (explicit saves are never pruned), {} settings states",
+            limits.autosave_revisions_kept, limits.settings_revisions_kept
+        ),
+    );
+    report.ok(
+        "limits.backups",
+        if limits.backup_generations == 0 {
+            "scheduled backups are off (backup_retention = 0 in config.toml)".to_owned()
+        } else {
+            format!(
+                "{} scheduled backup(s) kept (backup_retention in config.toml)",
+                limits.backup_generations
+            )
+        },
+    );
 }
 
 async fn check_content_trash(repository: &SqliteRepository, report: &mut DoctorReport) {
