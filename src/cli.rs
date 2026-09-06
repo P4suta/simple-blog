@@ -20,13 +20,70 @@ use crate::{
     web::{AppState, router},
 };
 
+/// Shown by `--help` above the command list. Nothing reflows it: clap is built
+/// without `wrap_help`, so each line here is a line on the reader's terminal.
+const LONG_ABOUT: &str = "\
+A writing-focused, single-owner CMS: one binary, one database file, one
+data directory.
+
+Every command acts on one installation, chosen with --data-dir and
+defaulting to ./data. `init` prepares one, `serve` runs it, and the rest
+move, copy, inspect, and repair it.
+
+A setting resolves in one order: the command-line flag, then the matching
+SIMPLE_BLOG_ variable, then config.toml in the data directory, then the
+built-in default.";
+
+/// Shown by `--help` below the command list.
+const EPILOGUE: &str = "\
+Examples:
+  simple-blog init
+      Prepare ./data and print a one-time link for the owner passkey.
+
+  simple-blog serve
+      Run the site and the admin at the addresses it prints.
+
+  simple-blog import ./writing --force
+      Read a folder of Markdown in, replacing pieces at matching addresses.
+
+  simple-blog backup
+      Write one complete archive and print its path, ready for `restore`.
+
+  simple-blog migrate export --output site.simple-blog
+      Pack the whole site, with its history and passkeys, for another host.
+
+Exit codes:
+  0  the command succeeded
+  1  the command ran and failed; stderr says what failed and what to try
+  2  the command never ran: it could not be understood, or diagnostics
+     could not be started
+
+Environment:
+  SIMPLE_BLOG_DATA_DIR, SIMPLE_BLOG_BIND, SIMPLE_BLOG_PUBLIC_URL
+      The global flags by another name; a flag wins over a variable.
+  SIMPLE_BLOG_LOG_FORMAT=json
+      Write diagnostics to stderr as one JSON object per line.
+  RUST_LOG
+      The tracing filter. Defaults to simple_blog=info.";
+
 #[derive(Debug, Parser)]
-#[command(name = "simple-blog", version, about)]
+#[command(
+    name = "simple-blog",
+    version,
+    about,
+    long_about = LONG_ABOUT,
+    after_long_help = EPILOGUE
+)]
 pub struct Cli {
+    /// Act on the installation in this directory instead of ./data.
     #[arg(long, global = true, value_name = "DIRECTORY")]
     data_dir: Option<PathBuf>,
+    /// Listen on this address instead of 127.0.0.1:8080.
     #[arg(long, global = true, value_name = "ADDRESS")]
     bind: Option<String>,
+    /// Treat this origin as the site's public address.
+    ///
+    /// Canonical links, feeds, setup links and the passkey identity derive from it.
     #[arg(long, global = true, value_name = "URL")]
     public_url: Option<String>,
     #[command(subcommand)]
@@ -35,44 +92,91 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Prepare a new installation and print its setup link.
+    ///
+    /// Writes config.toml, the database, and the media, backup and release folders.
+    ///
+    /// The link registers the owner passkey and is valid for fifteen minutes.
+    ///
+    /// Running init again rewrites config.toml; a claimed site gets no new link.
     Init,
+    /// Publish a release now, without running the site.
+    ///
+    /// Compiles the site, verifies the release, and activates it as the visible one.
+    ///
+    /// Prints one JSON object describing the release, for a machine to read.
     Build {
+        /// Also write the visible release into this directory as plain files.
+        ///
+        /// The directory must not exist, so an existing site is never overwritten.
         #[arg(long, value_name = "DIRECTORY")]
         output: Option<PathBuf>,
     },
+    /// Run the site and the admin until interrupted.
+    ///
+    /// Prints the site and admin addresses, and a setup link while no owner exists.
+    ///
+    /// Publishes on schedule, and backs up ten minutes after start, then daily.
     Serve,
+    /// Write one complete backup archive.
+    ///
+    /// It holds the database, media, releases and settings, and `restore` reads it.
+    ///
+    /// Prints the archive's path and nothing else, so a script can capture it.
     Backup {
+        /// Write the archive here instead of in the installation's backups folder.
         #[arg(long, value_name = "ARCHIVE")]
         output: Option<PathBuf>,
     },
+    /// Replace an installation with the contents of a backup.
+    ///
+    /// An existing installation is refused unless --force is given.
     Restore {
+        /// The backup archive to read.
         archive: PathBuf,
+        /// Replace the existing installation instead of refusing to touch it.
         #[arg(long)]
         force: bool,
     },
+    /// Write the site's Markdown and media out as plain files.
+    ///
+    /// Produces posts/, pages/ and media/, which import reads back.
+    ///
+    /// Prints the directory's path and nothing else.
     Export {
+        /// Write the export into this directory instead of a dated one here.
         #[arg(long, value_name = "DIRECTORY")]
         output: Option<PathBuf>,
     },
-    /// Reads Markdown files (an `export` directory, or plain files under
-    /// posts/ and pages/) into this site.
+    /// Read Markdown files into this site.
+    ///
+    /// Accepts an export directory, or any folder of plain .md files.
+    ///
+    /// A file without front matter is titled from its first heading.
+    ///
+    /// Publishes afterwards, so imported pieces are visible immediately.
     Import {
+        /// The directory to read.
         directory: PathBuf,
         /// Replace pieces whose slug already exists instead of skipping them.
         #[arg(long)]
         force: bool,
     },
+    /// Move a whole site between conforming hosts.
     Migrate {
         #[command(subcommand)]
         command: MigrateCommand,
     },
+    /// Check the installation and report what it finds.
     Doctor {
+        /// Print the report as one JSON object instead of a list of checks.
         #[arg(long)]
         json: bool,
         /// Explicitly create, synchronize and remove filesystem probe files.
         #[arg(long)]
         probe_writes: bool,
     },
+    /// Recover ownership of an installation.
     Owner {
         #[command(subcommand)]
         command: OwnerCommand,
@@ -81,17 +185,33 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum OwnerCommand {
+    /// Print a fresh link for registering a replacement owner passkey.
+    ///
+    /// The link is a short-lived secret and is never written to a trace.
     Recover,
 }
 
 #[derive(Debug, Subcommand)]
 enum MigrateCommand {
+    /// Pack the entire site into one .simple-blog archive.
+    ///
+    /// Carries history, redirects, settings, media, trash and passkeys.
+    ///
+    /// Prints one JSON object describing the archive.
     Export {
+        /// Write the archive to this path instead of a dated one here.
         #[arg(long, value_name = "ARCHIVE")]
         output: Option<PathBuf>,
     },
+    /// Unpack a .simple-blog archive into this data directory.
+    ///
+    /// A fresh destination adopts the archive's origin, so addresses survive.
+    ///
+    /// Prints one JSON object describing the imported site.
     Import {
+        /// The archive to read.
         archive: PathBuf,
+        /// Replace the installation, keeping the previous data for recovery.
         #[arg(long)]
         force: bool,
     },
@@ -120,7 +240,11 @@ impl Cli {
                 RestoreService::restore(&archive, &data_dir, force)
                     .await
                     .with_context(|| format!("could not restore {}", archive.display()))?;
-                println!("restored {}", data_dir.display());
+                println!(
+                    "Restored {} from {}.",
+                    data_dir.display(),
+                    archive.display()
+                );
                 Ok(())
             }
             Command::Export { output } => export(overrides, output).await,
@@ -194,7 +318,10 @@ async fn init(overrides: Overrides) -> Result<()> {
         .context("could not inspect owner state")?
         .is_some()
     {
-        println!("initialized {}", config.data_dir.display());
+        println!(
+            "Initialized {}. An owner passkey is already registered.",
+            config.data_dir.display()
+        );
         return Ok(());
     }
     let token = AuthService::new(repository, Arc::new(SystemEntropy))
@@ -354,7 +481,7 @@ async fn import(overrides: Overrides, directory: PathBuf, force: bool) -> Result
         .await
         .with_context(|| format!("could not import {}", directory.display()))?;
     println!(
-        "imported {} piece(s), {} media file(s)",
+        "Imported {} piece(s) and {} media file(s).",
         report.imported.len(),
         report.media
     );
@@ -362,7 +489,7 @@ async fn import(overrides: Overrides, directory: PathBuf, force: bool) -> Result
         println!("  /{slug}/");
     }
     if !report.skipped.is_empty() {
-        println!("skipped {}:", report.skipped.len());
+        println!("Skipped {} file(s):", report.skipped.len());
         for (file, reason) in &report.skipped {
             println!("  {file}: {reason}");
         }
@@ -499,12 +626,13 @@ async fn owner_recover(overrides: Overrides) -> Result<()> {
         .context("could not inspect owner state")?
         .is_none()
     {
-        bail!("owner has not completed initial setup")
+        bail!("cannot recover an installation that has no owner passkey yet")
     }
     let token = AuthService::new(repository, Arc::new(SystemEntropy))
         .issue_setup_token(SetupPurpose::Recovery, Utc::now())
         .await
         .context("could not issue recovery token")?;
+    println!("Open this link within 15 minutes to register a replacement owner passkey:");
     println!("{}", setup_url(&config.public_url, token.expose())?);
     Ok(())
 }

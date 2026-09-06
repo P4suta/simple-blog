@@ -342,4 +342,205 @@ if ! awk '
   fail 'expect attributes require an explicit reason'
 fi
 
+# The terminal is the first thing an operator meets. A subcommand or an
+# argument without a doc comment is a blank column in `--help`.
+[[ -s src/cli.rs ]] \
+  || fail 'src/cli.rs is missing; the command-line help policy cannot be evaluated'
+
+inspected_cli_items="$(awk '
+  /^[[:space:]]*\/\/\// { documented = 1; next }
+  /^enum (Command|MigrateCommand|OwnerCommand) \{$/ {
+    in_enum = 1
+    documented = 0
+    next
+  }
+  in_enum && /^\}$/ { in_enum = 0; documented = 0; next }
+  /^[[:space:]]*#\[command\(subcommand\)\]$/ { attributed = 1; documented = 0; next }
+  /^[[:space:]]*#\[arg\(/ {
+    inspected++
+    if (!documented) {
+      print FILENAME ":" FNR ": argument has no help text" > "/dev/stderr"
+      failed = 1
+    }
+    attributed = 1
+    documented = 0
+    next
+  }
+  in_enum && /^    [A-Z][A-Za-z0-9]*( \{|,)$/ {
+    inspected++
+    if (!documented) {
+      print FILENAME ":" FNR ": subcommand has no help text" > "/dev/stderr"
+      failed = 1
+    }
+    attributed = 0
+    documented = 0
+    next
+  }
+  in_enum && /^        [a-z_][a-z_0-9]*:/ {
+    if (!attributed) {
+      inspected++
+      if (!documented) {
+        print FILENAME ":" FNR ": positional argument has no help text" > "/dev/stderr"
+        failed = 1
+      }
+    }
+    attributed = 0
+    documented = 0
+    next
+  }
+  # Only a line of real code separates a doc comment from what it documents;
+  # a blank line between them does not, in Rust or here.
+  /[^[:space:]]/ { attributed = 0; documented = 0 }
+  END { print inspected + 0; exit failed }
+' src/cli.rs)" \
+  || fail 'every subcommand and argument in src/cli.rs must carry help text a writer can read'
+
+# A scan that matches nothing reports success. This floor makes a rename or a
+# reindentation of src/cli.rs fail loudly instead of silently.
+[[ "$inspected_cli_items" -ge 24 ]] \
+  || fail "the help scan inspected only $inspected_cli_items items; src/cli.rs has changed shape"
+
+# src/lib.rs is the normative statement of what this crate supports. Every
+# module carries a tier, and every internal one is absent from docs.rs.
+if ! awk '
+  /^#\[doc\(hidden\)\]$/ { hidden = 1; next }
+  /^pub mod [a-z0-9_]+;$/ {
+    name = $3
+    sub(/;$/, "", name)
+    declared[name] = 1
+    if (hidden) concealed[name] = 1
+    hidden = 0
+    next
+  }
+  /^\/\/! \| `[a-z0-9_]+` \| (supported|reachable|internal) \|/ {
+    match($0, /`[a-z0-9_]+`/)
+    name = substr($0, RSTART + 1, RLENGTH - 2)
+    listed[name] = 1
+    if ($0 ~ /\| internal \|/) internal[name] = 1
+    next
+  }
+  /[^[:space:]]/ { hidden = 0 }
+  END {
+    for (name in declared) {
+      if (!(name in listed)) {
+        printf "src/lib.rs: module %s has no tier in the surface table\n", name > "/dev/stderr"
+        failed = 1
+      }
+    }
+    for (name in listed) {
+      if (!(name in declared)) {
+        printf "src/lib.rs: the surface table lists %s, which is not a public module\n", \
+          name > "/dev/stderr"
+        failed = 1
+      }
+    }
+    for (name in concealed) {
+      if (!(name in internal)) {
+        printf "src/lib.rs: %s is #[doc(hidden)] but is not listed as internal\n", \
+          name > "/dev/stderr"
+        failed = 1
+      }
+    }
+    for (name in internal) {
+      if (!(name in concealed)) {
+        printf "src/lib.rs: %s is listed as internal but is not #[doc(hidden)]\n", \
+          name > "/dev/stderr"
+        failed = 1
+      }
+    }
+    exit failed
+  }
+' src/lib.rs; then
+  fail 'src/lib.rs must give every public module a tier and hide every internal one'
+fi
+
+while IFS= read -r module; do
+  [[ -n "$module" ]] || continue
+  grep -Fq "\`$module\`" docs/public-surface.md \
+    || fail "docs/public-surface.md does not account for the module $module"
+done < <(awk '
+  /^pub mod [a-z0-9_]+;$/ { name = $3; sub(/;$/, "", name); print name }
+' src/lib.rs)
+
+# Installing a global subscriber or replacing the process panic hook is the
+# binary's business. A library that does it decides for its caller.
+if grep -rn 'init_tracing\|install_panic_hook' src --include='*.rs' \
+  | grep -v '^src/observability\.rs:' \
+  | grep -v '^src/main\.rs:'; then
+  fail 'only src/main.rs may call init_tracing or install_panic_hook'
+fi
+
+jq -e '
+  .packages[]
+  | select(.name == "simple-blog")
+  | .documentation != null
+    and (.metadata.docs.rs.targets | length == 1)
+' <<<"$cargo_metadata" >/dev/null \
+  || fail 'the published crate must declare its documentation URL and one docs.rs target'
+
+# The records are the decisions; docs/adr/README.md is an index derived from
+# them. Drift between the two hides a superseded decision from every reader.
+#
+# `find` runs in a process substitution below, so its failure would leave the
+# loop reading nothing and reporting success. Prove the sources are there
+# first, and count what was inspected afterwards.
+[[ -d docs/adr ]] || fail 'docs/adr is missing; the record scans cannot run'
+[[ -s docs/adr/README.md ]] \
+  || fail 'docs/adr/README.md is missing or empty; the index cannot be checked'
+
+indexed_field() {
+  printf '%s' "$1" | awk -F'|' -v column="$2" '
+    { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $column); print $column }
+  '
+}
+
+adr_row() {
+  grep -F "]($1)" docs/adr/README.md
+}
+
+inspected_records=0
+while IFS= read -r record; do
+  record_name="$(basename "$record")"
+  number="${record_name%%-*}"
+  heading="$(head -n 1 "$record")"
+  title="${heading#"# ADR $number: "}"
+  [[ "$title" != "$heading" ]] \
+    || fail "$record does not open with '# ADR $number: <title>'"
+  row="$(adr_row "$record_name")" \
+    || fail "docs/adr/README.md does not index $record"
+  indexed_title="$(indexed_field "$row" 3)"
+  [[ "$indexed_title" == "$title" ]] \
+    || fail "docs/adr/README.md calls $number '$indexed_title'; the record says '$title'"
+  inspected_records=$((inspected_records + 1))
+done < <(find docs/adr -name '[0-9][0-9][0-9][0-9]-*.md' -print | sort)
+
+[[ "$inspected_records" -ge 16 ]] \
+  || fail "the record scan inspected only $inspected_records ADRs; docs/adr has changed shape"
+
+while IFS= read -r reference; do
+  [[ -n "$reference" ]] || continue
+  superseded="$(find docs/adr -name "$reference-*.md" -print | sort | head -n 1)"
+  [[ -n "$superseded" ]] \
+    || fail "an ADR supersedes $reference, which is not a record"
+  row="$(adr_row "$(basename "$superseded")")" \
+    || fail "docs/adr/README.md does not index $superseded"
+  [[ "$(indexed_field "$row" 4)" != 'Accepted' ]] \
+    || fail "docs/adr/README.md still lists superseded ADR $reference as Accepted"
+done < <(awk '
+  /^- Supersedes: ADR [0-9][0-9][0-9][0-9]/ { print substr($4, 1, 4) }
+' docs/adr/[0-9][0-9][0-9][0-9]-*.md | sort -u)
+
+# Portability is proven by two implementations reading the same fixture. A
+# fixture only one language consumes proves nothing, and a directory that has
+# gone missing must not read as nothing to check.
+[[ -d contracts ]] || fail 'contracts is missing; the cross-adapter fixtures cannot be checked'
+for fixture in contracts/*.json; do
+  [[ -f "$fixture" ]] || fail 'contracts holds no versioned fixture'
+  fixture_name="$(basename "$fixture")"
+  grep -Rqs -F "$fixture_name" --include='*.rs' tests \
+    || fail "no Rust test consumes contracts/$fixture_name"
+  grep -Rqs -F "$fixture_name" --include='*.test.ts' adapters \
+    || fail "no adapter test consumes contracts/$fixture_name"
+done
+
 printf 'repository policy: ok\n'

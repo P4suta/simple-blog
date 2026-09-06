@@ -345,6 +345,15 @@ pub trait ReleaseReader: Send + Sync {
     async fn object(&self, id: &str) -> Result<Vec<u8>, ReleaseError>;
 }
 
+/// Both halves of the release seam in one bound.
+///
+/// A host adapter implements [`ReleaseStore`] and [`ReleaseReader`]; Rust has
+/// no `dyn A + B`, so the resolver and the materializer name this instead and
+/// can therefore be built over `Arc<dyn ReleaseBackend>`.
+pub trait ReleaseBackend: ReleaseStore + ReleaseReader {}
+
+impl<T: ReleaseStore + ReleaseReader + ?Sized> ReleaseBackend for T {}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResolvedAsset {
     pub release_id: ReleaseId,
@@ -375,11 +384,11 @@ pub enum ResolvedRoute {
 ///
 /// Filesystem or host-specific response types stay outside this boundary.
 /// Native and edge adapters must preserve every returned field.
-pub struct ReleaseResolver<S: ReleaseStore + ReleaseReader + ?Sized> {
+pub struct ReleaseResolver<S: ReleaseBackend + ?Sized> {
     store: Arc<S>,
 }
 
-impl<S: ReleaseStore + ReleaseReader + ?Sized> ReleaseResolver<S> {
+impl<S: ReleaseBackend + ?Sized> ReleaseResolver<S> {
     #[must_use]
     pub const fn new(store: Arc<S>) -> Self {
         Self { store }

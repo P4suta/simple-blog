@@ -9,7 +9,7 @@ use std::{
 use thiserror::Error;
 use tokio::io::AsyncWriteExt;
 
-use crate::release::{ReleaseError, ReleaseId, ReleaseReader, ReleaseRoute, ReleaseStore};
+use crate::release::{ReleaseBackend, ReleaseError, ReleaseId, ReleaseRoute};
 
 const MANIFEST_FILE: &str = ".simple-blog-release.json";
 const REDIRECTS_FILE: &str = "_redirects";
@@ -22,11 +22,11 @@ pub struct MaterializeReport {
     pub total_bytes: u64,
 }
 
-pub struct ReleaseMaterializer<S: ReleaseStore + ReleaseReader + ?Sized> {
+pub struct ReleaseMaterializer<S: ReleaseBackend + ?Sized> {
     store: Arc<S>,
 }
 
-impl<S: ReleaseStore + ReleaseReader + ?Sized> ReleaseMaterializer<S> {
+impl<S: ReleaseBackend + ?Sized> ReleaseMaterializer<S> {
     #[must_use]
     pub const fn new(store: Arc<S>) -> Self {
         Self { store }

@@ -13,8 +13,8 @@ use crate::{
         site_compiler::{SiteCompiler, SiteCompilerError},
     },
     release::{
-        PreparedRelease, ReleaseBuilder, ReleaseError, ReleaseId, ReleasePublisher, ReleaseReader,
-        ReleaseStore,
+        PreparedRelease, ReleaseBackend, ReleaseBuilder, ReleaseError, ReleaseId, ReleasePublisher,
+        ReleaseReader, ReleaseStore,
     },
 };
 
@@ -101,7 +101,7 @@ pub fn publication_delay(
 impl<R, S> PublicationService<R, S>
 where
     R: PublicSnapshotRepository,
-    S: ReleaseStore + ReleaseReader,
+    S: ReleaseBackend,
 {
     pub fn new(
         repository: Arc<R>,

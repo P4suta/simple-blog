@@ -7,6 +7,10 @@ description = "A small, writing-focused, single-owner dynamic CMS"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/P4suta/simple-blog"
 readme = "README.md"
+documentation = "https://docs.rs/simple-blog"
+# The Cloudflare adapter is TypeScript for a different runtime; it belongs in
+# the repository, not in a Rust package a consumer unpacks.
+exclude = ["/adapters"]
 keywords = ["axum", "blog", "cms", "markdown", "sqlite"]
 categories = ["command-line-utilities", "web-programming::http-server"]
 default-run = "simple-blog"
@@ -18,6 +22,11 @@ path = "src/lib.rs"
 [[bin]]
 name = "simple-blog"
 path = "src/main.rs"
+
+# One target only: a Windows build would activate the vendored OpenSSL, which
+# needs a C toolchain and perl that docs.rs does not offer.
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu"]
 
 [dependencies]
 ammonia = "4.1"
