@@ -527,3 +527,157 @@ fn serve_prints_the_setup_link_while_no_owner_exists_and_the_admin_address() {
     );
     assert!(output.contains("Site:  http://localhost:8080/"), "{output}");
 }
+
+#[test]
+fn every_command_and_flag_documents_itself() {
+    use clap::CommandFactory;
+
+    fn describe(command: &clap::Command, path: &str) {
+        for argument in command.get_arguments() {
+            let name = argument.get_id().as_str();
+            if name == "help" || name == "version" {
+                continue;
+            }
+            assert!(
+                argument.get_help().is_some(),
+                "{path}: {name} has no help text"
+            );
+        }
+        for subcommand in command.get_subcommands() {
+            assert!(
+                subcommand.get_about().is_some(),
+                "{path}: {} has no description",
+                subcommand.get_name()
+            );
+            describe(subcommand, &format!("{path} {}", subcommand.get_name()));
+        }
+    }
+
+    let command = simple_blog::cli::Cli::command();
+    assert!(
+        command.get_long_about().is_some(),
+        "the binary does not say what it is"
+    );
+    assert!(
+        command.get_after_long_help().is_some(),
+        "the help page offers no examples"
+    );
+    describe(&command, "simple-blog");
+}
+
+#[test]
+fn the_help_page_offers_examples_and_names_the_exit_codes() {
+    let output = binary().arg("--help").output().unwrap();
+    assert!(output.status.success());
+    let help = String::from_utf8(output.stdout).unwrap();
+    assert!(help.contains("Examples:"), "{help}");
+    assert!(help.contains("simple-blog init"), "{help}");
+    assert!(help.contains("Exit codes:"), "{help}");
+    // clap is built without `wrap_help`, so nothing reflows what is written
+    // here: a paragraph spread over two source lines becomes one run-on line.
+    for line in help.lines() {
+        assert!(
+            line.chars().count() <= 100,
+            "help line is {} characters and nothing wraps it: {line}",
+            line.chars().count()
+        );
+    }
+}
+
+#[test]
+fn a_failed_command_explains_itself_and_says_what_to_try() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_dir = temp.path().join("data");
+    let missing = temp.path().join("writng");
+    assert!(
+        binary()
+            .args(["--data-dir", data_dir.to_str().unwrap(), "init"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+
+    let failed = binary()
+        .args([
+            "--data-dir",
+            data_dir.to_str().unwrap(),
+            "import",
+            missing.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(failed.status.code(), Some(1));
+    let stderr = String::from_utf8(failed.stderr).unwrap();
+    assert!(stderr.contains("simple-blog: could not import"), "{stderr}");
+    assert!(stderr.contains("\n  caused by: "), "{stderr}");
+    assert!(stderr.contains("\n  next: "), "{stderr}");
+    // A mistyped path is not a bug report.
+    assert!(!stderr.contains("ThreadId"), "{stderr}");
+    assert!(!stderr.contains("src/main.rs"), "{stderr}");
+}
+
+#[test]
+fn a_failed_command_never_prints_a_setup_secret() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_dir = temp.path().join("data");
+    let initialized = binary()
+        .args(["--data-dir", data_dir.to_str().unwrap(), "init"])
+        .output()
+        .unwrap();
+    assert!(initialized.status.success());
+    let stdout = String::from_utf8(initialized.stdout).unwrap();
+    let token = stdout.split("token=").nth(1).unwrap().trim().to_owned();
+    assert!(!token.is_empty());
+
+    let failed = binary()
+        .args(["--data-dir", data_dir.to_str().unwrap(), "owner", "recover"])
+        .output()
+        .unwrap();
+
+    assert_eq!(failed.status.code(), Some(1));
+    let stderr = String::from_utf8(failed.stderr).unwrap();
+    assert!(
+        stderr.contains("simple-blog: cannot recover an installation"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("\n  next: "), "{stderr}");
+    assert!(!stderr.contains("token="), "{stderr}");
+    assert!(!stderr.contains(&token), "{stderr}");
+}
+
+#[test]
+fn a_failure_keeps_stderr_machine_readable_when_json_diagnostics_are_requested() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_dir = temp.path().join("data");
+    let missing = temp.path().join("writng");
+    assert!(
+        binary()
+            .args(["--data-dir", data_dir.to_str().unwrap(), "init"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+
+    let failed = binary()
+        .env("SIMPLE_BLOG_LOG_FORMAT", "json")
+        .env("RUST_LOG", "simple_blog=info")
+        .args([
+            "--data-dir",
+            data_dir.to_str().unwrap(),
+            "import",
+            missing.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(failed.status.code(), Some(1));
+    let stderr = String::from_utf8(failed.stderr).unwrap();
+    assert!(!stderr.trim().is_empty());
+    for line in stderr.lines() {
+        serde_json::from_str::<serde_json::Value>(line)
+            .unwrap_or_else(|error| panic!("stderr line is not JSON ({error}): {line}"));
+    }
+}

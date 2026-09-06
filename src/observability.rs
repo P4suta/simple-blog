@@ -35,12 +35,10 @@ pub fn init_tracing() -> Result<(), DiagnosticsError> {
     };
 
     match format {
+        // A person reading a failure needs the failure, not a thread id and
+        // a source location. The JSON format keeps both: they are a contract.
         LogFormat::Pretty => tracing_subscriber::fmt()
             .with_env_filter(filter)
-            .with_thread_ids(true)
-            .with_thread_names(true)
-            .with_file(true)
-            .with_line_number(true)
             .with_writer(std::io::stderr)
             .finish()
             .try_init(),

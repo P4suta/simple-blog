@@ -87,7 +87,9 @@ bun audit --audit-level=high
 bash tests/repository_policy.sh
 ```
 
-What the project is for, and the promises it makes to writers and readers, live in [`docs/vision.md`](docs/vision.md). Architectural decisions live only in [`docs/adr`](docs/adr/README.md); [`docs/README.md`](docs/README.md) indexes every document, and [`contracts/README.md`](contracts/README.md) explains the fixtures a conforming host adapter must satisfy. Changes follow Red–Green–Refactor and may not use unscoped lint suppression.
+What the project is for, and the promises it makes to writers and readers, live in [`docs/vision.md`](docs/vision.md). Architectural decisions live only in [`docs/adr`](docs/adr/README.md); [`docs/README.md`](docs/README.md) indexes every document. What the published crate supports, and what a conforming host adapter has to do, live in [`docs/public-surface.md`](docs/public-surface.md) and [`contracts/README.md`](contracts/README.md). Changes follow Red–Green–Refactor and may not use unscoped lint suppression.
+
+Every command exits `0` when it succeeded, `1` when it ran and failed — stderr then says what failed and what to try — and `2` when it never ran, because it could not be understood or diagnostics could not be started.
 
 For a reproducible incident report, keep the first failing request ID and run the read-only doctor with machine-readable traces:
 
