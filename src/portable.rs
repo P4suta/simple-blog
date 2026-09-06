@@ -1627,6 +1627,8 @@ mod portable_graph_tests {
 
     use crate::domain::content::{ContentKind, Publication, SaveIntent, Tag};
 
+    type Cases = Vec<(&'static str, Box<dyn Fn(&mut Vec<PortableContent>)>)>;
+
     fn at() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap()
     }
@@ -1694,7 +1696,7 @@ mod portable_graph_tests {
 
     #[test]
     fn every_broken_content_graph_is_rejected() {
-        let cases: Vec<(&str, Box<dyn Fn(&mut Vec<PortableContent>)>)> = vec![
+        let cases: Cases = vec![
             (
                 "two records with one identity",
                 Box::new(|r: &mut Vec<PortableContent>| {
