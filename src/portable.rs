@@ -1050,3 +1050,572 @@ pub enum PortableArchiveError {
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
+
+#[cfg(test)]
+mod portable_contract_tests {
+    use super::*;
+
+    /// The limits are a compatibility promise: an archive one build accepts,
+    /// another build of the same format version must accept too. Spelling the
+    /// numbers out here means an edit to the arithmetic has to be deliberate.
+    #[test]
+    fn the_portable_limits_are_the_documented_numbers() {
+        assert_eq!(MAX_ENTRY_COUNT, 100_000);
+        assert_eq!(MAX_METADATA_BYTES, 67_108_864);
+        assert_eq!(MAX_MEDIA_FILE_BYTES, 2_147_483_648);
+        assert_eq!(MAX_DECODED_BYTES, 8_589_934_592);
+        assert_eq!(MAX_MARKDOWN_BYTES, 2_097_152);
+        assert_eq!(MAX_SQLITE_INTEGER, 9_223_372_036_854_775_807);
+        assert_eq!(MAX_TAR_ZERO_PADDING, 10_240);
+        assert_eq!(PORTABLE_SITE_FORMAT_VERSION, 1);
+        assert_eq!(PORTABLE_ARCHIVE_FORMAT_VERSION, 1);
+    }
+
+    #[test]
+    fn a_normalized_origin_is_accepted() {
+        validate_origin("https://writing.example").unwrap();
+        validate_origin("http://writing.example").unwrap();
+        validate_origin("https://writing.example:8443").unwrap();
+    }
+
+    /// One case per clause, each tripping exactly that clause, so no clause can
+    /// be dropped from the guard without a case turning green.
+    #[test]
+    fn every_way_an_origin_is_not_normalized_is_rejected() {
+        for origin in [
+            "ftp://writing.example",
+            "https://writer@writing.example",
+            "https://writer:secret@writing.example",
+            "https://writing.example?draft=1",
+            "https://writing.example#top",
+            "https://writing.example/blog",
+            "https://writing.example/",
+        ] {
+            assert!(
+                validate_origin(origin).is_err(),
+                "accepted an origin that is not normalized: {origin}"
+            );
+        }
+        assert!(validate_origin("not a url").is_err());
+    }
+
+    #[test]
+    fn a_plain_media_filename_is_accepted() {
+        validate_media_filename("cover.png").unwrap();
+        validate_media_filename(&"a".repeat(200)).unwrap();
+    }
+
+    #[test]
+    fn every_unsafe_media_filename_shape_is_rejected() {
+        for filename in ["", "a/b.png", r"a\b.png", "a\0b.png", ".", ".."] {
+            assert!(
+                validate_media_filename(filename).is_err(),
+                "accepted an unsafe media filename: {filename:?}"
+            );
+        }
+        assert!(validate_media_filename(&"a".repeat(201)).is_err());
+    }
+
+    #[test]
+    fn a_byte_size_matches_only_the_length_it_declares() {
+        validate_byte_size("cover.png", 3, 3).unwrap();
+        assert!(validate_byte_size("cover.png", 3, 4).is_err());
+        assert!(validate_byte_size("cover.png", 4, 3).is_err());
+    }
+
+    #[test]
+    fn engagement_accounts_for_every_content_identity_and_stays_in_range() {
+        let ids = BTreeSet::from([7_i64]);
+        let totals =
+            |likes: u64, views: u64| BTreeMap::from([(7_i64, PortableEngagement { likes, views })]);
+
+        validate_engagement(&totals(0, 0), &ids).unwrap();
+        // The maximum is representable: the guard is `>`, not `>=`.
+        validate_engagement(&totals(MAX_SQLITE_INTEGER, MAX_SQLITE_INTEGER), &ids).unwrap();
+
+        assert!(validate_engagement(&BTreeMap::new(), &ids).is_err());
+        assert!(validate_engagement(&totals(0, 0), &BTreeSet::from([7_i64, 8_i64])).is_err());
+        assert!(validate_engagement(&totals(MAX_SQLITE_INTEGER + 1, 0), &ids).is_err());
+        assert!(validate_engagement(&totals(0, MAX_SQLITE_INTEGER + 1), &ids).is_err());
+    }
+}
+
+#[cfg(test)]
+mod portable_validator_tests {
+    use super::*;
+    use chrono::TimeZone as _;
+
+    use crate::domain::{
+        content::{ContentKind, Publication, Tag},
+        media::MediaVariant,
+    };
+
+    fn at() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap()
+    }
+
+    fn hex(fill: char, length: usize) -> String {
+        std::iter::repeat_n(fill, length).collect()
+    }
+
+    fn content() -> Content {
+        Content {
+            id: ContentId::from_i64(7),
+            kind: ContentKind::Post,
+            title: "Portable".into(),
+            slug: Slug::parse("portable").unwrap(),
+            summary: "Leaves any host".into(),
+            body_markdown: "# Canonical".into(),
+            body_html: "<h1>Canonical</h1>".into(),
+            tags: Vec::new(),
+            cover_media_id: None,
+            seo_title: None,
+            seo_description: None,
+            publication: Publication::Public { publish_at: at() },
+            version: 3,
+            created_at: at(),
+            updated_at: at(),
+            deleted_at: None,
+        }
+    }
+
+    fn tag(name: &str, slug: &str) -> Tag {
+        Tag {
+            name: name.into(),
+            slug: Slug::parse(slug).unwrap(),
+        }
+    }
+
+    fn asset(id_fill: char, filename: &str) -> MediaAsset {
+        MediaAsset {
+            id: MediaId::parse(hex(id_fill, 64)).unwrap(),
+            original_name: "Cover".into(),
+            original_filename: filename.into(),
+            mime_type: "image/png".into(),
+            extension: "png".into(),
+            width: 800,
+            height: 600,
+            byte_size: 1024,
+            alt_text: String::new(),
+            caption: String::new(),
+            animated: false,
+            variants: Vec::new(),
+            created_at: at(),
+        }
+    }
+
+    fn variant(width: u32, filename: &str) -> MediaVariant {
+        MediaVariant {
+            width,
+            height: 600,
+            byte_size: 512,
+            filename: filename.into(),
+        }
+    }
+
+    fn passkey(credential_id: &str, name: &str) -> PortablePasskey {
+        PortablePasskey {
+            credential_id: credential_id.into(),
+            name: name.into(),
+            passkey_json: "{}".into(),
+            created_at: at(),
+            last_used_at: None,
+        }
+    }
+
+    fn recovery(code_hash: String) -> PortableRecoveryCode {
+        PortableRecoveryCode {
+            code_hash,
+            consumed_at: None,
+            created_at: at(),
+        }
+    }
+
+    fn owner() -> PortableOwner {
+        PortableOwner {
+            user_handle: Uuid::nil(),
+            created_at: at(),
+            passkeys: vec![passkey("AQID", "Laptop")],
+            recovery_codes: vec![recovery(hex('a', 64))],
+        }
+    }
+
+    type Cases<T> = Vec<(&'static str, Box<dyn Fn(&mut T)>)>;
+
+    /// Each case trips exactly one clause of a guard, so dropping any clause
+    /// leaves one case accepting a package the contract forbids.
+    fn each<T>(base: impl Fn() -> T, cases: Cases<T>, rejected: impl Fn(&T) -> bool) {
+        for (label, mutate) in cases {
+            let mut value = base();
+            mutate(&mut value);
+            assert!(
+                rejected(&value),
+                "accepted what the contract forbids: {label}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_conforming_piece_of_content_is_accepted() {
+        validate_content(&content(), ContentId::from_i64(7)).unwrap();
+    }
+
+    #[test]
+    fn the_content_contract_holds_at_its_boundaries() {
+        let mut exact = content();
+        exact.title = "t".repeat(200);
+        exact.summary = "s".repeat(500);
+        exact.body_markdown = "b".repeat(MAX_MARKDOWN_BYTES);
+        exact.seo_title = Some("o".repeat(70));
+        exact.seo_description = Some("d".repeat(200));
+        exact.version = 1;
+        validate_content(&exact, ContentId::from_i64(7)).unwrap();
+
+        let mut minimal = content();
+        minimal.id = ContentId::from_i64(1);
+        validate_content(&minimal, ContentId::from_i64(1)).unwrap();
+    }
+
+    #[test]
+    fn every_way_content_can_violate_the_contract_is_rejected() {
+        let cases: Cases<Content> = vec![
+            (
+                "identity does not match",
+                Box::new(|c: &mut Content| c.id = ContentId::from_i64(8)),
+            ),
+            ("version is zero", Box::new(|c: &mut Content| c.version = 0)),
+            (
+                "title is untrimmed",
+                Box::new(|c: &mut Content| c.title = " Portable ".into()),
+            ),
+            (
+                "title is empty",
+                Box::new(|c: &mut Content| c.title = String::new()),
+            ),
+            (
+                "title is too long",
+                Box::new(|c: &mut Content| c.title = "t".repeat(201)),
+            ),
+            (
+                "summary is untrimmed",
+                Box::new(|c: &mut Content| c.summary = " Leaves ".into()),
+            ),
+            (
+                "summary is too long",
+                Box::new(|c: &mut Content| c.summary = "s".repeat(501)),
+            ),
+            (
+                "body is too long",
+                Box::new(|c: &mut Content| c.body_markdown = "b".repeat(MAX_MARKDOWN_BYTES + 1)),
+            ),
+            (
+                "seo title is blank",
+                Box::new(|c: &mut Content| c.seo_title = Some("   ".into())),
+            ),
+            (
+                "seo title is untrimmed",
+                Box::new(|c: &mut Content| c.seo_title = Some(" Title ".into())),
+            ),
+            (
+                "seo title is too long",
+                Box::new(|c: &mut Content| c.seo_title = Some("o".repeat(71))),
+            ),
+            (
+                "seo description is blank",
+                Box::new(|c: &mut Content| c.seo_description = Some("   ".into())),
+            ),
+            (
+                "seo description is untrimmed",
+                Box::new(|c: &mut Content| c.seo_description = Some(" Text ".into())),
+            ),
+            (
+                "seo description is too long",
+                Box::new(|c: &mut Content| c.seo_description = Some("d".repeat(201))),
+            ),
+            (
+                "created after updated",
+                Box::new(|c: &mut Content| {
+                    c.created_at = c.updated_at + chrono::Duration::seconds(1);
+                }),
+            ),
+            (
+                "deleted before created",
+                Box::new(|c: &mut Content| {
+                    c.deleted_at = Some(c.created_at - chrono::Duration::seconds(1));
+                }),
+            ),
+        ];
+        each(content, cases, |c| {
+            validate_content(c, ContentId::from_i64(7)).is_err()
+        });
+    }
+
+    #[test]
+    fn a_content_identity_at_or_below_zero_is_rejected() {
+        for identity in [0_i64, -1] {
+            let mut record = content();
+            record.id = ContentId::from_i64(identity);
+            assert!(
+                validate_content(&record, ContentId::from_i64(identity)).is_err(),
+                "accepted content identity {identity}"
+            );
+        }
+    }
+
+    #[test]
+    fn tags_are_accepted_up_to_their_limits() {
+        let mut twenty = content();
+        twenty.tags = (0..20)
+            .map(|index| tag("Tag", &format!("tag-{index}")))
+            .collect();
+        validate_tags(&twenty, &mut BTreeMap::new()).unwrap();
+
+        let mut longest = content();
+        longest.tags = vec![tag(&"n".repeat(50), "long")];
+        validate_tags(&longest, &mut BTreeMap::new()).unwrap();
+    }
+
+    #[test]
+    fn every_invalid_tag_shape_is_rejected() {
+        let cases: Vec<(&str, Vec<Tag>)> = vec![
+            (
+                "too many tags",
+                (0..21)
+                    .map(|index| tag("Tag", &format!("tag-{index}")))
+                    .collect(),
+            ),
+            ("untrimmed name", vec![tag(" Tag ", "topic")]),
+            ("empty name", vec![tag("", "topic")]),
+            ("name too long", vec![tag(&"n".repeat(51), "topic")]),
+            (
+                "duplicate slug",
+                vec![tag("One", "topic"), tag("Two", "topic")],
+            ),
+        ];
+        for (label, tags) in cases {
+            let mut record = content();
+            record.tags = tags;
+            assert!(
+                validate_tags(&record, &mut BTreeMap::new()).is_err(),
+                "accepted an invalid tag set: {label}"
+            );
+        }
+    }
+
+    #[test]
+    fn one_tag_slug_may_not_carry_two_names_across_content() {
+        let mut known = BTreeMap::new();
+        let mut first = content();
+        first.tags = vec![tag("Rust", "rust")];
+        validate_tags(&first, &mut known).unwrap();
+
+        let mut repeated = content();
+        repeated.tags = vec![tag("Rust", "rust")];
+        validate_tags(&repeated, &mut known).unwrap();
+
+        let mut conflicting = content();
+        conflicting.tags = vec![tag("Rustlang", "rust")];
+        assert!(validate_tags(&conflicting, &mut known).is_err());
+    }
+
+    #[test]
+    fn conforming_media_metadata_returns_every_asset_identity() {
+        let media = vec![asset('a', "one.png"), asset('b', "two.png")];
+        let first = hex('a', 64);
+        let second = hex('b', 64);
+        assert_eq!(
+            validate_media_metadata(&media).unwrap(),
+            BTreeSet::from([first.as_str(), second.as_str()])
+        );
+        assert!(validate_media_metadata(&[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn media_byte_sizes_are_accepted_up_to_the_portable_integer_range() {
+        let mut largest = asset('a', "one.png");
+        largest.byte_size = MAX_SQLITE_INTEGER;
+        largest.variants = vec![MediaVariant {
+            byte_size: MAX_SQLITE_INTEGER,
+            ..variant(400, "one-400.png")
+        }];
+        validate_media_metadata(std::slice::from_ref(&largest)).unwrap();
+    }
+
+    #[test]
+    fn every_invalid_media_shape_is_rejected() {
+        let cases: Cases<Vec<MediaAsset>> = vec![
+            (
+                "duplicate media identity",
+                Box::new(|m: &mut Vec<MediaAsset>| m.push(asset('a', "other.png"))),
+            ),
+            (
+                "zero width",
+                Box::new(|m: &mut Vec<MediaAsset>| m[0].width = 0),
+            ),
+            (
+                "zero height",
+                Box::new(|m: &mut Vec<MediaAsset>| m[0].height = 0),
+            ),
+            (
+                "zero byte size",
+                Box::new(|m: &mut Vec<MediaAsset>| m[0].byte_size = 0),
+            ),
+            (
+                "byte size beyond the portable integer range",
+                Box::new(|m: &mut Vec<MediaAsset>| m[0].byte_size = MAX_SQLITE_INTEGER + 1),
+            ),
+            (
+                "duplicate original filename",
+                Box::new(|m: &mut Vec<MediaAsset>| m.push(asset('b', "one.png"))),
+            ),
+            (
+                "variant of zero width",
+                Box::new(|m: &mut Vec<MediaAsset>| m[0].variants = vec![variant(0, "v.png")]),
+            ),
+            (
+                "variant of zero height",
+                Box::new(|m: &mut Vec<MediaAsset>| {
+                    m[0].variants = vec![MediaVariant {
+                        height: 0,
+                        ..variant(400, "v.png")
+                    }];
+                }),
+            ),
+            (
+                "variant of zero byte size",
+                Box::new(|m: &mut Vec<MediaAsset>| {
+                    m[0].variants = vec![MediaVariant {
+                        byte_size: 0,
+                        ..variant(400, "v.png")
+                    }];
+                }),
+            ),
+            (
+                "variant byte size beyond the portable integer range",
+                Box::new(|m: &mut Vec<MediaAsset>| {
+                    m[0].variants = vec![MediaVariant {
+                        byte_size: MAX_SQLITE_INTEGER + 1,
+                        ..variant(400, "v.png")
+                    }];
+                }),
+            ),
+            (
+                "two variants of the same width",
+                Box::new(|m: &mut Vec<MediaAsset>| {
+                    m[0].variants = vec![variant(400, "v.png"), variant(400, "w.png")];
+                }),
+            ),
+            (
+                "variant filename collides with the original",
+                Box::new(|m: &mut Vec<MediaAsset>| {
+                    m[0].variants = vec![variant(400, "one.png")];
+                }),
+            ),
+        ];
+        each(
+            || vec![asset('a', "one.png")],
+            cases,
+            |m| validate_media_metadata(m).is_err(),
+        );
+    }
+
+    #[test]
+    fn a_conforming_owner_is_accepted() {
+        validate_owner(&owner()).unwrap();
+
+        let mut boundary = owner();
+        boundary.passkeys = vec![PortablePasskey {
+            last_used_at: Some(at()),
+            ..passkey("AQID", &"n".repeat(80))
+        }];
+        boundary.recovery_codes = vec![recovery("0123456789abcdef".repeat(4))];
+        validate_owner(&boundary).unwrap();
+    }
+
+    #[test]
+    fn every_invalid_owner_credential_is_rejected() {
+        let cases: Cases<PortableOwner> = vec![
+            (
+                "no passkey at all",
+                Box::new(|o: &mut PortableOwner| o.passkeys.clear()),
+            ),
+            (
+                "credential is not base64",
+                Box::new(|o: &mut PortableOwner| {
+                    o.passkeys[0].credential_id = "not base64!".into();
+                }),
+            ),
+            (
+                "credential decodes to nothing",
+                Box::new(|o: &mut PortableOwner| o.passkeys[0].credential_id = String::new()),
+            ),
+            (
+                "duplicate credential",
+                Box::new(|o: &mut PortableOwner| o.passkeys.push(passkey("AQID", "Phone"))),
+            ),
+            (
+                "passkey name is untrimmed",
+                Box::new(|o: &mut PortableOwner| o.passkeys[0].name = " Laptop ".into()),
+            ),
+            (
+                "passkey name is empty",
+                Box::new(|o: &mut PortableOwner| o.passkeys[0].name = String::new()),
+            ),
+            (
+                "passkey name is too long",
+                Box::new(|o: &mut PortableOwner| o.passkeys[0].name = "n".repeat(81)),
+            ),
+            (
+                "passkey predates the owner",
+                Box::new(|o: &mut PortableOwner| {
+                    o.passkeys[0].created_at = o.created_at - chrono::Duration::seconds(1);
+                }),
+            ),
+            (
+                "passkey used before it existed",
+                Box::new(|o: &mut PortableOwner| {
+                    o.passkeys[0].last_used_at =
+                        Some(o.passkeys[0].created_at - chrono::Duration::seconds(1));
+                }),
+            ),
+            (
+                "passkey JSON is malformed",
+                Box::new(|o: &mut PortableOwner| o.passkeys[0].passkey_json = "{".into()),
+            ),
+            (
+                "recovery hash is short",
+                Box::new(|o: &mut PortableOwner| o.recovery_codes[0].code_hash = hex('a', 63)),
+            ),
+            (
+                "recovery hash is long",
+                Box::new(|o: &mut PortableOwner| o.recovery_codes[0].code_hash = hex('a', 65)),
+            ),
+            (
+                "recovery hash is not hexadecimal",
+                Box::new(|o: &mut PortableOwner| o.recovery_codes[0].code_hash = hex('g', 64)),
+            ),
+            (
+                "recovery hash is uppercase",
+                Box::new(|o: &mut PortableOwner| o.recovery_codes[0].code_hash = hex('A', 64)),
+            ),
+            (
+                "duplicate recovery hash",
+                Box::new(|o: &mut PortableOwner| o.recovery_codes.push(recovery(hex('a', 64)))),
+            ),
+            (
+                "recovery code predates the owner",
+                Box::new(|o: &mut PortableOwner| {
+                    o.recovery_codes[0].created_at = o.created_at - chrono::Duration::seconds(1);
+                }),
+            ),
+            (
+                "recovery code consumed before it existed",
+                Box::new(|o: &mut PortableOwner| {
+                    o.recovery_codes[0].consumed_at =
+                        Some(o.recovery_codes[0].created_at - chrono::Duration::seconds(1));
+                }),
+            ),
+        ];
+        each(owner, cases, |o| validate_owner(o).is_err());
+    }
+}
