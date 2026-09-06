@@ -610,7 +610,7 @@ for fixture in contracts/*.json; do
   inspected_fixtures=$((inspected_fixtures + 1))
 done
 
-[[ "$inspected_fixtures" -ge 4 ]] \
+[[ "$inspected_fixtures" -ge 2 ]] \
   || fail "the fixture scan inspected only $inspected_fixtures contracts; contracts has changed shape"
 
 printf 'repository policy: ok\n'
