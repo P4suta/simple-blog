@@ -669,6 +669,11 @@ mod activation_record_tests {
         std::os::unix::fs::symlink(&target, &link).unwrap();
 
         let error = reject_link(&link).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            error
+                .to_string()
+                .contains("symbolic links are not permitted")
+        );
     }
 }

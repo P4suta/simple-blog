@@ -1082,12 +1082,14 @@ mod portable_contract_tests {
     /// be dropped from the guard without a case turning green.
     #[test]
     fn every_way_an_origin_is_not_normalized_is_rejected() {
+        // Each origin is already in the form Url::parse would print, so it
+        // trips exactly one clause and no other.
         for origin in [
             "ftp://writing.example",
             "https://writer@writing.example",
-            "https://writer:secret@writing.example",
-            "https://writing.example?draft=1",
-            "https://writing.example#top",
+            "https://:secret@writing.example",
+            "https://writing.example/?draft=1",
+            "https://writing.example/#top",
             "https://writing.example/blog",
             "https://writing.example/",
         ] {
@@ -1824,5 +1826,128 @@ mod portable_graph_tests {
                 "accepted navigation that is not canonical: {label}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod publication_clock_tests {
+    use super::*;
+    use chrono::TimeZone as _;
+
+    use crate::domain::{
+        content::{ContentKind, Publication},
+        theme::Locale,
+    };
+
+    fn at() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap()
+    }
+
+    fn later(days: i64) -> DateTime<Utc> {
+        at() + chrono::Duration::days(days)
+    }
+
+    fn scheduled(id: i64, slug: &str, publish_at: DateTime<Utc>) -> PortableContent {
+        PortableContent {
+            current: Content {
+                id: ContentId::from_i64(id),
+                kind: ContentKind::Post,
+                title: "Portable".into(),
+                slug: Slug::parse(slug).unwrap(),
+                summary: String::new(),
+                body_markdown: "# Canonical".into(),
+                body_html: "<h1>Canonical</h1>".into(),
+                tags: Vec::new(),
+                cover_media_id: None,
+                seo_title: None,
+                seo_description: None,
+                publication: Publication::Public { publish_at },
+                version: 1,
+                created_at: at(),
+                updated_at: at(),
+                deleted_at: None,
+            },
+            revisions: Vec::new(),
+        }
+    }
+
+    fn site(contents: Vec<PortableContent>, next: Option<DateTime<Utc>>) -> PortableSiteV1 {
+        PortableSiteV1 {
+            format_version: PORTABLE_SITE_FORMAT_VERSION,
+            exported_at: at(),
+            canonical_origin: "https://writing.example".into(),
+            settings: SiteSettings {
+                site_title: "Portable site".into(),
+                site_description: String::new(),
+                locale: Locale::En,
+                logo_media_id: None,
+                favicon_media_id: None,
+                custom_css: String::new(),
+                timezone: "UTC".into(),
+                author_name: String::new(),
+                custom_css_backup: None,
+            },
+            navigation: Vec::new(),
+            contents,
+            redirects: Vec::new(),
+            media: Vec::new(),
+            engagement: BTreeMap::new(),
+            owner: None,
+            publication: PortablePublicationState {
+                public_revision: 1,
+                next_publish_at: next,
+            },
+        }
+    }
+
+    #[test]
+    fn a_public_revision_is_accepted_right_up_to_the_portable_integer_range() {
+        let mut largest = site(Vec::new(), None);
+        largest.publication.public_revision = MAX_SQLITE_INTEGER;
+        validate_publication_state(&largest).unwrap();
+
+        let mut beyond = site(Vec::new(), None);
+        beyond.publication.public_revision = MAX_SQLITE_INTEGER + 1;
+        assert!(validate_publication_state(&beyond).is_err());
+    }
+
+    #[test]
+    fn the_clock_is_the_earliest_piece_still_ahead_of_the_export() {
+        let contents = vec![
+            scheduled(7, "later", later(9)),
+            scheduled(8, "sooner", later(2)),
+            scheduled(9, "already-out", later(-3)),
+        ];
+        validate_publication_state(&site(contents.clone(), Some(later(2)))).unwrap();
+
+        // Naming any other moment, or none at all, is a clock that disagrees
+        // with the content the archive carries.
+        assert!(validate_publication_state(&site(contents.clone(), Some(later(9)))).is_err());
+        assert!(validate_publication_state(&site(contents, None)).is_err());
+    }
+
+    #[test]
+    fn nothing_scheduled_means_no_clock_at_all() {
+        validate_publication_state(&site(Vec::new(), None)).unwrap();
+        validate_publication_state(&site(vec![scheduled(7, "already-out", later(-1))], None))
+            .unwrap();
+        assert!(validate_publication_state(&site(Vec::new(), Some(later(1)))).is_err());
+    }
+
+    #[test]
+    fn a_scheduled_piece_in_the_trash_does_not_hold_the_clock() {
+        let mut trashed = scheduled(7, "trashed", later(2));
+        trashed.current.deleted_at = Some(at());
+        let live = scheduled(8, "live", later(5));
+
+        validate_publication_state(&site(vec![trashed.clone(), live], Some(later(5)))).unwrap();
+        validate_publication_state(&site(vec![trashed], None)).unwrap();
+    }
+
+    #[test]
+    fn a_draft_never_sets_the_clock() {
+        let mut draft = scheduled(7, "draft", later(2));
+        draft.current.publication = Publication::Draft;
+        validate_publication_state(&site(vec![draft], None)).unwrap();
     }
 }
