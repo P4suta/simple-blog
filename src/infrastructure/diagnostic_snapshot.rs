@@ -8,6 +8,16 @@ use std::{
 
 type Fingerprints = BTreeMap<String, (u64, blake3::Hash)>;
 
+/// Never block on a FIFO, and never follow a link where a regular file was
+/// expected. Named so the two flags are one asserted value rather than an
+/// expression no test can see.
+#[cfg(unix)]
+const DIAGNOSTIC_OPEN_FLAGS: i32 = libc::O_NONBLOCK | libc::O_NOFOLLOW;
+
+/// FILE_FLAG_OPEN_REPARSE_POINT: inspect the opened link itself.
+#[cfg(windows)]
+const DIAGNOSTIC_OPEN_FLAGS: u32 = 0x0020_0000;
+
 pub(super) fn capture(source: &Path) -> std::io::Result<tempfile::TempDir> {
     capture_with(source, || Ok(()))
 }
@@ -69,13 +79,12 @@ fn open_regular_with(
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt as _;
-        options.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
+        options.custom_flags(DIAGNOSTIC_OPEN_FLAGS);
     }
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt as _;
-        // FILE_FLAG_OPEN_REPARSE_POINT: inspect the opened link itself.
-        options.custom_flags(0x0020_0000);
+        options.custom_flags(DIAGNOSTIC_OPEN_FLAGS);
     }
     let input = options.open(path)?;
     let opened = input.metadata()?;
@@ -305,5 +314,73 @@ mod tests {
             capture(&database).unwrap_err().kind(),
             std::io::ErrorKind::InvalidInput
         );
+    }
+}
+
+#[cfg(test)]
+mod regular_file_tests {
+    use super::*;
+
+    /// The flags are the whole defence against a FIFO that never returns and
+    /// a link that points somewhere else, so they are asserted rather than
+    /// trusted to an expression nothing reads.
+    #[cfg(unix)]
+    #[test]
+    fn a_diagnostic_input_is_opened_without_blocking_and_without_following() {
+        assert_eq!(DIAGNOSTIC_OPEN_FLAGS, libc::O_NONBLOCK | libc::O_NOFOLLOW);
+        assert_ne!(DIAGNOSTIC_OPEN_FLAGS & libc::O_NONBLOCK, 0);
+        assert_ne!(DIAGNOSTIC_OPEN_FLAGS & libc::O_NOFOLLOW, 0);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_diagnostic_input_is_opened_as_the_link_itself() {
+        assert_eq!(DIAGNOSTIC_OPEN_FLAGS, 0x0020_0000);
+    }
+
+    #[test]
+    fn only_a_regular_file_is_a_diagnostic_input() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("database.sqlite3");
+        std::fs::write(&file, b"content").unwrap();
+        open_regular_with(&file, || Ok(())).unwrap();
+
+        let error = open_regular_with(temp.path(), || Ok(())).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+
+        assert!(open_regular_with(&temp.path().join("absent"), || Ok(())).is_err());
+    }
+
+    #[test]
+    fn a_failure_before_the_open_is_not_swallowed() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("database.sqlite3");
+        std::fs::write(&file, b"content").unwrap();
+
+        let error = open_regular_with(&file, || {
+            Err(std::io::Error::other("synthetic pre-open failure"))
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("synthetic pre-open failure"));
+    }
+
+    /// The identity check is what makes the descriptor the same file that was
+    /// inspected: a replacement in the window has to be refused even when the
+    /// new file sits on the same device.
+    #[cfg(unix)]
+    #[test]
+    fn a_diagnostic_input_replaced_before_the_open_is_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("database.sqlite3");
+        std::fs::write(&file, b"original").unwrap();
+        let replacement = temp.path().join("replacement");
+        std::fs::write(&replacement, b"substituted").unwrap();
+
+        let error = open_regular_with(&file, || {
+            std::fs::rename(&replacement, &file)?;
+            Ok(())
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
     }
 }

@@ -553,6 +553,8 @@ mod tests {
 mod activation_record_tests {
     use super::*;
 
+    type Cases = Vec<(&'static str, Box<dyn Fn(&mut Intent)>)>;
+
     const UUID: &str = "00000000-0000-0000-0000-000000000000";
 
     fn destination() -> PathBuf {
@@ -578,7 +580,7 @@ mod activation_record_tests {
     /// dropped without a record the recovery path must refuse being accepted.
     #[test]
     fn every_malformed_activation_record_is_refused() {
-        let cases: Vec<(&str, Box<dyn Fn(&mut Intent)>)> = vec![
+        let cases: Cases = vec![
             (
                 "a version this build does not write",
                 Box::new(|i: &mut Intent| i.version = 2),

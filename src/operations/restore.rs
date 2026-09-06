@@ -338,3 +338,65 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod archive_entry_tests {
+    use super::*;
+
+    #[test]
+    fn only_the_entries_a_backup_carries_are_accepted() {
+        for entry in [
+            "database.sqlite3",
+            "config.toml",
+            "manifest.json",
+            "media",
+            "media/cover.png",
+            "media/nested/cover.png",
+        ] {
+            validate_archive_path(Path::new(entry)).unwrap_or_else(|error| {
+                panic!("rejected an entry a backup carries: {entry} ({error})")
+            });
+        }
+    }
+
+    #[test]
+    fn every_unexpected_or_unsafe_archive_entry_is_refused() {
+        for entry in [
+            "/etc/passwd",
+            "../escape",
+            "./database.sqlite3",
+            "unexpected.txt",
+            "mediax/cover.png",
+            "database.sqlite3.bak",
+        ] {
+            assert!(
+                validate_archive_path(Path::new(entry)).is_err(),
+                "accepted an archive entry that is not part of a backup: {entry}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_installation_is_present_when_any_of_its_own_files_is() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(!installation_exists(temp.path()));
+
+        for name in ["simple-blog.sqlite3", "config.toml"] {
+            let empty = tempfile::tempdir().unwrap();
+            std::fs::write(empty.path().join(name), b"").unwrap();
+            assert!(
+                installation_exists(empty.path()),
+                "did not see an installation holding {name}"
+            );
+        }
+
+        let with_media = tempfile::tempdir().unwrap();
+        std::fs::create_dir(with_media.path().join("media")).unwrap();
+        assert!(installation_exists(with_media.path()));
+
+        // Something else entirely is not an installation.
+        let unrelated = tempfile::tempdir().unwrap();
+        std::fs::write(unrelated.path().join("notes.txt"), b"").unwrap();
+        assert!(!installation_exists(unrelated.path()));
+    }
+}
