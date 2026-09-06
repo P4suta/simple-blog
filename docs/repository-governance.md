@@ -20,8 +20,9 @@ and the selected Actions allowlist are similarly versioned in
 
 The desired required checks now also include `Browser and recovery evidence`,
 `Parser and critical decision evidence`, and `Windows release symbols`. The
-versioned ruleset is the proposed configuration; changing it does not by itself
-apply the live GitHub ruleset. Artifact export is conditional on the secret gate
+versioned ruleset was applied to live ruleset `21865745` on 2026-09-06 and read
+back to confirm all 15 checks, existing protections and empty bypass list. Future
+versioned edits do not by themselves apply the live GitHub ruleset. Artifact export is conditional on the secret gate
 passing, runs even after check failures, and retains evidence for 30 days.
 Daily parser fuzzing and weekly decision mutation run separately from PR checks.
 

@@ -1,10 +1,11 @@
 import { spawnSync } from 'node:child_process';
-import { readFileSync, mkdirSync, existsSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, mkdirSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { randomUUID, createHash } from 'node:crypto';
 import { runStep, writeJson } from './runner.mjs';
 import { assertSafeEvidence } from './evidence-security.mjs';
+import { readRegularFile } from './regular-file.mjs';
 
 export const parsers = {
   search: ['src/domain/search.rs', 'src/domain/content.rs'],
@@ -69,9 +70,8 @@ async function main() {
     if (existsSync(artifacts)) for (const entry of readdirSync(artifacts, { withFileTypes: true })) {
       if (!entry.isFile() || !/^(?:crash|timeout|oom|leak)-[a-z0-9]+$/.test(entry.name)) continue;
       const path = join(artifacts, entry.name);
-      const bytes = statSync(path).size;
-      if (bytes > 1_048_576) throw new Error('Unexpectedly large fuzz evidence; original retained locally');
-      const input = readFileSync(path);
+      const input = readRegularFile(path, 1_048_576);
+      const bytes = input.length;
       const artifact = { target, bytes, sha256: createHash('sha256').update(input).digest('hex'),
         replay: { command: 'cargo', args: ['+nightly', 'fuzz', 'run', target, path] } };
       try { assertSafeEvidence(input.toString('utf8')); artifact.encoding = 'base64'; artifact.input = input.toString('base64'); }

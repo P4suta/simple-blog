@@ -175,5 +175,41 @@ defines the narrower composite-step contract. This failed run remains failed.
 Windows cargo-fuzz failed linking instrumented `slug` as a cdylib (`main`
 unresolved); this is not an executed fuzz success. Docker's daemon was unavailable.
 Linux fuzz, the full critical mutation set, Unix-only regressions, macOS and Linux
-symbol extraction remain CI scope. Versioned ruleset edits have not changed live
-GitHub settings. Windows stable and MSRV both passed after the last native guard.
+symbol extraction were originally CI scope. Run `34004783489` now proves the
+Linux/MSRV and macOS suites, Linux browser/recovery and Linux symbol extraction.
+Full fuzz/mutation and corrected Windows/coverage jobs still require success.
+The main ruleset now has all 15 versioned required checks; API readback matches
+every submitted field, preserving existing protections and no bypass actors.
+Windows stable and MSRV both passed locally after the last native guard.
+
+Hosted review pass 2: Windows job `101409885967` selected Git Bash's incomplete
+Perl (`Locale/Maketext/Simple.pm` missing). Select native Strawberry Perl through
+`OPENSSL_SRC_PERL`, validate its IPC::Cmd module and record the actual Perl version
+in run metadata. The paired symbol job also exposed that an absent symbol manifest
+prevented independent logs from being exported. The new regression first failed
+(`target/ci-incomplete-symbols-red.log`); an unvalidated symbol directory is now
+omitted with stable `symbols.incomplete` and an explicit partial index, while safe
+logs remain exportable. Invalid manifests or hash mismatches still fail closed.
+
+Hosted review pass 3: CodeQL identified check-then-read races in source snapshots
+and fuzz artifact reads. Use one verified regular-file descriptor, exact inode
+identity, bounded reads and before/after metadata; a changed input fails rather
+than becoming reproducible evidence. Tests assert size-growth and replacement
+injection fired, no replacement bytes were read, and descriptors close on failure.
+Unix additionally exercises an actual FIFO and symlink; Windows cannot certify it.
+
+Coverage job `101409885804` and mutation shard 7 failed on unmutated observability
+tests: concurrent temporary subscribers lost callsite/span events. Keep a single
+subscriber with isolated current-thread capture, matching production's lifetime;
+add eight runtimes with 128 total requests, asserting every completion and request
+ID in its own buffer. Remove assertion interpolation of forbidden fixture values,
+so a failed privacy test cannot echo the value it detected. The full Windows Rust
+suite and tool/policy checks passed in `2026-09-06T01-58-55-478Z-09956b0f`, with
+unchanged inputs (669.7 seconds for Rust). Hosted coverage/mutation must be rerun.
+
+Independent artifact review rehashed every file in the downloaded Windows failure,
+partial coverage, mutation-baseline failure and Linux symbol artifacts. LLVM
+readobj reports matching GNU build IDs `52b0572d546e5bb0d16ad2e0ec8a657e91534714`
+in the Linux executable and debug file, and the executable's GNU debuglink names
+that file. These results validate evidence transport and pairing, not the failed
+tests. No release, deployment or tag was created.

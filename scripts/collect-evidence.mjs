@@ -12,6 +12,7 @@ const published = resolve('target/shareable');
 const destination = resolve(`target/.shareable-${randomUUID()}`);
 mkdirSync(destination, { recursive: true });
 const index = [];
+const omissions = [];
 function save(name, bytes) {
   if (/(?:\.sqlite|\.db$|storageState|error-context|recovery-codes|cookies)/i.test(name)) throw new Error('Private evidence cannot be exported');
   const target = join(destination, name);
@@ -33,7 +34,15 @@ const symbolFiles = new Set();
 for (const profile of ['release', 'debug']) {
   const directory = `target/verification/symbols-${profile}`;
   if (!existsSync(directory)) continue;
-  const manifest = JSON.parse(readFileSync(join(directory, 'symbols.json')));
+  let manifest;
+  try { manifest = JSON.parse(readFileSync(join(directory, 'symbols.json'))); }
+  catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    // A failed build may create the directory before it has a validated pair.
+    // Omit all unverified binaries, but keep independent failure diagnostics.
+    omissions.push({ scope: `symbols-${profile}`, code: 'symbols.incomplete' });
+    continue;
+  }
   if (manifest.schema !== 1 || manifest.files.length !== 2) throw new Error('Incomplete symbol manifest');
   const names = manifest.files.map(entry => entry.name).sort().join(',');
   if (!['simple-blog.exe,simple_blog.pdb', 'simple-blog,simple-blog.debug'].includes(names)) throw new Error('Incomplete binary/symbol pair');
@@ -87,6 +96,7 @@ for (const path of browserReports) {
   }
   save(`${prefix}/results.json`, Buffer.from(safeEvidenceText(JSON.stringify(report.summary))));
 }
-writeJson(join(destination, 'evidence.json'), { schema: 1, createdAt: new Date().toISOString(), files: index });
+writeJson(join(destination, 'evidence.json'), { schema: 1, createdAt: new Date().toISOString(),
+  status: omissions.length ? 'partial' : 'complete', omissions, files: index });
 publishEvidence(destination, published);
 console.log(`Prepared ${index.length} shareable evidence files`);

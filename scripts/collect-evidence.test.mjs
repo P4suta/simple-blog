@@ -7,6 +7,22 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 const collector = fileURLToPath(new URL('./collect-evidence.mjs', import.meta.url));
+
+test('a failed symbol build still exports its safe logs and explicitly reports the missing pair', t => {
+  const root = mkdtempSync(join(tmpdir(), 'simple-blog-partial-symbols-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const symbols = join(root, 'target/verification/symbols-release');
+  mkdirSync(symbols, { recursive: true });
+  writeFileSync(join(symbols, 'simple-blog.exe'), 'PRIVATE_FIXTURE_CANARY');
+  writeFileSync(join(root, 'target/verification/build.log'), 'OpenSSL configuration failed');
+  const result = spawnSync(process.execPath, [collector], { cwd: root, windowsHide: true });
+  assert.equal(result.status, 0, result.stderr.toString());
+  const index = JSON.parse(readFileSync(join(root, 'target/shareable/evidence.json')));
+  assert.equal(index.status, 'partial');
+  assert.deepEqual(index.omissions, [{ scope: 'symbols-release', code: 'symbols.incomplete' }]);
+  assert.equal(index.files.length, 1);
+  assert.equal(readFileSync(join(root, 'target/shareable/verification/build.log'), 'utf8'), 'OpenSSL configuration failed');
+});
 test('failed secret inspection cannot publish partial evidence', t => {
   const root = mkdtempSync(join(tmpdir(), 'simple-blog-evidence-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));

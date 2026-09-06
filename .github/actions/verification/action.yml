@@ -13,6 +13,15 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Select native Windows Perl for vendored OpenSSL
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $nativePerl = 'C:\Strawberry\perl\bin\perl.exe'
+        if (-not (Test-Path -LiteralPath $nativePerl -PathType Leaf)) { throw 'Native Strawberry Perl is required for the MSVC OpenSSL build' }
+        & $nativePerl -MIPC::Cmd -e 'print "$^V\n"'
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        "OPENSSL_SRC_PERL=$nativePerl" >> $env:GITHUB_ENV
     - name: Verify
       shell: bash
       env:
