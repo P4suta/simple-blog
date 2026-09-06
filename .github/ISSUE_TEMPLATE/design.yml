@@ -5,7 +5,8 @@ body:
   - type: markdown
     attributes:
       value: >-
-        Start with the user or operator problem. Durable-format, security-boundary,
+        Start with the user or operator problem, and say which promise in
+        `docs/vision.md` the change serves. Durable-format, security-boundary,
         and cross-adapter changes normally require an ADR after agreement.
 
   - type: textarea

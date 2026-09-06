@@ -19,3 +19,4 @@
 - [ ] Each phase has three recorded critical passes and two clean final reviews.
 - [ ] Parser counterexamples, browser/recovery paths and applicable fuzz/mutation checks pass.
 - [ ] Shared artifacts were checked for secrets; failure evidence is retained for 30 days.
+- [ ] Every promise in `docs/vision.md` is kept, or this pull request changes that document and says why.
