@@ -473,6 +473,14 @@ jq -e '
 
 # The records are the decisions; docs/adr/README.md is an index derived from
 # them. Drift between the two hides a superseded decision from every reader.
+#
+# `find` runs in a process substitution below, so its failure would leave the
+# loop reading nothing and reporting success. Prove the sources are there
+# first, and count what was inspected afterwards.
+[[ -d docs/adr ]] || fail 'docs/adr is missing; the record scans cannot run'
+[[ -s docs/adr/README.md ]] \
+  || fail 'docs/adr/README.md is missing or empty; the index cannot be checked'
+
 indexed_field() {
   printf '%s' "$1" | awk -F'|' -v column="$2" '
     { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $column); print $column }
@@ -483,6 +491,7 @@ adr_row() {
   grep -F "]($1)" docs/adr/README.md
 }
 
+inspected_records=0
 while IFS= read -r record; do
   record_name="$(basename "$record")"
   number="${record_name%%-*}"
@@ -495,7 +504,11 @@ while IFS= read -r record; do
   indexed_title="$(indexed_field "$row" 3)"
   [[ "$indexed_title" == "$title" ]] \
     || fail "docs/adr/README.md calls $number '$indexed_title'; the record says '$title'"
+  inspected_records=$((inspected_records + 1))
 done < <(find docs/adr -name '[0-9][0-9][0-9][0-9]-*.md' -print | sort)
+
+[[ "$inspected_records" -ge 16 ]] \
+  || fail "the record scan inspected only $inspected_records ADRs; docs/adr has changed shape"
 
 while IFS= read -r reference; do
   [[ -n "$reference" ]] || continue
@@ -511,8 +524,11 @@ done < <(awk '
 ' docs/adr/[0-9][0-9][0-9][0-9]-*.md | sort -u)
 
 # Portability is proven by two implementations reading the same fixture. A
-# fixture only one language consumes proves nothing.
+# fixture only one language consumes proves nothing, and a directory that has
+# gone missing must not read as nothing to check.
+[[ -d contracts ]] || fail 'contracts is missing; the cross-adapter fixtures cannot be checked'
 for fixture in contracts/*.json; do
+  [[ -f "$fixture" ]] || fail 'contracts holds no versioned fixture'
   fixture_name="$(basename "$fixture")"
   grep -Rqs -F "$fixture_name" --include='*.rs' tests \
     || fail "no Rust test consumes contracts/$fixture_name"

@@ -49,6 +49,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         listener,
         router(state).into_make_service_with_connect_info::<SocketAddr>(),
     )
+    .with_graceful_shutdown(interrupted())
     .await;
 
     // The scheduler is told to stop and awaited whether or not the server
@@ -57,4 +58,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     publishing.await?;
     served?;
     Ok(())
+}
+
+/// Ctrl-C ends the server so that the shutdown after it runs, instead of being
+/// skipped by an exiting process. `simple-blog serve` also waits for SIGTERM.
+async fn interrupted() {
+    tokio::signal::ctrl_c()
+        .await
+        .expect("failed to install Ctrl+C handler");
 }

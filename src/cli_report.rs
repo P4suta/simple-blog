@@ -48,6 +48,8 @@ fn next_step(error: &anyhow::Error) -> &'static str {
     let summary = format!("{error:#}");
     if summary.contains("installation is unhealthy") {
         "each check above names what it found; repair it and run `simple-blog doctor` again"
+    } else if summary.contains("no owner passkey yet") {
+        "register the first owner passkey with the link `simple-blog init` prints"
     } else if summary.contains("installation is not initialized") {
         "run `simple-blog init` here, or point --data-dir at an existing installation"
     } else {
@@ -148,6 +150,16 @@ mod tests {
             let report = rendered(&wrapped);
             assert!(report.contains(expected), "{report}");
         }
+    }
+
+    #[test]
+    fn an_unclaimed_installation_is_told_how_to_claim_itself() {
+        let error = anyhow!("cannot recover an installation that has no owner passkey yet");
+
+        assert!(rendered(&error).contains(
+            "
+  next: register the first owner passkey"
+        ));
     }
 
     #[test]

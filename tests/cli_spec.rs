@@ -631,7 +631,7 @@ fn a_failed_command_never_prints_a_setup_secret() {
     assert_eq!(failed.status.code(), Some(1));
     let stderr = String::from_utf8(failed.stderr).unwrap();
     assert!(
-        stderr.contains("owner has not completed initial setup"),
+        stderr.contains("simple-blog: cannot recover an installation"),
         "{stderr}"
     );
     assert!(stderr.contains("\n  next: "), "{stderr}");

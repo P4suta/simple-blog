@@ -98,7 +98,7 @@ enum Command {
     ///
     /// The link registers the owner passkey and is valid for fifteen minutes.
     ///
-    /// Running init again on a claimed installation changes nothing.
+    /// Running init again rewrites config.toml; a claimed site gets no new link.
     Init,
     /// Publish a release now, without running the site.
     ///
@@ -619,7 +619,7 @@ async fn owner_recover(overrides: Overrides) -> Result<()> {
         .context("could not inspect owner state")?
         .is_none()
     {
-        bail!("owner has not completed initial setup")
+        bail!("cannot recover an installation that has no owner passkey yet")
     }
     let token = AuthService::new(repository, Arc::new(SystemEntropy))
         .issue_setup_token(SetupPurpose::Recovery, Utc::now())
