@@ -1,0 +1,31 @@
+# Mutants that no test can distinguish, and why.
+#
+# The adversarial gate in `scripts/deep-checks.mjs` demands that every mutant
+# is caught and that none times out. That is the right default: a surviving
+# mutant is a behaviour no test pins down. But a mutation operator can also
+# produce a program that is *identical* to the original, or one that cannot
+# fail any way except by hanging. Neither says anything about the tests, and
+# neither can be answered by writing one.
+#
+# Every entry below has to name which of those two it is and why. Nothing is
+# excluded because a test would merely be inconvenient to write — the check in
+# `tests/repository_policy.sh` keeps this list short and commented so that
+# stays visible.
+
+exclude_re = [
+  # Equivalent. O_NONBLOCK (0o4000) and O_NOFOLLOW (0o400000) occupy disjoint
+  # bits, so `^` computes exactly the value `|` computes. The two programs are
+  # the same program.
+  "src/infrastructure/diagnostic_snapshot\\.rs:\\d+:\\d+: replace \\| with \\^",
+
+  # Timeout only. `&` of those disjoint bits is 0, which opens a diagnostic
+  # input with no flags at all; a FIFO in place of the database then blocks
+  # forever. The mutant can only ever be reported as a hang, never as caught.
+  # The flags themselves are pinned by value in `regular_file_tests`.
+  "src/infrastructure/diagnostic_snapshot\\.rs:\\d+:\\d+: replace \\| with &",
+
+  # Timeout only. `index *= 1` leaves the scan on the same character, so the
+  # loop over a snippet that contains any non-matching character never ends.
+  # Line 305's `index += length` is a different mutant and stays checked.
+  "src/domain/search\\.rs:308:\\d+: replace \\+= with \\*= in excerpt",
+]

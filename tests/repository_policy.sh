@@ -543,4 +543,54 @@ for fixture in contracts/*.json; do
     || fail "no adapter test consumes contracts/$fixture_name"
 done
 
+# A mutant the adversarial gate cannot answer is excluded by name, and only
+# ever for one of two reasons: the mutated program is the same program, or it
+# can fail no way except by hanging. Both are properties of the operator, not
+# of the tests, so each exclusion carries the sentence that says which. An
+# exclusion added because a test would merely be tedious to write is a hole,
+# and keeping the list short is what makes one visible.
+mutants_config=.cargo/mutants.toml
+[[ -s "$mutants_config" ]] \
+  || fail "$mutants_config is missing or empty; the mutation exclusions are undeclared"
+grep -q '^exclude_re = \[$' "$mutants_config" \
+  || fail "$mutants_config must declare exclude_re as a multi-line list"
+
+exclusion_lines() {
+  awk '
+    /^exclude_re = \[$/ { inside = 1; next }
+    inside && /^\]/ { inside = 0; next }
+    inside && /^[[:space:]]*#/ { next }
+    inside && /^[[:space:]]*$/ { next }
+    inside { gsub(/^[[:space:]]*"|",?[[:space:]]*$/, ""); print }
+  ' "$mutants_config"
+}
+
+if ! awk '
+  /^exclude_re = \[$/ { inside = 1; next }
+  inside && /^\]/ { inside = 0; next }
+  inside && /^[[:space:]]*#/ { reasoned = 1; next }
+  inside && /^[[:space:]]*$/ { next }
+  inside {
+    if (!reasoned) { failed = 1 }
+    reasoned = 0
+  }
+  END { exit failed }
+' "$mutants_config"; then
+  fail 'every mutation exclusion needs a comment saying why no test can answer it'
+fi
+
+excluded_mutants="$(exclusion_lines | grep -c .)"
+[[ "$excluded_mutants" -ge 1 ]] \
+  || fail 'the mutation exclusion scan found nothing; .cargo/mutants.toml has changed shape'
+[[ "$excluded_mutants" -le 8 ]] \
+  || fail "the mutation gate excludes $excluded_mutants mutants; that list is meant to stay small"
+
+while IFS= read -r excluded_pattern; do
+  [[ -n "$excluded_pattern" ]] || continue
+  case "$excluded_pattern" in
+    src/*) ;;
+    *) fail "a mutation exclusion must name the source it applies to: $excluded_pattern" ;;
+  esac
+done < <(exclusion_lines)
+
 printf 'repository policy: ok\n'

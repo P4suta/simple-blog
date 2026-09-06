@@ -38,6 +38,9 @@ const MAX_DECODED_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const MAX_MARKDOWN_BYTES: usize = 2 * 1024 * 1024;
 const MAX_SQLITE_INTEGER: u64 = 9_223_372_036_854_775_807;
 const MAX_TAR_ZERO_PADDING: usize = 20 * 512;
+/// Starting size for an entry buffer. A hint only, and therefore invisible
+/// to any behavioural test, so it is named and pinned rather than inlined.
+const ENTRY_READ_CAPACITY: u64 = 64 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -642,7 +645,7 @@ impl PortableArchive {
                     "decoded archive is too large".into(),
                 ));
             }
-            let capacity = usize::try_from(declared.min(64 * 1024))
+            let capacity = usize::try_from(declared.min(ENTRY_READ_CAPACITY))
                 .map_err(|error| PortableArchiveError::SafetyLimit(error.to_string()))?;
             let mut bytes = Vec::with_capacity(capacity);
             entry.read_to_end(&mut bytes)?;
@@ -1067,6 +1070,7 @@ mod portable_contract_tests {
         assert_eq!(MAX_MARKDOWN_BYTES, 2_097_152);
         assert_eq!(MAX_SQLITE_INTEGER, 9_223_372_036_854_775_807);
         assert_eq!(MAX_TAR_ZERO_PADDING, 10_240);
+        assert_eq!(ENTRY_READ_CAPACITY, 65_536);
         assert_eq!(PORTABLE_SITE_FORMAT_VERSION, 1);
         assert_eq!(PORTABLE_ARCHIVE_FORMAT_VERSION, 1);
     }
@@ -1949,5 +1953,197 @@ mod publication_clock_tests {
         let mut draft = scheduled(7, "draft", later(2));
         draft.current.publication = Publication::Draft;
         validate_publication_state(&site(vec![draft], None)).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod archive_entry_tests {
+    use super::*;
+    use chrono::TimeZone as _;
+
+    use crate::domain::{
+        content::{ContentKind, Publication},
+        theme::Locale,
+    };
+
+    fn at() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap()
+    }
+
+    fn hex(fill: char) -> String {
+        std::iter::repeat_n(fill, 64).collect()
+    }
+
+    /// Renders the visitor's own description of what it accepts.
+    struct Expectation(StrictJsonVisitor);
+
+    impl std::fmt::Display for Expectation {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            self.0.expecting(formatter)
+        }
+    }
+
+    fn site() -> PortableSiteV1 {
+        PortableSiteV1 {
+            format_version: PORTABLE_SITE_FORMAT_VERSION,
+            exported_at: at(),
+            canonical_origin: "https://writing.example".into(),
+            settings: SiteSettings {
+                site_title: "Portable site".into(),
+                site_description: String::new(),
+                locale: Locale::En,
+                logo_media_id: None,
+                favicon_media_id: None,
+                custom_css: String::new(),
+                timezone: "UTC".into(),
+                author_name: String::new(),
+                custom_css_backup: None,
+            },
+            navigation: Vec::new(),
+            contents: Vec::new(),
+            redirects: Vec::new(),
+            media: Vec::new(),
+            engagement: BTreeMap::new(),
+            owner: None,
+            publication: PortablePublicationState {
+                public_revision: 1,
+                next_publish_at: None,
+            },
+        }
+    }
+
+    fn with_cover(media_id: &str) -> PortableContent {
+        PortableContent {
+            current: Content {
+                id: ContentId::from_i64(7),
+                kind: ContentKind::Post,
+                title: "Portable".into(),
+                slug: Slug::parse("portable").unwrap(),
+                summary: String::new(),
+                body_markdown: "# Canonical".into(),
+                body_html: "<h1>Canonical</h1>".into(),
+                tags: Vec::new(),
+                cover_media_id: Some(media_id.to_owned()),
+                seo_title: None,
+                seo_description: None,
+                publication: Publication::Public { publish_at: at() },
+                version: 1,
+                created_at: at(),
+                updated_at: at(),
+                deleted_at: None,
+            },
+            revisions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn an_archive_carries_two_documents_and_a_flat_media_directory() {
+        assert_eq!(
+            validate_archive_path(Path::new(MANIFEST_PATH)).unwrap(),
+            MANIFEST_PATH
+        );
+        assert_eq!(
+            validate_archive_path(Path::new(SITE_PATH)).unwrap(),
+            SITE_PATH
+        );
+        assert_eq!(
+            validate_archive_path(Path::new("media/cover.png")).unwrap(),
+            "media/cover.png"
+        );
+    }
+
+    #[test]
+    fn every_archive_entry_outside_that_shape_is_unsafe() {
+        for entry in [
+            "/etc/passwd",
+            "../escape",
+            "./manifest.json",
+            "other.json",
+            "media",
+            "media/",
+            "media/nested/cover.png",
+            "media/../escape.png",
+            "media/.",
+            "media/..",
+        ] {
+            assert!(
+                validate_archive_path(Path::new(entry)).is_err(),
+                "accepted an archive entry outside the portable shape: {entry}"
+            );
+        }
+        assert!(validate_archive_path(Path::new(&format!("media/{}", "a".repeat(201)))).is_err());
+    }
+
+    #[test]
+    fn every_referenced_media_identity_has_to_be_in_the_archive() {
+        let present = hex('a');
+        let absent = hex('b');
+        let ids = BTreeSet::from([present.as_str()]);
+
+        let mut referencing = site();
+        referencing.contents = vec![with_cover(&present)];
+        validate_media_references(&referencing, &ids).unwrap();
+        validate_media_references(&site(), &ids).unwrap();
+
+        let mut missing_cover = site();
+        missing_cover.contents = vec![with_cover(&absent)];
+        assert!(validate_media_references(&missing_cover, &ids).is_err());
+
+        let mut missing_logo = site();
+        missing_logo.settings.logo_media_id = Some(absent.clone());
+        assert!(validate_media_references(&missing_logo, &ids).is_err());
+
+        let mut missing_favicon = site();
+        missing_favicon.settings.favicon_media_id = Some(absent);
+        assert!(validate_media_references(&missing_favicon, &ids).is_err());
+
+        let mut malformed = site();
+        malformed.settings.logo_media_id = Some("not-a-media-identity".into());
+        assert!(validate_media_references(&malformed, &ids).is_err());
+    }
+
+    #[test]
+    fn an_archive_is_installed_only_where_nothing_stands() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("archive.partial");
+        std::fs::write(&source, b"complete archive").unwrap();
+
+        let destination = temp.path().join("site.simple-blog");
+        install_without_overwrite(&source, &destination).unwrap();
+        assert_eq!(std::fs::read(&destination).unwrap(), b"complete archive");
+
+        let error = install_without_overwrite(&source, &destination).unwrap_err();
+        assert!(
+            matches!(&error, PortableArchiveError::OutputExists(path) if path == &destination),
+            "a destination that already exists must be reported as such, not as {error:?}"
+        );
+        assert_eq!(std::fs::read(&destination).unwrap(), b"complete archive");
+
+        // Anything else stays the I/O failure it is.
+        let into_nowhere = temp.path().join("absent").join("site.simple-blog");
+        assert!(matches!(
+            install_without_overwrite(&source, &into_nowhere).unwrap_err(),
+            PortableArchiveError::Io(_)
+        ));
+    }
+
+    #[test]
+    fn strict_json_names_what_it_expected() {
+        // A well-formed document parses.
+        strict_json_value(br#"{"a":1,"b":[true,null,"x"]}"#).unwrap();
+
+        // A duplicate field is the thing this visitor exists to refuse.
+        let error = strict_json_value(br#"{"a":1,"a":2}"#).unwrap_err();
+        assert!(matches!(error, PortableArchiveError::InvalidArchive(_)));
+        assert!(error.to_string().contains("duplicate"));
+
+        // JSON carries no value this visitor leaves unhandled, so serde never
+        // formats its expectation while parsing. It is still the sentence a
+        // reader of any future invalid-type error would get, so it is pinned
+        // by rendering it directly.
+        assert_eq!(
+            Expectation(StrictJsonVisitor).to_string(),
+            "JSON without duplicate object fields"
+        );
     }
 }
