@@ -1619,3 +1619,208 @@ mod portable_validator_tests {
         each(owner, cases, |o| validate_owner(o).is_err());
     }
 }
+
+#[cfg(test)]
+mod portable_graph_tests {
+    use super::*;
+    use chrono::TimeZone as _;
+
+    use crate::domain::content::{ContentKind, Publication, SaveIntent, Tag};
+
+    fn at() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap()
+    }
+
+    fn content(id: i64, slug: &str) -> Content {
+        Content {
+            id: ContentId::from_i64(id),
+            kind: ContentKind::Post,
+            title: "Portable".into(),
+            slug: Slug::parse(slug).unwrap(),
+            summary: "Leaves any host".into(),
+            body_markdown: "# Canonical".into(),
+            body_html: "<h1>Canonical</h1>".into(),
+            tags: Vec::new(),
+            cover_media_id: None,
+            seo_title: None,
+            seo_description: None,
+            publication: Publication::Public { publish_at: at() },
+            version: 3,
+            created_at: at(),
+            updated_at: at(),
+            deleted_at: None,
+        }
+    }
+
+    fn revision(id: i64, content_id: i64, version: i64) -> ContentRevision {
+        let mut snapshot = content(content_id, "portable");
+        snapshot.version = version;
+        ContentRevision {
+            id,
+            content_id: ContentId::from_i64(content_id),
+            intent: SaveIntent::Explicit,
+            snapshot,
+            created_at: at(),
+        }
+    }
+
+    fn record() -> PortableContent {
+        PortableContent {
+            current: content(7, "portable"),
+            revisions: vec![revision(1, 7, 2)],
+        }
+    }
+
+    fn item(id: i64, position: u16, label: &str) -> NavigationItem {
+        NavigationItem {
+            id,
+            label: label.into(),
+            destination: "/about".into(),
+            is_external: false,
+            position,
+        }
+    }
+
+    #[test]
+    fn a_conforming_content_graph_yields_its_identities_and_slugs() {
+        let (ids, slugs) = validate_contents(std::slice::from_ref(&record())).unwrap();
+        assert_eq!(ids, BTreeSet::from([7]));
+        assert_eq!(slugs, BTreeSet::from([Slug::parse("portable").unwrap()]));
+
+        let (empty_ids, empty_slugs) = validate_contents(&[]).unwrap();
+        assert!(empty_ids.is_empty());
+        assert!(empty_slugs.is_empty());
+    }
+
+    #[test]
+    fn every_broken_content_graph_is_rejected() {
+        let cases: Vec<(&str, Box<dyn Fn(&mut Vec<PortableContent>)>)> = vec![
+            (
+                "two records with one identity",
+                Box::new(|r: &mut Vec<PortableContent>| {
+                    let mut duplicate = record();
+                    duplicate.current.slug = Slug::parse("other").unwrap();
+                    duplicate.revisions = vec![revision(2, 7, 2)];
+                    r.push(duplicate);
+                }),
+            ),
+            (
+                "two records with one slug",
+                Box::new(|r: &mut Vec<PortableContent>| {
+                    let mut duplicate = record();
+                    duplicate.current.id = ContentId::from_i64(8);
+                    duplicate.revisions = vec![revision(2, 8, 2)];
+                    r.push(duplicate);
+                }),
+            ),
+            (
+                "a revision belonging to other content",
+                Box::new(|r: &mut Vec<PortableContent>| {
+                    r[0].revisions[0].content_id = ContentId::from_i64(8);
+                }),
+            ),
+            (
+                "a revision identity at zero",
+                Box::new(|r: &mut Vec<PortableContent>| r[0].revisions[0].id = 0),
+            ),
+            (
+                "a revision newer than the piece it belongs to",
+                Box::new(|r: &mut Vec<PortableContent>| {
+                    r[0].revisions[0].snapshot.version = r[0].current.version + 1;
+                }),
+            ),
+            (
+                "two revisions with one identity",
+                Box::new(|r: &mut Vec<PortableContent>| {
+                    r[0].revisions.push(revision(1, 7, 1));
+                }),
+            ),
+        ];
+        for (label, mutate) in cases {
+            let mut records = vec![record()];
+            mutate(&mut records);
+            assert!(
+                validate_contents(&records).is_err(),
+                "accepted a content graph that cannot be restored: {label}"
+            );
+        }
+    }
+
+    #[test]
+    fn one_tag_slug_with_two_names_across_records_is_rejected() {
+        let mut first = record();
+        first.current.tags = vec![Tag {
+            name: "Rust".into(),
+            slug: Slug::parse("rust").unwrap(),
+        }];
+        first.revisions = Vec::new();
+        let mut second = record();
+        second.current.id = ContentId::from_i64(8);
+        second.current.slug = Slug::parse("second").unwrap();
+        second.current.tags = vec![Tag {
+            name: "Rustlang".into(),
+            slug: Slug::parse("rust").unwrap(),
+        }];
+        second.revisions = Vec::new();
+
+        assert!(validate_contents(&[first, second]).is_err());
+    }
+
+    #[test]
+    fn a_redirect_points_from_a_retired_slug_to_a_piece_that_is_here() {
+        let ids = BTreeSet::from([7_i64]);
+        let slugs = BTreeSet::from([Slug::parse("portable").unwrap()]);
+        let redirect = |slug: &str, id: i64| PortableRedirect {
+            old_slug: Slug::parse(slug).unwrap(),
+            content_id: ContentId::from_i64(id),
+            created_at: at(),
+        };
+
+        validate_redirects(&[redirect("older", 7)], &ids, &slugs).unwrap();
+        validate_redirects(&[], &ids, &slugs).unwrap();
+
+        for (label, redirects) in [
+            (
+                "the same retired slug twice",
+                vec![redirect("older", 7), redirect("older", 7)],
+            ),
+            (
+                "a retired slug that is still live",
+                vec![redirect("portable", 7)],
+            ),
+            (
+                "a destination that is not in the archive",
+                vec![redirect("older", 8)],
+            ),
+        ] {
+            assert!(
+                validate_redirects(&redirects, &ids, &slugs).is_err(),
+                "accepted a redirect graph that cannot be restored: {label}"
+            );
+        }
+    }
+
+    #[test]
+    fn navigation_travels_only_in_its_canonical_form() {
+        validate_portable_navigation(&[]).unwrap();
+        validate_portable_navigation(&[item(1, 0, "About"), item(2, 1, "Contact")]).unwrap();
+
+        for (label, items) in [
+            ("a label that is not trimmed", vec![item(1, 0, " About ")]),
+            ("an identity at zero", vec![item(0, 0, "About")]),
+            (
+                "a position that is not the item's own",
+                vec![item(1, 3, "About")],
+            ),
+            (
+                "two items with one identity",
+                vec![item(1, 0, "About"), item(1, 1, "Contact")],
+            ),
+        ] {
+            assert!(
+                validate_portable_navigation(&items).is_err(),
+                "accepted navigation that is not canonical: {label}"
+            );
+        }
+    }
+}
