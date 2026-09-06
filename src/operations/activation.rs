@@ -548,3 +548,125 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod activation_record_tests {
+    use super::*;
+
+    const UUID: &str = "00000000-0000-0000-0000-000000000000";
+
+    fn destination() -> PathBuf {
+        PathBuf::from("/data/site")
+    }
+
+    fn intent() -> Intent {
+        Intent {
+            version: 1,
+            destination: "site".into(),
+            staging: ".simple-blog-abcd.staging".into(),
+            previous: format!(".simple-blog-previous-{UUID}"),
+            had_previous: false,
+        }
+    }
+
+    #[test]
+    fn a_well_formed_activation_record_is_accepted() {
+        validate_intent(&intent(), &destination()).unwrap();
+    }
+
+    /// Each case breaks exactly one clause of the guard, so no clause can be
+    /// dropped without a record the recovery path must refuse being accepted.
+    #[test]
+    fn every_malformed_activation_record_is_refused() {
+        let cases: Vec<(&str, Box<dyn Fn(&mut Intent)>)> = vec![
+            (
+                "a version this build does not write",
+                Box::new(|i: &mut Intent| i.version = 2),
+            ),
+            (
+                "a record for another destination",
+                Box::new(|i: &mut Intent| i.destination = "elsewhere".into()),
+            ),
+            (
+                "a staging name that is a path",
+                Box::new(|i: &mut Intent| i.staging = ".simple-blog-a/b.staging".into()),
+            ),
+            (
+                "a staging name without the reserved prefix",
+                Box::new(|i: &mut Intent| i.staging = "staging.staging".into()),
+            ),
+            (
+                "a staging name without the reserved suffix",
+                Box::new(|i: &mut Intent| i.staging = ".simple-blog-abcd".into()),
+            ),
+            (
+                "a previous name without the reserved prefix",
+                Box::new(|i: &mut Intent| i.previous = format!(".simple-blog-old-{UUID}")),
+            ),
+            (
+                "a previous name whose suffix is not a UUID",
+                Box::new(|i: &mut Intent| i.previous = ".simple-blog-previous-not-a-uuid".into()),
+            ),
+            (
+                "staging that would overwrite the destination",
+                Box::new(|i: &mut Intent| i.staging = "site".into()),
+            ),
+            (
+                "a retained copy that would overwrite the destination",
+                Box::new(|i: &mut Intent| i.previous = "site".into()),
+            ),
+        ];
+        for (label, mutate) in cases {
+            let mut record = intent();
+            mutate(&mut record);
+            assert!(
+                validate_intent(&record, &destination()).is_err(),
+                "accepted an activation record that must be refused: {label}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_directory_name_is_safe_only_when_it_is_one_ordinary_component() {
+        assert!(safe_name("site"));
+        assert!(safe_name(".simple-blog-abcd.staging"));
+
+        for value in ["", "a/b", "a\\b", "a:b", "a\0b", ".", "..", "/", "a/"] {
+            assert!(
+                !safe_name(value),
+                "treated a name that is not one ordinary component as safe: {value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_absent_path_is_not_a_link_and_an_unreadable_one_is_not_absent() {
+        let temp = tempfile::tempdir().unwrap();
+        reject_link(&temp.path().join("never-created")).unwrap();
+
+        let file = temp.path().join("plain");
+        std::fs::write(&file, b"content").unwrap();
+        reject_link(&file).unwrap();
+        reject_link(temp.path()).unwrap();
+
+        // A path that cannot be inspected at all is an error, not an absence.
+        let through_a_file = file.join("child");
+        assert!(
+            reject_link(&through_a_file).is_err() || !cfg!(unix),
+            "a path below a regular file must not read as absent"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symbolic_link_is_refused_where_an_installation_would_be_replaced() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target");
+        std::fs::write(&target, b"content").unwrap();
+        let link = temp.path().join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let error = reject_link(&link).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    }
+}

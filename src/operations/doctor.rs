@@ -730,3 +730,124 @@ mod probe_tests {
         assert!(write_probe(&temporary.path().join("absent")).is_err());
     }
 }
+
+#[cfg(test)]
+mod inspection_tests {
+    use super::*;
+
+    /// The hint is what an operator reads when a check fails, so each family
+    /// has to say something of its own rather than the general advice.
+    #[test]
+    fn every_check_family_carries_its_own_hint() {
+        let sqlite = diagnostic_hint("sqlite.runtime_pragmas");
+        let filesystem = diagnostic_hint("filesystem.writes");
+        let media = diagnostic_hint("media.files");
+        let release = diagnostic_hint("release.temporary_files");
+        let other = diagnostic_hint("content.trash");
+
+        assert!(sqlite.contains("WAL"));
+        assert!(filesystem.contains("--probe-writes"));
+        assert!(media.contains("verified backup"));
+        assert!(release.contains("publication events"));
+        assert!(other.contains("before changing data"));
+
+        let hints = [sqlite, filesystem, media, release, other];
+        for hint in hints {
+            assert!(!hint.is_empty());
+        }
+        let distinct: std::collections::BTreeSet<&str> = hints.into_iter().collect();
+        assert_eq!(distinct.len(), 5, "two check families share one hint");
+
+        // The family is the part before the first dot, and an unknown family
+        // falls back to the general advice.
+        assert_eq!(diagnostic_hint("sqlite"), sqlite);
+        assert_eq!(diagnostic_hint("sqlitex.thing"), other);
+        assert_eq!(diagnostic_hint(""), other);
+    }
+
+    #[test]
+    fn a_release_temporary_is_a_dotted_tmp_file_or_a_materializing_one() {
+        assert!(is_release_temporary(".release.tmp"));
+        assert!(is_release_temporary(".release.TMP"));
+        assert!(is_release_temporary("objects.materializing-7"));
+        assert!(is_release_temporary(".objects.materializing-7"));
+
+        for filename in ["release.tmp", ".release.txt", ".tmp", "manifest.json"] {
+            assert!(
+                !is_release_temporary(filename),
+                "treated a durable release file as an interrupted write: {filename}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_interrupted_release_write_is_found_and_a_clean_tree_reports_so() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("releases");
+        std::fs::create_dir_all(root.join("objects")).unwrap();
+        std::fs::write(root.join("objects/manifest.json"), b"{}").unwrap();
+
+        let mut clean = DoctorReport::default();
+        check_release_temporaries(&root, &mut clean);
+        assert!(clean.is_healthy());
+
+        std::fs::write(root.join("objects/.half-written.tmp"), b"").unwrap();
+        let mut interrupted = DoctorReport::default();
+        check_release_temporaries(&root, &mut interrupted);
+        assert!(!interrupted.is_healthy());
+
+        // The root itself is at depth zero and is never an interrupted write,
+        // even when it is named like one.
+        let dotted = temp.path().join(".root.tmp");
+        std::fs::create_dir_all(&dotted).unwrap();
+        let mut root_named_like_a_temporary = DoctorReport::default();
+        check_release_temporaries(&dotted, &mut root_named_like_a_temporary);
+        assert!(root_named_like_a_temporary.is_healthy());
+
+        // A tree that is not there at all is not an interrupted write either.
+        let mut absent = DoctorReport::default();
+        check_release_temporaries(&temp.path().join("never-created"), &mut absent);
+        assert!(absent.is_healthy());
+    }
+
+    #[test]
+    fn release_entries_are_the_regular_files_and_anything_else_is_an_issue() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("manifests");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("b.json"), b"{}").unwrap();
+        std::fs::write(directory.join("a.json"), b"{}").unwrap();
+
+        let mut issues = Vec::new();
+        let paths = regular_release_entries(&directory, "manifest", &mut issues);
+        assert_eq!(
+            paths,
+            vec![directory.join("a.json"), directory.join("b.json")]
+        );
+        assert!(issues.is_empty());
+
+        std::fs::create_dir(directory.join("nested")).unwrap();
+        let mut issues = Vec::new();
+        let paths = regular_release_entries(&directory, "manifest", &mut issues);
+        assert_eq!(paths.len(), 2);
+        assert_eq!(issues.len(), 1, "a directory among manifests is an issue");
+
+        // A directory that was never created is not an issue: an installation
+        // that has never published has no manifests.
+        let mut issues = Vec::new();
+        let paths = regular_release_entries(&temp.path().join("absent"), "manifest", &mut issues);
+        assert!(paths.is_empty());
+        assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn decoded_dimensions_report_the_image_that_was_decoded() {
+        let mut bytes = Vec::new();
+        image::DynamicImage::new_rgb8(4, 2)
+            .write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)
+            .unwrap();
+        assert_eq!(decoded_dimensions(&bytes).unwrap(), (4, 2));
+
+        assert!(decoded_dimensions(b"not an image").is_err());
+    }
+}
