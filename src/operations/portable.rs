@@ -118,8 +118,16 @@ impl PortableMigrationService {
                 return Err(error);
             }
         };
-        // A persisted intent may now own staging. Preserve it on any error.
-        let replaced_data_dir = super::activation::activate(&staging, &config.data_dir, force)?;
+        let replaced_data_dir = match super::activation::activate(&staging, &config.data_dir, force)
+        {
+            Ok(previous) => previous,
+            Err(error) => {
+                if matches!(super::activation::pending(&config.data_dir), Ok(false)) {
+                    cleanup_staging(&staging);
+                }
+                return Err(error.into());
+            }
+        };
         tracing::info!(
             event = "portable.import.activated",
             release_id,

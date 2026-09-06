@@ -84,6 +84,20 @@ test('expired authentication leaves unsaved writing recoverable', async ({ page,
   await expect(page.locator('[data-save-state]')).toContainText(/Inquiry ID: [0-9a-f-]{36}/i);
 });
 
+test('expired authentication returns JSON to the shared passkey client', async ({ page, context, site }) => {
+  await site.login(page);
+  await expect(page.locator('[data-passkey-add]')).toBeVisible();
+  await context.clearCookies();
+  const started = page.waitForResponse(response => response.url().endsWith('/admin/auth/passkeys/start'));
+  await page.locator('[data-passkey-add] [data-passkey-action]').click();
+  const response = await started;
+  expect(response.request().headers().accept).toContain('application/json');
+  expect(response.status()).toBe(401);
+  expect(response.headers()['content-type']).toContain('application/json');
+  await expect(page).toHaveURL(`${site.origin}/admin/settings/`);
+  await expect(page.locator('[data-passkey-add] [data-auth-error]')).not.toBeEmpty();
+});
+
 test('concurrent edits show a conflict and preserve both versions', async ({ page, context, site }) => {
   await site.login(page);
   await page.goto(`${site.origin}/admin/content/1/edit/`);

@@ -213,3 +213,72 @@ readobj reports matching GNU build IDs `52b0572d546e5bb0d16ad2e0ec8a657e91534714
 in the Linux executable and debug file, and the executable's GNU debuglink names
 that file. These results validate evidence transport and pairing, not the failed
 tests. No release, deployment or tag was created.
+
+The next hosted run (`34005899373`, revision `fd5eab4`) passed the repaired Windows
+tests/symbols, Linux coverage, MSRV, Linux/macOS, frontend, dependency, policy and
+browser/recovery jobs. Mutation execution remains open. Its predecessor retained
+all eight shards even when superseded: all three 60-second fuzz targets finished,
+and partial mutation outcomes exposed missing search-limit, timestamp-shape,
+release validation, authentication-success, object-integrity and incremental-reuse
+assertions. Add public-contract regressions and a valid JSON activation record
+padded across the 4,096-byte boundary. The ordinary Windows Rust/tool suite passed
+in `2026-09-06T02-20-12-479Z-07735fce` before the subsequent review fixes below.
+
+The diagnostic snapshot error-branch survivors prompted tests for every combination
+of required database/optional sidecar and missing/permission-denied input. Collapse
+duplicate error handling around a descriptor-based regular-file opener. A separate
+fault review found the same metadata/open race could block on a substituted Unix
+FIFO; nonblocking/no-follow opens and descriptor checks now reject it. Real Unix
+FIFO/symlink replacement tests require hosted revalidation. No dependency version
+changed: libc is now an explicit Unix dependency for the OS flag constants.
+
+CodeRabbit review findings were checked against the actual consumers. A shared
+JSON client omitted Accept, reproduced by a real Chromium request after clearing
+authentication (`target/shared-client-red.log`). Add the header and a three-engine
+regression. Restore/import now clean a failed staging area only after confirming
+there is no activation intent; actual competing OS locks exercise that early
+failure, while the existing process-death tests cover retained recovery inputs.
+
+Evidence review fixes: redaction now buffers complete formatted JSON instead of
+persisting its raw sensitive lines; incomplete structured output is evidence
+failure. Raw gates include `key=` as well as the sanitizer's other query keys.
+Server attachments expose only their classified locator, and exported server
+records retain allowlisted IDs, codes and counts while omitting arbitrary message,
+path and body fields. Unknown plain server lines get an explicit omission event.
+Red/green reproductions are `target/privacy-review-*.log` and
+`target/server-events-red.log`. Source snapshots accept regular files up to 64 MiB
+per source file; this diagnostic safety bound does not limit product content.
+
+The old PE matcher accepted an unrelated matching RSDS string. A new failing fixture
+places a decoy outside the actual CodeView directory. Parse the DOS, COFF, optional
+and section headers and only accept a single valid directory-referenced RSDS record.
+The real Windows binary still matches GUID/age `8da7deb8cd7f764180b39b77a9b0bd22/1`
+(`target/pe-directory-actual.log`). Git Bash discovery now supports custom Windows
+locations and reports a stable prerequisite error when unavailable, excluding WSL
+launchers without a companion sh.exe. Full revalidation is still required.
+
+The combined local run `2026-09-06T02-37-33-744Z-7b41f872` passed format, lint,
+all Rust targets/features, frontend/Worker/tools, dependency/workflow/policy/secret
+checks, all 32 browser cases, process-death recovery and symbol pairing. Its input
+fingerprint was unchanged. Windows-only execution does not certify Unix branches.
+
+A further copy-path review found that fingerprinting used verified descriptors,
+but copying reopened raw paths, and a growing input could extend a scan indefinitely.
+Copy through the same regular-file opener and bound every hash/copy to the initial
+length plus one byte; report growth or truncation as inconclusive. The new bounded
+read regression failed before the fix (`target/diagnostic-bound-red.log`) and the
+diagnostic unit suite then passed (`target/diagnostic-bound-green.log`).
+
+Mutation execution was imbalanced because files, rather than mutants, were assigned
+to shards. All eight producers now receive the same ordered scope and use the
+[producer's round-robin partition](https://mutants.rs/shards.html), retaining their
+baseline and all mutations. An actual cargo-mutants listing audit verifies exact
+union, no duplication and counts differing by at most one. This is partition
+verification only; full mutant execution remains required before phase closure.
+
+Local run `2026-09-06T02-52-10-009Z-9f662ea7` passed all Rust and tooling checks but
+failed lint on the new 64 KiB stack buffer. Allocate that buffer on the heap; add
+the surviving empty-journal boundary case. Run `2026-09-06T02-55-21-154Z-bf28ba41`
+then passed format, lint and every Rust target/feature with unchanged inputs.
+The actual partition audit enumerated 935 mutants, distributed as seven shards
+of 117 and one of 116, without duplicates or omissions.

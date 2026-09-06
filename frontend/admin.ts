@@ -159,7 +159,7 @@ function credentialJSON(credential: PublicKeyCredential): Record<string, unknown
 async function post(url: string, data: unknown): Promise<any> {
   const response = await fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", Accept: "application/json" },
     body: JSON.stringify(data),
   });
   const contentType = response.headers.get("content-type") ?? "";

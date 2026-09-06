@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { safeEvidenceText, assertSafeEvidence } from './evidence-security.mjs';
 test('the share gate rejects private values, including an unknown synthetic canary', () => {
-  for (const value of ['sb_session=private', 'sb_csrf=private', 'Bearer private', '/admin/share/private/', '?token=private', 'PRIVATE_FIXTURE_CANARY']) {
+  for (const value of ['sb_session=private', 'sb_csrf=private', 'Bearer private', '/admin/share/private/', '?token=private', '?key=private', '&key=private', 'PRIVATE_FIXTURE_CANARY']) {
     assert.throws(() => assertSafeEvidence(value));
   }
   assert.doesNotThrow(() => assertSafeEvidence('/admin/share/{token}/ ?token=[redacted] Bearer [redacted]'));

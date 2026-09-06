@@ -5,7 +5,7 @@ import { join, relative, resolve, dirname, sep } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { writeJson } from './runner.mjs';
 import { safeEvidenceText, assertSafeEvidence } from './evidence-security.mjs';
-import { summarizeBrowser } from './browser-evidence.mjs';
+import { summarizeBrowser, sanitizeServerEvents } from './browser-evidence.mjs';
 import { publishEvidence } from './publish-evidence.mjs';
 
 const published = resolve('target/shareable');
@@ -79,7 +79,7 @@ for (const path of browserReports) {
             const bytes = Buffer.from(attachment.body, 'base64');
             if (bytes.toString('base64') !== attachment.body) throw new Error('Invalid inline log encoding');
             const name = createHash('sha256').update(bytes).digest('hex').slice(0, 16);
-            save(`${prefix}/${name}.log`, Buffer.from(safeEvidenceText(bytes.toString('utf8'))));
+            save(`${prefix}/${name}.log`, Buffer.from(safeEvidenceText(sanitizeServerEvents(bytes.toString('utf8')))));
             continue;
           }
           const source = resolve(attachment.path);
@@ -87,7 +87,7 @@ for (const path of browserReports) {
           const bytes = readFileSync(source);
           const name = createHash('sha256').update(source).digest('hex').slice(0, 16);
           if (attachment.name === 'server events') {
-            save(`${prefix}/${name}.log`, Buffer.from(safeEvidenceText(bytes.toString('utf8'))));
+            save(`${prefix}/${name}.log`, Buffer.from(safeEvidenceText(sanitizeServerEvents(bytes.toString('utf8')))));
             continue;
           }
           const { unzipSync, strFromU8 } = await import('fflate');

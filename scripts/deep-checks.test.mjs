@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { selectChecks, mutationVerdict, critical, shardChecks } from './deep-checks.mjs';
+import { selectChecks, mutationVerdict, critical, shardChecks, mutationArguments } from './deep-checks.mjs';
 
 test('the recorded cargo-mutants 27.1.0 output is accepted without guessing its status names', () => {
   const recorded = JSON.parse(readFileSync(new URL('./fixtures/cargo-mutants-27.1.0.json', import.meta.url)));
@@ -37,6 +37,18 @@ test('mutation timeouts are inconclusive and never counted as detections', () =>
 test('CI shards cover every applicable check exactly once without silently dropping work', () => {
   const selected = selectChecks(null);
   const shards = Array.from({ length: 8 }, (_, index) => shardChecks(selected, index, 8));
-  for (const kind of ['fuzz', 'mutation']) assert.deepEqual(shards.flatMap(shard => shard[kind]).sort(), selected[kind].toSorted());
+  assert.deepEqual(shards.flatMap(shard => shard.fuzz).sort(), selected.fuzz.toSorted());
+  for (const shard of shards) assert.deepEqual(shard.mutation, selected.mutation);
   for (const [index, count] of [[-1, 8], [8, 8], [0, 0], [0, 1.5]]) assert.throws(() => shardChecks(selected, index, count));
+});
+
+test('all mutation shards use identical file selection and producer-level partitioning with a baseline', () => {
+  for (let index = 0; index < 8; index++) {
+    const args = mutationArguments(critical, { index, count: 8 }, 'output');
+    assert.deepEqual(args.filter((_, position) => args[position - 1] === '--file'), critical);
+    assert.equal(args[args.indexOf('--shard') + 1], `${index}/8`);
+    assert.equal(args[args.indexOf('--sharding') + 1], 'round-robin');
+    assert.ok(args.includes('--no-shuffle'));
+    assert.ok(!args.some(arg => arg.includes('baseline')));
+  }
 });

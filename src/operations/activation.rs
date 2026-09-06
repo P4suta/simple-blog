@@ -432,6 +432,41 @@ mod tests {
     }
 
     #[test]
+    fn intent_size_limit_accepts_the_boundary_and_rejects_valid_but_oversized_json() {
+        for size in [4095, 4096, 4097, 8192] {
+            let temp = tempfile::tempdir().unwrap();
+            let destination = temp.path().join("site");
+            std::fs::create_dir(&destination).unwrap();
+            std::fs::write(destination.join("keep"), "original").unwrap();
+            let staging = ".simple-blog-test.staging";
+            std::fs::create_dir(temp.path().join(staging)).unwrap();
+            let intent = Intent {
+                version: 1,
+                destination: "site".into(),
+                staging: staging.into(),
+                previous: format!(".simple-blog-previous-{}", Uuid::new_v4()),
+                had_previous: true,
+            };
+            let mut bytes = serde_json::to_vec(&intent).unwrap();
+            bytes.resize(size, b' ');
+            let journal = sibling_path(&destination, "activation.json").unwrap();
+            std::fs::write(&journal, bytes).unwrap();
+            let result = recover(&destination);
+            if size > 4096 {
+                assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+                assert!(journal.exists());
+            } else {
+                result.unwrap();
+                assert!(!journal.exists());
+            }
+            assert_eq!(
+                std::fs::read(destination.join("keep")).unwrap(),
+                b"original"
+            );
+        }
+    }
+
+    #[test]
     fn malformed_intent_never_moves_or_removes_data() {
         let temp = tempfile::tempdir().unwrap();
         let destination = temp.path().join("site");

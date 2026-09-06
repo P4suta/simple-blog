@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { mkdirSync, openSync, closeSync, writeSync, writeFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
+import { structuredLog } from './structured-log.mjs';
 
 const sensitive = /^(?:cookie|set-cookie|authorization|csrf|csrf_token|token|setup_token|recovery_codes?|password|secret|body_markdown|body_html)$/i;
 export function sanitizeText(text) {
@@ -56,6 +57,7 @@ export async function runStep({ name, command, args = [], cwd = process.cwd(), e
     throw error;
   }
   const started = performance.now();
+  const structured = streams.map(stream => structuredLog(sanitizeText, text => writeEvidence(stream.fd, text)));
   let evidenceError;
   let timedOut = false;
   let timer;
@@ -74,7 +76,8 @@ export async function runStep({ name, command, args = [], cwd = process.cwd(), e
       if (stream.pending.length > 8 * 1024 * 1024) throw new Error('Evidence line exceeds 8 MiB; preserve a minimal reproduction');
       const lines = stream.pending.split('\n');
       stream.pending = final ? '' : lines.pop();
-      for (const line of lines) writeEvidence(stream.fd, sanitizeText(line) + '\n');
+      for (const line of lines) structured[index].line(line);
+      if (final) structured[index].finish();
     } catch (error) {
       evidenceError ??= error;
       terminate(child);

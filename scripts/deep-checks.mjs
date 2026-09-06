@@ -41,7 +41,16 @@ export function mutationVerdict(value) {
 
 export function shardChecks(selected, index = 0, count = 1) {
   if (!Number.isInteger(index) || !Number.isInteger(count) || count < 1 || count > 32 || index < 0 || index >= count) throw new Error('Invalid verification shard');
-  return Object.fromEntries(Object.entries(selected).map(([kind, values]) => [kind, values.filter((_, position) => position % count === index)]));
+  // Partition mutants, not files: one large file must not monopolize a shard.
+  // Every producer receives identical ordered files and the same denominator.
+  return { fuzz: selected.fuzz.filter((_, position) => position % count === index), mutation: [...selected.mutation] };
+}
+
+export function mutationArguments(files, shard, output) {
+  shardChecks({ fuzz: [], mutation: files }, shard.index, shard.count);
+  return ['mutants', ...files.flatMap(file => ['--file', file]), '--shard', `${shard.index}/${shard.count}`,
+    '--sharding', 'round-robin', '--profile', 'mutation', '--output', output, '--timeout', '120',
+    '--build-timeout', '1200', '--jobs', '1', '--no-shuffle', '--cargo-arg=--lib', '--cargo-arg=--tests'];
 }
 
 async function main() {
@@ -80,10 +89,10 @@ async function main() {
     }
     writeJson(join(directory, 'deep.json'), { mode, reports, status: 'running' });
   }
-  if (mode !== 'daily') for (const [index, file] of selected.mutation.entries()) {
-    const output = join(directory, `mutations-${index}`);
-    const report = await runStep({ name: `mutation-${index}`, command: 'cargo',
-      args: ['mutants', '--file', file, '--profile', 'mutation', '--output', output, '--timeout', '120', '--build-timeout', '1200', '--jobs', '1', '--no-shuffle', '--cargo-arg=--lib', '--cargo-arg=--tests'],
+  if (mode !== 'daily' && selected.mutation.length) {
+    const output = join(directory, `mutations-${shard.index}`);
+    const report = await runStep({ name: `mutation-${shard.index}`, command: 'cargo',
+      args: mutationArguments(selected.mutation, shard, output),
       outputDirectory: directory, timeoutMs: 4 * 60 * 60_000 });
     const outcomes = join(output, 'mutants.out', 'outcomes.json');
     try { report.verdict = existsSync(outcomes) ? mutationVerdict(JSON.parse(readFileSync(outcomes))) : 'evidence_failed'; }

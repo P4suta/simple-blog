@@ -21,15 +21,46 @@ export function pdbIdentity(bytes) {
 }
 
 export function verifyPeSymbols(executable, pdb) {
+  const range = (offset, size) => {
+    if (!Number.isSafeInteger(offset) || offset < 0 || size < 0 || offset + size > executable.length) throw new Error('Invalid PE range');
+  };
+  range(0, 64);
   if (executable.subarray(0, 2).toString() !== 'MZ') throw new Error('Expected a PE executable');
-  const identity = pdbIdentity(pdb);
-  // RSDS records contain the compiler's exact GUID and generation. Requiring a
-  // matching PDB suffix prevents a bare string constant from matching a record.
-  for (let position = executable.indexOf('RSDS'); position >= 0; position = executable.indexOf('RSDS', position + 4)) {
-    if (position + 24 >= executable.length) continue;
-    const end = executable.indexOf(0, position + 24);
-    if (end < 0 || end - position > 1024 || !executable.subarray(position + 24, end).toString().toLowerCase().endsWith('.pdb')) continue;
-    if (executable.subarray(position + 4, position + 20).toString('hex') === identity.guid && executable.readUInt32LE(position + 20) === identity.age) return identity;
+  const pe = executable.readUInt32LE(0x3c);
+  range(pe, 24);
+  if (executable.subarray(pe, pe + 4).toString() !== 'PE\0\0') throw new Error('Invalid PE signature');
+  const sections = executable.readUInt16LE(pe + 6), optionalSize = executable.readUInt16LE(pe + 20), optional = pe + 24;
+  range(optional, optionalSize);
+  const magic = executable.readUInt16LE(optional), directories = magic === 0x20b ? 112 : magic === 0x10b ? 96 : 0;
+  if (!directories || optionalSize < directories + 7 * 8 || sections < 1 || sections > 96) throw new Error('Invalid PE optional header');
+  if (executable.readUInt32LE(optional + directories - 4) < 7) throw new Error('Missing PE debug directory');
+  const table = optional + optionalSize;
+  range(table, sections * 40);
+  const fileOffset = (rva, size) => {
+    for (let index = 0; index < sections; index++) {
+      const section = table + index * 40, address = executable.readUInt32LE(section + 12), rawSize = executable.readUInt32LE(section + 16);
+      if (rva >= address && rva - address + size <= rawSize) {
+        const offset = executable.readUInt32LE(section + 20) + rva - address;
+        range(offset, size);
+        return offset;
+      }
+    }
+    throw new Error('PE debug address is not backed by a section');
+  };
+  const entry = optional + directories + 6 * 8, debugSize = executable.readUInt32LE(entry + 4);
+  if (!debugSize || debugSize % 28 !== 0) throw new Error('Invalid PE debug directory size');
+  const debug = fileOffset(executable.readUInt32LE(entry), debugSize);
+  const records = [];
+  for (let offset = debug; offset < debug + debugSize; offset += 28) {
+    if (executable.readUInt32LE(offset + 12) !== 2) continue;
+    const size = executable.readUInt32LE(offset + 16), position = executable.readUInt32LE(offset + 24);
+    if (size < 25 || size > 4096 || fileOffset(executable.readUInt32LE(offset + 20), size) !== position) throw new Error('Invalid CodeView location');
+    if (executable.subarray(position, position + 4).toString() !== 'RSDS') throw new Error('Unsupported CodeView record');
+    const record = executable.subarray(position, position + size), end = record.indexOf(0, 24);
+    if (end < 0 || !record.subarray(24, end).toString().toLowerCase().endsWith('.pdb')) throw new Error('Invalid CodeView PDB name');
+    records.push({ guid: record.subarray(4, 20).toString('hex'), age: record.readUInt32LE(20) });
   }
+  const identity = pdbIdentity(pdb);
+  if (records.length === 1 && records[0].guid === identity.guid && records[0].age === identity.age) return identity;
   throw new Error('The executable and PDB identities do not match');
 }

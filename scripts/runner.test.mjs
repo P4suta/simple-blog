@@ -54,6 +54,28 @@ test('evidence redacts capability URLs and sensitive structured fields', () => {
   }
 });
 
+test('formatted JSON is redacted as a document even between ordinary log lines', async t => {
+  const outputDirectory = await fixture(t);
+  const result = await runStep({ name: 'formatted-json', command: process.execPath,
+    args: ['-e', 'console.log("before");console.log(JSON.stringify({cookie:"synthetic-private-cookie",nested:{body_markdown:"synthetic-private-draft"}},null,2));console.log("after")'], outputDirectory });
+  assert.equal(result.status, 'passed');
+  const output = await readFile(join(outputDirectory, 'formatted-json.stdout.log'), 'utf8');
+  assert.match(output, /before/);
+  assert.match(output, /after/);
+  assert.equal(output.includes('synthetic-private-cookie'), false);
+  assert.equal(output.includes('synthetic-private-draft'), false);
+});
+
+test('interrupted structured output is withheld and cannot be reported as complete evidence', async t => {
+  const outputDirectory = await fixture(t);
+  const result = await runStep({ name: 'partial-json', command: process.execPath,
+    args: ['-e', 'console.log("before");console.log("{\\n  \\\"cookie\\\": \\\"synthetic-private-cookie\\\"")'], outputDirectory });
+  assert.equal(result.status, 'evidence_failed');
+  const output = await readFile(join(outputDirectory, 'partial-json.stdout.log'), 'utf8');
+  assert.match(output, /before/);
+  assert.equal(output.includes('synthetic-private-cookie'), false);
+});
+
 test('a write failure after child startup is evidence_failed even when the child exits zero', async t => {
   let fired = 0;
   const result = await runStep({ name: 'mid-write', command: process.execPath,

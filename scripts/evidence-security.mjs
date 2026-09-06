@@ -16,6 +16,6 @@ export function assertSafeEvidence(text) {
     /\bsb_(?:session|csrf)=(?!\[redacted\])[^;\s"<>]+/i,
     /\bBearer\s+(?!\[redacted\])[A-Za-z0-9._~+/-]+/i,
     /\/admin\/share\/(?!\[redacted\]|\{token\})[^/\s?"<>]+/,
-    /[?&](?:token|csrf|code|claim|secret)=(?!\[redacted\])[^&\s"<>]+/i,
+    /[?&](?:token|csrf|code|claim|secret|key)=(?!\[redacted\])[^&\s"<>]+/i,
   ]) if (pattern.test(text)) throw new Error('Evidence contains a private value; export refused');
 }

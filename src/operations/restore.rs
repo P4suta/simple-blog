@@ -88,9 +88,13 @@ impl RestoreService {
         for name in ["media", "backups", "releases"] {
             std::fs::create_dir_all(staging.join(name))?;
         }
-        // Once an intent can reference staging, cleanup must never destroy it.
-        guard.0 = None;
-        super::activation::activate(&staging, data_dir, force)?;
+        let activated = super::activation::activate(&staging, data_dir, force);
+        // Only a confirmed absence of an intent leaves this disposable staging
+        // directory ours to clean. Ambiguous state must retain recovery inputs.
+        if activated.is_ok() || !matches!(super::activation::pending(data_dir), Ok(false)) {
+            guard.0 = None;
+        }
+        activated?;
         drop(guard);
         tracing::info!(event = "backup.restore.completed");
         Ok(())
