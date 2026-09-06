@@ -121,5 +121,5 @@ The `cli` and `cli_report` modules are the binary's own; `simple_blog::cli`
 returns `anyhow::Result`, which is a signature for a program, not for a
 library.
 
-See [ADR 0018](adr/0018-supported-library-surface.md) for the decision and its
+See [ADR 0018](adr/0018-declared-public-surface.md) for the decision and its
 consequences.
