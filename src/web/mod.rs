@@ -682,7 +682,9 @@ impl WebError {
         Self::MediaRepository(error)
     }
 
-    const fn diagnostic_code(&self) -> &'static str {
+    /// The stable code this failure reports in a trace and in a diagnostic.
+    #[must_use]
+    pub const fn diagnostic_code(&self) -> &'static str {
         match self {
             Self::Repository(RepositoryError::Conflict { .. }) => "repository.conflict",
             Self::Repository(RepositoryError::SlugTaken(_)) => "repository.slug_taken",
