@@ -5,7 +5,7 @@ recovery, browser workflows, evidence, adversarial checks and release symbols.
 Review began 2026-09-05 and continued 2026-09-06, starting from `7cd494a`.
 Run manifests fingerprint dirty and untracked inputs; the starting commit alone
 does not reproduce the working changes. Pending checks are not success claims.
-The implementation is local on `feat/diagnostic-review-and-recovery`, with its
+The implementation is on `feat/diagnostic-review-and-recovery`, with its
 first checkpoint at `e1e89a1`. No phase is globally closed while its mandatory
 Linux/macOS and adversarial CI gates remain unexecuted.
 
@@ -156,11 +156,21 @@ real common-entry `not_run`/exit-1 result, and all 11 evidence-producing jobs.
 The latter initially failed on the previous workflow. Hosted hard cancellation
 or artifact-service failure can still prevent upload and is not certified here.
 
-The public-remote push was refused by automatic approval review: exporting this
-exact source payload to the public repository needs explicit user authorization.
-Work remains local on `feat/diagnostic-review-and-recovery`. This does not prevent
-local MSRV/Node 24 verification or evidence preparation. Cloudflare conformance
-tests run under Node and do not certify deployed Cloudflare resource behavior.
+The initial public-remote push was refused by automatic approval review. The user
+subsequently explicitly authorized push, PR and merge, resolving that boundary.
+[PR 11](https://github.com/P4suta/simple-blog/pull/11) now runs hosted verification.
+The user prohibits release publication and tag creation; binary/symbol verification
+is preparation only. Cloudflare conformance tests run under Node and do not certify
+deployed Cloudflare resource behavior.
+
+Hosted review pass 1 found an actual platform-schema blind spot: actionlint accepted
+the workflow, but the GitHub runner rejected `timeout-minutes` inside composite
+metadata before any verification could run. Job `101409500827` in run `34004636398`
+records the error. A failing regression now checks every caller's bounded Node setup
+and prohibits the unsupported composite key. Move Node setup into the workflows,
+where the two-minute step deadline is supported; retain the global evidence reserve.
+The [GitHub metadata reference](https://docs.github.com/en/actions/reference/workflows-and-actions/metadata-syntax)
+defines the narrower composite-step contract. This failed run remains failed.
 
 Windows cargo-fuzz failed linking instrumented `slug` as a cdylib (`main`
 unresolved); this is not an executed fuzz success. Docker's daemon was unavailable.

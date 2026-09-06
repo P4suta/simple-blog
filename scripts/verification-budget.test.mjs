@@ -59,8 +59,13 @@ test('every evidence-producing CI job starts a deadline matching its job limit',
       assert.equal(/^      VERIFY_JOB_TIMEOUT_MINUTES: "(\d+)"\r?$/m.exec(job)?.[1], limit);
       assert.ok(job.indexOf('VERIFY_JOB_STARTED_AT=$(date +%s)') >= 0);
       assert.ok(job.indexOf('VERIFY_JOB_STARTED_AT=$(date +%s)') < job.indexOf('uses: actions/checkout@'));
+      assert.match(job, /uses: actions\/setup-node@[^\n]+\n\s+timeout-minutes: 2\r?\n/,
+        'bound Node setup at workflow level, where GitHub supports step timeouts');
+      assert.ok(job.indexOf('uses: actions/setup-node@') < job.indexOf('uses: ./.github/actions/verification'));
       checked++;
     }
   }
   assert.equal(checked, 11, 'new jobs must explicitly adopt the evidence deadline');
+  const composite = readFileSync(new URL('../.github/actions/verification/action.yml', import.meta.url), 'utf8');
+  assert.doesNotMatch(composite, /timeout-minutes:/, 'GitHub rejects step timeouts inside composite metadata');
 });
