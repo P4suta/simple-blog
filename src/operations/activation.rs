@@ -853,14 +853,7 @@ mod recovery_state_tests {
     /// has to be asked for explicitly.
     #[test]
     fn a_destination_that_still_holds_data_is_not_replaced_unless_it_was_asked_for() {
-        let temp = tempfile::tempdir().unwrap();
-        let staging = temp.path().join(".simple-blog-abcd.staging");
-        let destination = temp.path().join("site");
-        for path in [&staging, &destination] {
-            std::fs::create_dir(path).unwrap();
-            std::fs::write(path.join("config.toml"), b"[site]").unwrap();
-        }
-        std::fs::write(staging.join("simple-blog.sqlite3"), b"pages").unwrap();
+        let (_temp, staging, destination) = replacement("refused");
 
         let error = activate(&staging, &destination, false).unwrap_err();
         assert!(
@@ -871,13 +864,34 @@ mod recovery_state_tests {
             !destination.join("simple-blog.sqlite3").exists(),
             "the refused replacement must leave the destination as it was"
         );
+    }
 
-        // Asked for, it happens, and the previous installation is retained.
+    /// Asked for, it happens, and what stood there is retained rather than
+    /// deleted.
+    #[test]
+    fn a_destination_that_was_asked_to_be_replaced_keeps_what_stood_there() {
+        let (_temp, staging, destination) = replacement("asked");
+
         let previous = activate(&staging, &destination, true).unwrap();
         assert!(destination.join("simple-blog.sqlite3").is_file());
         assert!(
             previous.is_some_and(|path| path.join("config.toml").is_file()),
             "the replaced installation must be retained, not deleted"
         );
+    }
+
+    /// Lays out an installation beside the staged copy that would replace it.
+    /// Each caller gets its own name, because the lease that guards a
+    /// replacement is named after the installation.
+    fn replacement(name: &str) -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let temp = tempfile::tempdir().unwrap();
+        let staging = temp.path().join(".simple-blog-abcd.staging");
+        let destination = temp.path().join(name);
+        for path in [&staging, &destination] {
+            std::fs::create_dir(path).unwrap();
+            std::fs::write(path.join("config.toml"), b"[site]").unwrap();
+        }
+        std::fs::write(staging.join("simple-blog.sqlite3"), b"pages").unwrap();
+        (temp, staging, destination)
     }
 }
