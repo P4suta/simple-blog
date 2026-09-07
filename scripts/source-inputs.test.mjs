@@ -27,3 +27,24 @@ test('the original source remains reproducible and input drift cannot be reporte
   assert.throws(() => assertInputsUnchanged(before, fingerprintInputs(root, ['source.rs'])));
   assert.throws(() => snapshotInputs(root, before, join(root, 'late-snapshot')));
 });
+
+test('a changed input is named, so the step that rewrote it can be found', t => {
+  const root = mkdtempSync(join(tmpdir(), 'simple-blog-drift-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(join(root, 'Cargo.lock'), 'before');
+  writeFileSync(join(root, 'kept.rs'), 'same');
+  const before = fingerprintInputs(root, ['Cargo.lock', 'kept.rs', 'gone.rs']);
+
+  writeFileSync(join(root, 'Cargo.lock'), 'after');
+  writeFileSync(join(root, 'gone.rs'), 'created by a step');
+  let reported = '';
+  try {
+    assertInputsUnchanged(before, fingerprintInputs(root, ['Cargo.lock', 'kept.rs', 'gone.rs']));
+    assert.fail('input drift must be reported');
+  } catch (error) {
+    reported = error.message;
+  }
+  assert.match(reported, /Cargo\.lock/);
+  assert.match(reported, /gone\.rs/);
+  assert.doesNotMatch(reported, /kept\.rs/);
+});

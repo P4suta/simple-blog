@@ -32,5 +32,19 @@ export function snapshotInputs(root, inputs, destination) {
 }
 
 export function assertInputsUnchanged(before, after) {
-  if (JSON.stringify(before) !== JSON.stringify(after)) throw new Error('Verification inputs changed during execution');
+  // Naming the files is the difference between a minute and an afternoon: a
+  // verification step that rewrites one of its own inputs, such as a build
+  // refreshing a lock file, looks like nothing at all from the outside.
+  const previous = new Map(before.map(input => [input.path, input.sha256]));
+  const changed = [];
+  for (const input of after) {
+    if (!previous.has(input.path)) changed.push(`${input.path} (appeared)`);
+    else if (previous.get(input.path) !== input.sha256) changed.push(input.path);
+    previous.delete(input.path);
+  }
+  for (const path of previous.keys()) changed.push(`${path} (disappeared)`);
+  if (!changed.length) return;
+  const named = changed.slice(0, 10).join(', ');
+  const rest = changed.length > 10 ? `, and ${changed.length - 10} more` : '';
+  throw new Error(`Verification inputs changed during execution: ${named}${rest}`);
 }

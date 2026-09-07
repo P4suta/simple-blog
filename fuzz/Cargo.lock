@@ -2268,6 +2268,7 @@ dependencies = [
  "image",
  "infer",
  "kamadak-exif",
+ "libc",
  "minijinja",
  "openssl",
  "openssl-sys",

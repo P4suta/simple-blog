@@ -83,7 +83,7 @@ try {
 } catch (error) {
   report.status = 'evidence_failed';
   report.errorCode = error.code ?? 'evidence.unavailable';
-  console.error('Verification evidence could not be preserved; this run failed.');
+  console.error(`Verification evidence could not be preserved; this run failed: ${error.message}`);
 } finally {
   writeJson(manifest, report);
   process.exitCode = report.status === 'passed' ? 0 : 1;
