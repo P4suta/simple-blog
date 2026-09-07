@@ -716,3 +716,147 @@ mod activation_record_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod recovery_state_tests {
+    use super::*;
+
+    const UUID: &str = "00000000-0000-0000-0000-000000000000";
+
+    struct Installation {
+        _temp: tempfile::TempDir,
+        destination: PathBuf,
+        staging: PathBuf,
+        previous: PathBuf,
+    }
+
+    impl Installation {
+        /// Lays out the record `activate` writes before it renames anything,
+        /// then leaves the three directories to the caller.
+        fn with_record(had_previous: bool) -> Self {
+            let temp = tempfile::tempdir().unwrap();
+            let destination = temp.path().join("site");
+            let intent = Intent {
+                version: 1,
+                destination: "site".into(),
+                staging: ".simple-blog-abcd.staging".into(),
+                previous: format!(".simple-blog-previous-{UUID}"),
+                had_previous,
+            };
+            std::fs::write(
+                sibling_path(&destination, "activation.json").unwrap(),
+                serde_json::to_vec(&intent).unwrap(),
+            )
+            .unwrap();
+            Self {
+                staging: temp.path().join(&intent.staging),
+                previous: temp.path().join(&intent.previous),
+                destination,
+                _temp: temp,
+            }
+        }
+
+        /// Puts an installation's worth of content where the caller says.
+        fn create(path: &Path) {
+            std::fs::create_dir(path).unwrap();
+            std::fs::write(path.join("config.toml"), b"[site]").unwrap();
+        }
+
+        fn recover(&self) -> io::Result<()> {
+            recover(&self.destination)
+        }
+
+        fn record_remains(&self) -> bool {
+            pending(&self.destination).unwrap()
+        }
+    }
+
+    /// The three states an interruption can leave behind, and what recovery
+    /// owes each of them.
+    #[test]
+    fn every_state_an_interrupted_replacement_can_leave_is_resolved() {
+        // Renamed away and not yet renamed back: roll the retained copy in.
+        let rolled_back = Installation::with_record(true);
+        Installation::create(&rolled_back.previous);
+        rolled_back.recover().unwrap();
+        assert!(rolled_back.destination.join("config.toml").is_file());
+        assert!(!rolled_back.previous.exists());
+        assert!(!rolled_back.record_remains());
+
+        // Already in place, with nothing retained because nothing was there.
+        let completed = Installation::with_record(false);
+        Installation::create(&completed.destination);
+        completed.recover().unwrap();
+        assert!(completed.destination.join("config.toml").is_file());
+        assert!(!completed.record_remains());
+
+        // Never renamed. The complete staged copy is left for inspection.
+        let not_activated = Installation::with_record(false);
+        Installation::create(&not_activated.staging);
+        not_activated.recover().unwrap();
+        assert!(not_activated.staging.join("config.toml").is_file());
+        assert!(!not_activated.record_remains());
+    }
+
+    /// A layout that matches none of those three is not guessed at. Each case
+    /// satisfies part of one branch and not the rest of it, so no condition
+    /// can be loosened without recovery inventing a state it never saw.
+    #[test]
+    fn a_state_that_matches_no_branch_is_refused_and_changes_nothing() {
+        // Nothing is there at all, and the record says nothing was replaced.
+        let vanished = Installation::with_record(false);
+        let error = vanished.recover().unwrap_err();
+        assert!(
+            error.to_string().contains("ambiguous activation state"),
+            "an empty layout must be refused as ambiguous, not as {error}"
+        );
+        assert!(
+            vanished.record_remains(),
+            "an ambiguous state must keep the record that explains it"
+        );
+
+        // The destination is there, but the record says something was
+        // replaced and nothing was retained.
+        let unaccounted = Installation::with_record(true);
+        Installation::create(&unaccounted.destination);
+        let error = unaccounted.recover().unwrap_err();
+        assert!(
+            error.to_string().contains("ambiguous activation state"),
+            "a missing retained copy must be refused as ambiguous, not as {error}"
+        );
+        assert!(unaccounted.destination.join("config.toml").is_file());
+        assert!(unaccounted.record_remains());
+    }
+
+    /// Replacing an installation that still holds data is the one thing that
+    /// has to be asked for explicitly.
+    #[test]
+    fn a_destination_that_still_holds_data_is_not_replaced_unless_it_was_asked_for() {
+        let temp = tempfile::tempdir().unwrap();
+        let staging = temp.path().join(".simple-blog-abcd.staging");
+        let destination = temp.path().join("site");
+        for path in [&staging, &destination] {
+            std::fs::create_dir(path).unwrap();
+            std::fs::write(path.join("config.toml"), b"[site]").unwrap();
+        }
+        std::fs::write(staging.join("simple-blog.sqlite3"), b"pages").unwrap();
+
+        let error = activate(&staging, &destination, false).unwrap_err();
+        assert!(
+            error.to_string().contains("destination is not empty"),
+            "an installation must not be replaced unasked, and said so, not {error}"
+        );
+        assert!(
+            !destination.join("simple-blog.sqlite3").exists(),
+            "the refused replacement must leave the destination as it was"
+        );
+
+        // Asked for, it happens, and the previous installation is retained.
+        let previous = activate(&staging, &destination, true).unwrap();
+        assert!(destination.join("simple-blog.sqlite3").is_file());
+        assert!(
+            previous.is_some_and(|path| path.join("config.toml").is_file()),
+            "the replaced installation must be retained, not deleted"
+        );
+    }
+}

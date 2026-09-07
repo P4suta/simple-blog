@@ -568,7 +568,8 @@ exclusion_lines() {
 if ! awk '
   /^exclude_re = \[$/ { inside = 1; next }
   inside && /^\]/ { inside = 0; next }
-  inside && /^[[:space:]]*#/ { reasoned = 1; next }
+  inside && /^[[:space:]]*# (Equivalent|Timeout only|Out of reach)\./ { reasoned = 1; next }
+  inside && /^[[:space:]]*#/ { next }
   inside && /^[[:space:]]*$/ { next }
   inside {
     if (!reasoned) { failed = 1 }
@@ -576,7 +577,7 @@ if ! awk '
   }
   END { exit failed }
 ' "$mutants_config"; then
-  fail 'every mutation exclusion needs a comment saying why no test can answer it'
+  fail 'every mutation exclusion must open with Equivalent., Timeout only. or Out of reach. and say why'
 fi
 
 excluded_mutants="$(exclusion_lines | grep -c .)"

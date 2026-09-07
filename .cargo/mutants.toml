@@ -3,14 +3,15 @@
 # The adversarial gate in `scripts/deep-checks.mjs` demands that every mutant
 # is caught and that none times out. That is the right default: a surviving
 # mutant is a behaviour no test pins down. But a mutation operator can also
-# produce a program that is *identical* to the original, or one that cannot
-# fail any way except by hanging. Neither says anything about the tests, and
-# neither can be answered by writing one.
+# produce a program that is *identical* to the original, one that cannot fail
+# any way except by hanging, or one that differs only for an input no machine
+# running these tests can build. None of those says anything about the tests,
+# and none can be answered by writing one.
 #
-# Every entry below has to name which of those two it is and why. Nothing is
-# excluded because a test would merely be inconvenient to write — the check in
-# `tests/repository_policy.sh` keeps this list short and commented so that
-# stays visible.
+# Every entry below opens with `Equivalent.`, `Timeout only.` or `Out of
+# reach.` and then says why. Nothing is excluded because a test would merely
+# be inconvenient to write — the check in `tests/repository_policy.sh` keeps
+# this list short, reasoned and commented so that stays visible.
 
 exclude_re = [
   # Equivalent. O_NONBLOCK (0o4000) and O_NOFOLLOW (0o400000) occupy disjoint
@@ -30,4 +31,12 @@ exclude_re = [
   # be reported as anything but a hang. Line 305's `index += length` is a
   # different mutant and stays checked.
   "src/domain/search\\.rs:308:\\d+: replace \\+= with .+ in excerpt",
+
+  # Out of reach. This is the ceiling on a decompression bomb, and it sits at
+  # eight gibibytes of declared entry sizes while one entry may declare two.
+  # Telling `>` from `==` or `>=` here means getting the unmutated reader past
+  # six to eight gibibytes of decoded entries, all of which it holds in memory
+  # at once. The per-entry ceiling that runs before it is checked by test, and
+  # so is the total once an archive that large is a thing a machine can hold.
+  "src/portable\\.rs:643:\\d+: replace > with (==|>=) in PortableArchive::read",
 ]

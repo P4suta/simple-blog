@@ -400,3 +400,160 @@ mod archive_entry_tests {
         assert!(!installation_exists(unrelated.path()));
     }
 }
+
+#[cfg(test)]
+mod archive_extraction_tests {
+    use super::*;
+
+    /// Writes a backup archive from entries given as name, kind and bytes, so
+    /// an archive `BackupService` would never produce can still be handed to
+    /// the extractor.
+    fn archive(directory: &Path, entries: &[(&str, tar::EntryType, &[u8])]) -> PathBuf {
+        let path = directory.join(format!("{}.tar.zst", Uuid::new_v4()));
+        let mut encoder = zstd::Encoder::new(File::create(&path).unwrap(), 1).unwrap();
+        {
+            let mut builder = tar::Builder::new(&mut encoder);
+            for (name, kind, bytes) in entries {
+                let mut header = tar::Header::new_gnu();
+                header.set_path(name).unwrap();
+                header.set_size(u64::try_from(bytes.len()).unwrap());
+                header.set_mode(0o644);
+                header.set_mtime(0);
+                header.set_entry_type(*kind);
+                if *kind == tar::EntryType::Symlink {
+                    header.set_link_name("database.sqlite3").unwrap();
+                }
+                header.set_cksum();
+                builder.append(&header, *bytes).unwrap();
+            }
+            builder.finish().unwrap();
+        }
+        encoder.finish().unwrap().sync_all().unwrap();
+        path
+    }
+
+    fn staging(temp: &tempfile::TempDir) -> PathBuf {
+        let staging = temp.path().join(Uuid::new_v4().to_string());
+        std::fs::create_dir(&staging).unwrap();
+        staging
+    }
+
+    /// A backup is made of the files and the directories of an installation.
+    /// Everything else an archive can describe is refused before it lands.
+    #[test]
+    fn a_backup_carries_files_and_directories_and_nothing_else() {
+        let temp = tempfile::tempdir().unwrap();
+        let ordinary = archive(
+            temp.path(),
+            &[
+                ("media", tar::EntryType::Directory, b""),
+                ("database.sqlite3", tar::EntryType::Regular, b"pages"),
+            ],
+        );
+        let restored = staging(&temp);
+        extract(&ordinary, &restored).unwrap();
+        assert!(
+            restored.join("media").is_dir(),
+            "a directory entry must be restored as the directory it is"
+        );
+        assert_eq!(
+            std::fs::read(restored.join("database.sqlite3")).unwrap(),
+            b"pages"
+        );
+
+        let linked = archive(
+            temp.path(),
+            &[("config.toml", tar::EntryType::Symlink, b"")],
+        );
+        let error = extract(&linked, &staging(&temp)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("links and special files are not allowed"),
+            "a link must be refused as a link, not as {error}"
+        );
+    }
+
+    /// A name whose bytes are not text on this platform.
+    #[cfg(unix)]
+    fn unreadable_name() -> std::ffi::OsString {
+        use std::os::unix::ffi::OsStringExt as _;
+
+        std::ffi::OsString::from_vec(vec![0xff])
+    }
+
+    #[cfg(windows)]
+    fn unreadable_name() -> std::ffi::OsString {
+        use std::os::windows::ffi::OsStringExt as _;
+
+        std::ffi::OsString::from_wide(&[0xd800])
+    }
+
+    /// The guard exists to refuse a path that leaves the backup, and it says
+    /// so whatever the bytes of that path turn out to be. Its own answer must
+    /// not be shadowed by the encoding check that follows it.
+    #[test]
+    fn an_entry_that_leaves_the_backup_is_refused_as_a_traversal_whatever_its_bytes() {
+        let escaping = Path::new(&unreadable_name()).join("..");
+        let error = validate_archive_path(&escaping).unwrap_err();
+        assert!(
+            error.to_string().contains("unsafe entry path"),
+            "a traversal entry must be named as the unsafe path it is, not as {error}"
+        );
+    }
+
+    /// One component of an entry name is one plain segment. A separator or a
+    /// NUL inside a component is a name that means one thing to the archive
+    /// and another to the filesystem.
+    #[test]
+    fn a_component_carrying_a_separator_or_a_nul_is_not_a_name() {
+        assert_eq!(
+            archive_entry_name(Path::new("media/cover.png")).unwrap(),
+            "media/cover.png"
+        );
+        let error = archive_entry_name(Path::new("a\0b")).unwrap_err();
+        assert!(
+            error.to_string().contains("unsafe entry path"),
+            "a component carrying a NUL must be refused, not read as {error}"
+        );
+    }
+
+    /// A file whose bytes changed after the manifest was written is the case
+    /// verification exists for; it is not enough that the file is there.
+    #[test]
+    fn a_staged_file_whose_bytes_changed_is_a_checksum_mismatch() {
+        let temp = tempfile::tempdir().unwrap();
+        let staging = temp.path();
+        let database = staging.join("database.sqlite3");
+        std::fs::write(&database, b"pages").unwrap();
+        let manifest = BackupManifest {
+            format_version: 1,
+            application_version: "0.1.0".into(),
+            created_at: chrono::Utc::now(),
+            entries: std::collections::BTreeMap::from([(
+                "database.sqlite3".to_owned(),
+                checksum_file(&database).unwrap(),
+            )]),
+        };
+        std::fs::write(
+            staging.join("manifest.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        verify(staging).unwrap();
+
+        std::fs::write(&database, b"other pages").unwrap();
+        let error = verify(staging).unwrap_err();
+        assert!(
+            error.to_string().contains("checksum mismatch"),
+            "a file whose bytes changed must be a checksum mismatch, not {error}"
+        );
+
+        std::fs::remove_file(&database).unwrap();
+        let error = verify(staging).unwrap_err();
+        assert!(
+            error.to_string().contains("checksum mismatch"),
+            "a file the manifest names and the archive lacks must be a checksum mismatch, not {error}"
+        );
+    }
+}

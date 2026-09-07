@@ -2150,3 +2150,236 @@ mod archive_entry_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod archive_reader_tests {
+    use super::*;
+    use chrono::TimeZone as _;
+
+    use crate::domain::theme::Locale;
+
+    fn at() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap()
+    }
+
+    fn site() -> PortableSiteV1 {
+        PortableSiteV1 {
+            format_version: PORTABLE_SITE_FORMAT_VERSION,
+            exported_at: at(),
+            canonical_origin: "https://writing.example".into(),
+            settings: SiteSettings {
+                site_title: "Portable site".into(),
+                site_description: String::new(),
+                locale: Locale::En,
+                logo_media_id: None,
+                favicon_media_id: None,
+                custom_css: String::new(),
+                timezone: "UTC".into(),
+                author_name: String::new(),
+                custom_css_backup: None,
+            },
+            navigation: Vec::new(),
+            contents: Vec::new(),
+            redirects: Vec::new(),
+            media: Vec::new(),
+            engagement: BTreeMap::new(),
+            owner: None,
+            publication: PortablePublicationState {
+                public_revision: 1,
+                next_publish_at: None,
+            },
+        }
+    }
+
+    /// Writes a tar.zst stream from entries given as name, declared size and
+    /// bytes. A declared size that disagrees with the bytes, or data after the
+    /// tar terminator, is what a hostile archive looks like and what this
+    /// crate would never itself produce.
+    fn archive_bytes(entries: &[(&str, u64, Vec<u8>)], trailing: &[u8]) -> Vec<u8> {
+        let mut encoder = zstd::Encoder::new(Vec::new(), 1).unwrap();
+        {
+            let mut builder = Builder::new(&mut encoder);
+            for (name, declared, bytes) in entries {
+                let mut header = Header::new_gnu();
+                header.set_path(name).unwrap();
+                header.set_size(*declared);
+                header.set_mode(0o644);
+                header.set_mtime(0);
+                header.set_entry_type(EntryType::Regular);
+                header.set_cksum();
+                builder.append(&header, bytes.as_slice()).unwrap();
+            }
+            builder.finish().unwrap();
+        }
+        encoder.write_all(trailing).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    /// The two documents of a well-formed archive, carrying an identity that
+    /// matches them.
+    fn documents() -> Vec<(&'static str, u64, Vec<u8>)> {
+        let site_bytes = serde_json::to_vec(&site()).unwrap();
+        let entries = BTreeMap::from([(
+            SITE_PATH.to_owned(),
+            PortableArchiveEntry {
+                checksum: blake3::hash(&site_bytes).to_hex().to_string(),
+                byte_size: u64::try_from(site_bytes.len()).unwrap(),
+            },
+        )]);
+        let identity = PortableArchiveIdentity {
+            archive_format_version: PORTABLE_ARCHIVE_FORMAT_VERSION,
+            site_format_version: PORTABLE_SITE_FORMAT_VERSION,
+            producer_version: env!("CARGO_PKG_VERSION").to_owned(),
+            exported_at: at(),
+            entries,
+        };
+        let archive_id = blake3::hash(&serde_json::to_vec(&identity).unwrap())
+            .to_hex()
+            .to_string();
+        let manifest_bytes = serde_json::to_vec(&PortableArchiveManifest {
+            archive_id,
+            identity,
+        })
+        .unwrap();
+        vec![
+            (
+                MANIFEST_PATH,
+                u64::try_from(manifest_bytes.len()).unwrap(),
+                manifest_bytes,
+            ),
+            (
+                SITE_PATH,
+                u64::try_from(site_bytes.len()).unwrap(),
+                site_bytes,
+            ),
+        ]
+    }
+
+    fn read_archive(bytes: &[u8]) -> Result<PortablePackage, PortableArchiveError> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("site.simple-blog");
+        std::fs::write(&path, bytes)?;
+        PortableArchive::read(&path)
+    }
+
+    #[test]
+    fn a_hand_written_archive_of_the_documented_shape_reads_back() {
+        let package = read_archive(&archive_bytes(&documents(), b"")).unwrap();
+        assert_eq!(package.site.canonical_origin, "https://writing.example");
+        assert!(package.media_files.is_empty());
+    }
+
+    /// Which size limit applies is decided by the entry's own name: the two
+    /// documents are metadata, capped far below a media file. An entry over
+    /// its limit is refused from the header alone, before a byte is decoded.
+    #[test]
+    fn a_document_over_the_metadata_limit_is_refused_before_it_is_decoded() {
+        for name in [MANIFEST_PATH, SITE_PATH] {
+            let oversized = vec![(name, MAX_METADATA_BYTES + 1, b"{}".to_vec())];
+            let error = read_archive(&archive_bytes(&oversized, b"")).unwrap_err();
+            assert!(
+                matches!(&error, PortableArchiveError::SafetyLimit(message)
+                    if message == &format!("archive entry is too large: {name}")),
+                "{name} beyond the metadata limit must be refused as too large, not as {error:?}"
+            );
+        }
+    }
+
+    /// A tar archive is customarily padded out to a twenty-block boundary.
+    /// That much zero padding is part of the format; one byte more is not, and
+    /// a byte that is not zero is not padding at all.
+    #[test]
+    fn trailing_data_is_padding_only_while_it_is_zero_and_within_the_block_factor() {
+        // tar ends an archive with two zero blocks, of which the reader
+        // consumes one. What is left of it is padding like any other.
+        const TERMINATOR_REMAINDER: usize = 512;
+
+        let at_the_boundary = vec![0_u8; MAX_TAR_ZERO_PADDING - TERMINATOR_REMAINDER];
+        read_archive(&archive_bytes(&documents(), &at_the_boundary)).unwrap();
+
+        let one_byte_too_far = vec![0_u8; MAX_TAR_ZERO_PADDING - TERMINATOR_REMAINDER + 1];
+        let error = read_archive(&archive_bytes(&documents(), &one_byte_too_far)).unwrap_err();
+        assert!(
+            matches!(&error, PortableArchiveError::InvalidArchive(message)
+                if message == "trailing decoded data after tar archive"),
+            "padding beyond the block factor must be refused, not read as {error:?}"
+        );
+
+        let error = read_archive(&archive_bytes(&documents(), b"appended")).unwrap_err();
+        assert!(
+            matches!(&error, PortableArchiveError::InvalidArchive(message)
+                if message == "trailing decoded data after tar archive"),
+            "data smuggled after the tar terminator must be refused, not read as {error:?}"
+        );
+    }
+
+    fn manifest(producer_version: &str) -> PortableArchiveManifest {
+        let identity = PortableArchiveIdentity {
+            archive_format_version: PORTABLE_ARCHIVE_FORMAT_VERSION,
+            site_format_version: PORTABLE_SITE_FORMAT_VERSION,
+            producer_version: producer_version.to_owned(),
+            exported_at: at(),
+            entries: BTreeMap::new(),
+        };
+        let archive_id = blake3::hash(&serde_json::to_vec(&identity).unwrap())
+            .to_hex()
+            .to_string();
+        PortableArchiveManifest {
+            archive_id,
+            identity,
+        }
+    }
+
+    /// The producer version is written into every archive and read back by
+    /// another host, so it is one short printable line and nothing else. Each
+    /// case breaks exactly one clause of that sentence.
+    #[test]
+    fn a_producer_version_is_one_short_printable_line() {
+        let empty = BTreeMap::new();
+        manifest("0.1.0").verify(&empty).unwrap();
+        manifest(&"v".repeat(128)).verify(&empty).unwrap();
+
+        for (label, version) in [
+            ("surrounded by whitespace", " 0.1.0 ".to_owned()),
+            ("empty", String::new()),
+            ("one character too long", "v".repeat(129)),
+            ("carrying a control character", "0.1\u{7}.0".to_owned()),
+        ] {
+            let error = manifest(&version).verify(&empty).unwrap_err();
+            assert!(
+                matches!(&error, PortableArchiveError::InvalidArchive(message)
+                    if message == "invalid archive producer version"),
+                "a producer version {label} must be refused as invalid, not as {error:?}"
+            );
+        }
+    }
+
+    /// A name whose bytes are not text on this platform.
+    #[cfg(unix)]
+    fn unreadable_name() -> std::ffi::OsString {
+        use std::os::unix::ffi::OsStringExt as _;
+
+        std::ffi::OsString::from_vec(vec![0xff])
+    }
+
+    #[cfg(windows)]
+    fn unreadable_name() -> std::ffi::OsString {
+        use std::os::windows::ffi::OsStringExt as _;
+
+        std::ffi::OsString::from_wide(&[0xd800])
+    }
+
+    /// The guard exists to refuse a path that leaves the archive, and it says
+    /// so whatever the bytes of that path turn out to be. Its own answer must
+    /// not be shadowed by the encoding check that follows it.
+    #[test]
+    fn an_entry_that_leaves_the_archive_is_refused_as_unsafe_whatever_its_bytes() {
+        let escaping = Path::new("..").join(unreadable_name());
+        let error = validate_archive_path(&escaping).unwrap_err();
+        assert!(
+            matches!(&error, PortableArchiveError::UnsafeEntry(entry)
+                if entry != "non-UTF-8 entry"),
+            "a traversal entry must be named as the unsafe path it is, not as {error:?}"
+        );
+    }
+}
