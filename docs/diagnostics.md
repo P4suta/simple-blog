@@ -40,6 +40,9 @@ strings, cookies, bearer capabilities, or request bodies.
 | `release.read` | web | The release store could not be read. |
 | `web.internal` | web | An unexpected failure; the request ID leads to the trace with the cause. |
 | `security.rate_limited` | web | A client exceeded the authentication or like rate limit; `Retry-After` says when to try again. `doctor` reports both limits under `limits.rate`. |
+| `views.record_failed` | web | A view could not be counted; the page was served and the reader waited for nothing. |
+| `setup.timezone.not_adopted` | web | The time zone offered during setup was not adopted; the site keeps the one it had and the owner can set it in settings. |
+| `database.migration.failed` | operations | A pending migration failed; the safety backup taken beforehand is named in the same event. |
 | `publication_repository_failed` | publication | The public snapshot could not be read from the database. |
 | `publication_compile_failed` | publication | The compiler rejected the snapshot; the site keeps its last release. |
 | `publication_release_store_failed` | publication | The compiled release could not be stored or activated. |
