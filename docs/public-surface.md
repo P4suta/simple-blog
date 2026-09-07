@@ -49,7 +49,7 @@ record:
 - the `.simple-blog` archive, format version 1 (ADR 0011);
 - the release manifest and its content-addressed objects (ADR 0010);
 - the diagnostic JSON schema and the stable error codes (ADR 0006);
-- the fixtures in [`contracts/`](../contracts).
+- the fixtures in [`contracts/`](../contracts/README.md).
 
 ## Embedding
 

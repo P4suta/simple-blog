@@ -49,6 +49,8 @@ test("Cloudflare resolver satisfies the versioned Core release cases", async () 
     if (actual.kind === "asset") {
       assert.equal(actual.object_id, scenario.object_id);
       assert.equal(actual.fallback, scenario.fallback);
+      assert.equal(actual.content_type, scenario.content_type, scenario.path);
+      assert.equal(actual.cache_control, scenario.cache_control, scenario.path);
     } else {
       assert.equal(actual.location, scenario.location);
     }

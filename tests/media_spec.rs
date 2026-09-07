@@ -34,13 +34,6 @@ impl MediaRepository for FailingMediaRepository {
         Ok(())
     }
 
-    async fn mime_type_for_filename(
-        &self,
-        _filename: &str,
-    ) -> Result<Option<String>, MediaRepositoryError> {
-        Ok(None)
-    }
-
     async fn update_media_alt_text(
         &self,
         _id: &MediaId,

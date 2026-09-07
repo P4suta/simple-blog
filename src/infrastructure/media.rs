@@ -25,11 +25,12 @@ use crate::{
     domain::media::{MediaAsset, MediaId, MediaVariant},
 };
 
-const MAX_PIXELS: u64 = 100_000_000;
+/// The most pixels an uploaded image may have; decoding is bounded by it.
+pub const MAX_PIXELS: u64 = 100_000_000;
 const RESPONSIVE_WIDTHS: [u32; 3] = [480, 960, 1_440];
 const LOSSY_QUALITY: u8 = 85;
-// WebP's coded dimension limit; larger images cannot be represented at all.
-const MAX_WEBP_SIDE: u32 = 16_383;
+/// WebP's coded dimension limit; larger images cannot be represented at all.
+pub const MAX_WEBP_SIDE: u32 = 16_383;
 
 #[derive(Clone)]
 pub struct LocalMediaService {

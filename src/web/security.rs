@@ -1,6 +1,8 @@
 use std::net::{IpAddr, SocketAddr};
 
-use crate::{application::auth::RateLimitDecision, config::Config, web::AppState};
+use crate::{
+    application::auth::RateLimitDecision, config::Config, observability::codes, web::AppState,
+};
 use axum::{
     extract::{ConnectInfo, Request, State},
     http::{HeaderValue, Method, StatusCode, header},
@@ -31,6 +33,8 @@ pub(super) async fn auth_rate_limit(
         RateLimitDecision::Allowed => next.run(request).await,
         RateLimitDecision::Limited { retry_after } => {
             tracing::warn!(
+                event = "security.rate_limited",
+                error_code = codes::SECURITY_RATE_LIMITED,
                 retry_after,
                 path = request.uri().path(),
                 "rate limit exceeded"

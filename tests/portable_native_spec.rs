@@ -13,7 +13,8 @@ use simple_blog::{
     infrastructure::{markdown::ComrakMarkdownRenderer, sqlite::SqliteRepository},
     portable::{
         PortableContent, PortableEngagement, PortableOwner, PortablePasskey,
-        PortablePublicationState, PortableRecoveryCode, PortableRedirect, PortableSiteV1,
+        PortablePublicationState, PortableRecoveryCode, PortableRedirect, PortableSettingsRevision,
+        PortableSiteV1,
     },
 };
 use sqlx::Executor;
@@ -67,6 +68,29 @@ fn site() -> PortableSiteV1 {
             public_revision: 88,
             next_publish_at: None,
         },
+        // The kept states of the settings move too, navigation and all;
+        // their navigation items carry no identity of their own.
+        settings_revisions: vec![PortableSettingsRevision {
+            settings: SiteSettings {
+                site_title: "Before the move".into(),
+                site_description: String::new(),
+                locale: Locale::Ja,
+                logo_media_id: None,
+                favicon_media_id: None,
+                custom_css: String::new(),
+                timezone: "UTC".into(),
+                author_name: String::new(),
+                custom_css_backup: None,
+            },
+            navigation: vec![NavigationItem {
+                id: 0,
+                label: "Archive".into(),
+                destination: "/archive/".into(),
+                is_external: false,
+                position: 0,
+            }],
+            created_at,
+        }],
     }
 }
 

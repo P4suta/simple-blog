@@ -12,7 +12,11 @@ use crate::{
     domain::media::MediaId,
 };
 
-const MAX_MARKDOWN_BYTES: usize = 2 * 1024 * 1024;
+/// The most Markdown one piece may hold; a safety limit, reported by `doctor`.
+pub const MAX_MARKDOWN_BYTES: usize = 2 * 1024 * 1024;
+/// Title and summary lengths, in characters.
+pub const MAX_TITLE_CHARS: usize = 200;
+pub const MAX_SUMMARY_CHARS: usize = 500;
 
 pub use crate::domain::content::SaveIntent;
 
@@ -126,12 +130,12 @@ impl ContentService {
         draft.seo_title = clean_optional(draft.seo_title);
         draft.seo_description = clean_optional(draft.seo_description);
 
-        if draft.title.is_empty() || draft.title.chars().count() > 200 {
+        if draft.title.is_empty() || draft.title.chars().count() > MAX_TITLE_CHARS {
             return Err(RepositoryError::Validation(
                 "title must contain 1-200 characters".into(),
             ));
         }
-        if draft.summary.chars().count() > 500 {
+        if draft.summary.chars().count() > MAX_SUMMARY_CHARS {
             return Err(RepositoryError::Validation(
                 "summary must contain at most 500 characters".into(),
             ));

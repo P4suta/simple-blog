@@ -1,0 +1,120 @@
+{
+  "format_version": 1,
+  "exported_at": "2026-09-02T12:00:00Z",
+  "canonical_origin": "https://writing.example",
+  "settings": {
+    "site_title": "Contract site",
+    "site_description": "A site every conforming host can carry",
+    "locale": "en",
+    "logo_media_id": null,
+    "favicon_media_id": null,
+    "custom_css": "body { max-width: 40rem; }",
+    "timezone": "Asia/Tokyo",
+    "author_name": "Ryo"
+  },
+  "navigation": [
+    {
+      "id": 1,
+      "label": "Archive",
+      "destination": "/archive/",
+      "is_external": false,
+      "position": 0
+    }
+  ],
+  "contents": [
+    {
+      "current": {
+        "id": 7,
+        "kind": "post",
+        "title": "Contract",
+        "slug": "contract",
+        "summary": "Leaves any host intact",
+        "body_markdown": "# Canonical\n\nBody.\n",
+        "body_html": "<h1>Canonical</h1>\n<p>Body.</p>\n",
+        "tags": [
+          {
+            "name": "Rust",
+            "slug": "rust"
+          }
+        ],
+        "cover_media_id": null,
+        "seo_title": null,
+        "seo_description": null,
+        "publication": {
+          "state": "public",
+          "publish_at": "2026-09-02T09:00:00Z"
+        },
+        "version": 2,
+        "created_at": "2026-09-01T00:00:00Z",
+        "updated_at": "2026-09-02T12:00:00Z"
+      },
+      "revisions": [
+        {
+          "id": 1,
+          "content_id": 7,
+          "intent": "explicit",
+          "snapshot": {
+            "id": 7,
+            "kind": "post",
+            "title": "Contract",
+            "slug": "contract",
+            "summary": "Leaves any host intact",
+            "body_markdown": "# Canonical\n\nFirst words.\n",
+            "body_html": "<h1>Canonical</h1>\n<p>First words.</p>\n",
+            "tags": [
+              {
+                "name": "Rust",
+                "slug": "rust"
+              }
+            ],
+            "cover_media_id": null,
+            "seo_title": null,
+            "seo_description": null,
+            "publication": {
+              "state": "draft"
+            },
+            "version": 1,
+            "created_at": "2026-09-01T00:00:00Z",
+            "updated_at": "2026-09-01T00:00:00Z"
+          },
+          "created_at": "2026-09-01T00:00:00Z"
+        }
+      ]
+    }
+  ],
+  "redirects": [
+    {
+      "old_slug": "before",
+      "content_id": 7,
+      "created_at": "2026-09-02T12:00:00Z"
+    }
+  ],
+  "media": [],
+  "engagement": {
+    "7": {
+      "likes": 2,
+      "views": 9
+    }
+  },
+  "owner": null,
+  "publication": {
+    "public_revision": 12,
+    "next_publish_at": null
+  },
+  "settings_revisions": [
+    {
+      "settings": {
+        "site_title": "Before the rename",
+        "site_description": "A site every conforming host can carry",
+        "locale": "en",
+        "logo_media_id": null,
+        "favicon_media_id": null,
+        "custom_css": "body { max-width: 40rem; }",
+        "timezone": "Asia/Tokyo",
+        "author_name": "Ryo"
+      },
+      "navigation": [],
+      "created_at": "2026-09-01T00:00:00Z"
+    }
+  ]
+}

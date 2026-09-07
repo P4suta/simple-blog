@@ -19,9 +19,9 @@
 use unicode_normalization::UnicodeNormalization;
 
 /// Queries longer than this are truncated; a search box is not an essay box.
-const MAX_QUERY_CHARS: usize = 120;
+pub const MAX_QUERY_CHARS: usize = 120;
 /// At most this many distinct terms take part in a query.
-const MAX_TERMS: usize = 8;
+pub const MAX_TERMS: usize = 8;
 /// A term with at least this many characters can match the trigram index.
 const TRIGRAM_MIN_CHARS: usize = 3;
 

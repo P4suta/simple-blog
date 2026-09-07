@@ -1704,6 +1704,88 @@ async fn editing_the_publish_date_moves_a_post_but_same_minute_values_keep_it() 
 }
 
 #[tokio::test]
+async fn scheduling_reads_and_shows_the_site_clock() {
+    let harness = Harness::new().await;
+    let (cookie, csrf) = harness.session_cookie().await;
+    let mut settings = harness.repository.site_settings().await.unwrap();
+    settings.timezone = "Asia/Tokyo".into();
+    harness
+        .repository
+        .save_configuration(&settings, &[], Utc::now())
+        .await
+        .unwrap();
+    let repository = &harness.repository;
+    let find = move |slug: &'static str| async move {
+        repository
+            .list_all_content()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|content| content.slug.as_str() == slug)
+            .unwrap()
+    };
+
+    // The form carries the clock the writer was shown: 18:00 in Tokyo is
+    // 09:00 UTC.
+    let created = harness
+        .send(
+            Method::POST,
+            "/admin/content/",
+            Some("application/x-www-form-urlencoded"),
+            scheduled_form(&csrf, "Evening", "evening", None, "2026-12-24T18:00"),
+            Some(&cookie),
+        )
+        .await;
+    assert_eq!(created.status(), StatusCode::SEE_OTHER);
+    let evening = find("evening").await;
+    assert_eq!(
+        evening.publication,
+        Publication::Public {
+            publish_at: Utc.with_ymd_and_hms(2026, 12, 24, 9, 0, 0).unwrap()
+        }
+    );
+
+    // The editor shows the same clock back, labelled with the site's zone,
+    // and keeps the instant beside it for the script.
+    let editor = text(
+        harness
+            .send(
+                Method::GET,
+                &format!("/admin/content/{}/edit/", evening.id),
+                None,
+                Body::empty(),
+                Some(&cookie),
+            )
+            .await,
+    )
+    .await;
+    assert!(
+        editor.contains("name=\"publish_at\" value=\"2026-12-24T18:00\""),
+        "{editor}"
+    );
+    assert!(editor.contains("data-publish-at-utc=\"2026-12-24T09:00:00Z\""));
+    assert!(editor.contains("Asia&#x2f;Tokyo.</small>"));
+
+    // A value that carries its own offset is never reinterpreted.
+    let with_offset = harness
+        .send(
+            Method::POST,
+            "/admin/content/",
+            Some("application/x-www-form-urlencoded"),
+            scheduled_form(&csrf, "Noon", "noon", None, "2026-12-24T12:00:00+09:00"),
+            Some(&cookie),
+        )
+        .await;
+    assert_eq!(with_offset.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        find("noon").await.publication,
+        Publication::Public {
+            publish_at: Utc.with_ymd_and_hms(2026, 12, 24, 3, 0, 0).unwrap()
+        }
+    );
+}
+
+#[tokio::test]
 async fn logout_revokes_the_session_and_clears_both_cookies() {
     let harness = Harness::new().await;
     let (cookie, csrf) = harness.session_cookie().await;
@@ -2611,6 +2693,100 @@ async fn sessions_extend_on_use_without_changing_csrf() {
 
 // ---- Site zone and author ---------------------------------------------------
 
+#[tokio::test]
+async fn settings_history_keeps_earlier_states_and_restores_one() {
+    let harness = Harness::new().await;
+    let (cookie, csrf) = harness.session_cookie().await;
+    let original = harness.repository.site_settings().await.unwrap().site_title;
+    let titled = |title: &str| {
+        serde_urlencoded::to_string([
+            ("csrf", csrf.as_str()),
+            ("site_title", title),
+            ("site_description", ""),
+            ("locale", "en"),
+            ("logo_media_id", ""),
+            ("favicon_media_id", ""),
+            ("custom_css", "body {}"),
+            ("navigation", ""),
+            ("timezone", "UTC"),
+            ("author_name", ""),
+        ])
+        .unwrap()
+    };
+    for title in ["Renamed once", "Renamed twice"] {
+        let saved = harness
+            .send(
+                Method::POST,
+                "/admin/settings/",
+                Some("application/x-www-form-urlencoded"),
+                titled(title),
+                Some(&cookie),
+            )
+            .await;
+        assert_eq!(saved.status(), StatusCode::SEE_OTHER);
+    }
+
+    // The page lists the two earlier states (the first save kept what it
+    // replaced) and not the current one.
+    let page = text(
+        harness
+            .send(
+                Method::GET,
+                "/admin/settings/",
+                None,
+                Body::empty(),
+                Some(&cookie),
+            )
+            .await,
+    )
+    .await;
+    assert!(page.contains("id=\"history\""), "{page}");
+    assert_eq!(
+        page.matches("action=\"/admin/settings/revisions/").count(),
+        2,
+        "{page}"
+    );
+
+    let first = harness
+        .repository
+        .list_settings_revisions()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|revision| revision.settings.site_title == original)
+        .expect("the state before the first save is kept");
+    let (harness_ref, cookie_ref, csrf_ref) = (&harness, cookie.as_str(), csrf.as_str());
+    let restore = move |id: i64| async move {
+        let path = format!("/admin/settings/revisions/{id}/restore/");
+        harness_ref
+            .send(
+                Method::POST,
+                &path,
+                Some("application/x-www-form-urlencoded"),
+                serde_urlencoded::to_string([("csrf", csrf_ref)]).unwrap(),
+                Some(cookie_ref),
+            )
+            .await
+    };
+    let restored = restore(first.id).await;
+    assert_eq!(restored.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        harness.repository.site_settings().await.unwrap().site_title,
+        original
+    );
+    // The restore was a save: what it replaced is still there to go back to.
+    let titles = harness
+        .repository
+        .list_settings_revisions()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|revision| revision.settings.site_title)
+        .collect::<Vec<_>>();
+    assert_eq!(titles[..2], [original.clone(), "Renamed twice".to_owned()]);
+    assert_eq!(restore(424_242).await.status(), StatusCode::NOT_FOUND);
+}
+
 fn settings_form_with(csrf: &str, timezone: &str, author_name: &str, custom_css: &str) -> String {
     serde_urlencoded::to_string([
         ("csrf", csrf),
@@ -2701,7 +2877,11 @@ async fn settings_form_round_trips_timezone_and_author_and_rejects_unknown_zones
     )
     .await;
     assert!(editor.contains("data-site-zone=\"Asia&#x2f;Tokyo\""));
-    assert!(editor.contains("data-site-zone-hint"));
+    // The scheduling control is labelled with the site's clock, not UTC or
+    // the device's; the device is mentioned only by script, when it differs.
+    assert!(editor.contains("<small data-publish-at-hint>"));
+    assert!(editor.contains("Asia&#x2f;Tokyo.</small>"));
+    assert!(editor.contains("<small data-device-zone-hint hidden></small>"));
 
     let rejected = harness
         .send(
@@ -3222,11 +3402,27 @@ async fn editor_offers_focus_mode_and_a_fuller_shortcut_legend() {
     ] {
         assert!(editor.contains(marker), "missing {marker}");
     }
-    let legend_at = editor.find("data-msg-shortcuts=\"").unwrap() + "data-msg-shortcuts=\"".len();
-    let legend = &editor[legend_at..editor[legend_at..].find('"').unwrap() + legend_at];
-    for key in ["{mod}+B", "{mod}+I", "{mod}+K", "{mod}+S"] {
-        assert!(legend.contains(key), "legend lacks {key}: {legend}");
+    // The help lists every binding from the script's own table; the page
+    // supplies the words for each, in the site's language.
+    // tojson escapes <, >, & and ' but not ", so the attribute is
+    // single-quoted and its value must be JSON a script can parse as it is.
+    let start = editor.find("data-shortcut-labels='").unwrap() + "data-shortcut-labels='".len();
+    let labels = &editor[start..start + editor[start..].find('\'').unwrap()];
+    let labels: serde_json::Value = serde_json::from_str(labels).unwrap();
+    assert!(labels["editor.shortcut_bold"].is_string(), "{labels}");
+    for label in [
+        "editor.shortcut_save",
+        "editor.shortcut_bold",
+        "editor.shortcut_italic",
+        "editor.shortcut_link",
+        "editor.shortcut_heading3",
+        "editor.shortcut_fence",
+        "editor.shortcut_focus",
+    ] {
+        assert!(editor.contains(label), "labels lack {label}");
     }
+    assert!(editor.contains("data-shortcut-list"));
+    assert!(!editor.contains("data-msg-shortcuts"));
 }
 
 #[tokio::test]

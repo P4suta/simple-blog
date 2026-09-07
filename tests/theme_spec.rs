@@ -112,6 +112,7 @@ fn embedded_styles_preserve_font_names_and_apply_hairline_color_last() {
         ".prose figure {",
         ".related {",
         ":focus-visible {",
+        "@media (prefers-reduced-motion: reduce) {",
         ".copy-code {",
     ] {
         assert!(theme.contains(rule), "theme lacks {rule}");

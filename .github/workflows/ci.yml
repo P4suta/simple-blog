@@ -100,7 +100,7 @@ jobs:
           node-version: 24
       - uses: ./.github/actions/verification
         with:
-          checks: ${{ runner.os == 'Linux' && 'lint rust' || 'rust' }}
+          checks: ${{ runner.os == 'Linux' && 'lint doc rust' || 'rust' }}
 
   frontend:
     name: Embedded frontend is reproducible

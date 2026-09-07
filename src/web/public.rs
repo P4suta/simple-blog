@@ -1,4 +1,4 @@
-use std::time::SystemTime;
+use std::{sync::Arc, time::SystemTime};
 
 use axum::{
     Json,
@@ -10,10 +10,13 @@ use axum::{
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
+use tracing::Instrument as _;
+
 use crate::{
-    application::ports::RepositoryError,
-    domain::content::ContentId,
-    release::{ReleaseResolver, ResolvedAsset, ResolvedRoute},
+    application::ports::{EngagementRepository, RepositoryError},
+    domain::{content::ContentId, media::mime_for_media_filename},
+    observability::codes,
+    release::{ReleaseId, ReleaseResolver, ResolvedAsset, ResolvedRoute},
     web::{AppState, WebError},
 };
 
@@ -43,16 +46,11 @@ pub async fn release_site(
             if method == Method::GET
                 && let Some(content_id) = asset.content_id
                 && !is_probably_bot(&headers)
-                && let Err(_error) = state
-                    .engagement
-                    .record_view(ContentId::from_i64(content_id))
-                    .await
             {
-                tracing::warn!(
-                    event = "views.record_failed",
+                record_view_in_background(
+                    state.engagement.clone(),
                     content_id,
-                    release_id = %asset.release_id,
-                    error_code = "views.record_failed"
+                    asset.release_id.clone(),
                 );
             }
             asset_response(asset, &method, &headers)
@@ -155,6 +153,33 @@ fn apply_release_headers(
     Ok(())
 }
 
+/// The page never waits for its own counter. The write runs on a task of its
+/// own instead of in front of the response, so a slow or failing database
+/// costs the reader nothing; a failure is a warning that keeps the request
+/// ID. The official host does the same with `waitUntil`.
+fn record_view_in_background(
+    engagement: Arc<dyn EngagementRepository>,
+    content_id: i64,
+    release_id: ReleaseId,
+) {
+    tokio::spawn(
+        async move {
+            if let Err(_error) = engagement
+                .record_view(ContentId::from_i64(content_id))
+                .await
+            {
+                tracing::warn!(
+                    event = "views.record_failed",
+                    error_code = codes::VIEWS_RECORD_FAILED,
+                    content_id,
+                    release_id = %release_id
+                );
+            }
+        }
+        .in_current_span(),
+    );
+}
+
 /// A deliberately light heuristic: well-behaved crawlers identify themselves,
 /// and those are the ones that would otherwise dominate the view counter.
 fn is_probably_bot(headers: &HeaderMap) -> bool {
@@ -174,19 +199,11 @@ pub async fn media_file(
     Path(filename): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response, WebError> {
-    if filename.len() > 160
-        || !filename.bytes().all(|byte| {
-            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'.' | b'w')
-        })
-    {
-        return Ok(StatusCode::NOT_FOUND.into_response());
-    }
-    let Some(mime) = state
-        .media_repository
-        .mime_type_for_filename(&filename)
-        .await
-        .map_err(WebError::media_repository)?
-    else {
+    // The name alone decides the media type: the store only ever writes
+    // `<digest>.<ext>` and `<digest>-<width>w.webp`, so no database is asked
+    // and a temporary or foreign file under the media directory is never
+    // served. A well-formed name for a file that does not exist is a 404.
+    let Some(mime) = mime_for_media_filename(&filename) else {
         return Ok(StatusCode::NOT_FOUND.into_response());
     };
     let etag = format!("\"media-{filename}\"");
@@ -207,10 +224,9 @@ pub async fn media_file(
         return Ok(StatusCode::NOT_FOUND.into_response());
     };
     let mut response = bytes.into_response();
-    response.headers_mut().insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_str(&mime).map_err(WebError::header)?,
-    );
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static(mime));
     response.headers_mut().insert(
         header::CACHE_CONTROL,
         HeaderValue::from_static("public, max-age=31536000, immutable"),

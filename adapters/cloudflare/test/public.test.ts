@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -9,31 +10,13 @@ import {
 } from "../src/public.ts";
 import type { ReleaseManifest, ReleaseReader } from "../src/release.ts";
 
-const releaseId = "a".repeat(64);
-const objectId = "c".repeat(64);
-const manifest: ReleaseManifest = {
-  format_version: 1,
-  compiler_version: "test",
-  public_revision: 1,
-  canonical_origin: "https://writing.example.com",
-  routes: {
-    "/": {
-      kind: "asset",
-      object_id: objectId,
-      content_type: "text/html; charset=utf-8",
-      cache_control: "public, max-age=0, must-revalidate",
-      status: 200,
-      content_id: 42,
-    },
-    "/404/": {
-      kind: "asset",
-      object_id: "b".repeat(64),
-      content_type: "text/html; charset=utf-8",
-      cache_control: "public, max-age=0, must-revalidate",
-      status: 404,
-    },
-  },
-};
+// The same release every adapter resolves: the shared contract fixture, not
+// a manifest of this test's own making.
+const contract = JSON.parse(
+  readFileSync(new URL("../../../contracts/release-resolution-v1.json", import.meta.url), "utf8"),
+) as { active_release: string; manifest: ReleaseManifest; objects: Record<string, string> };
+const releaseId = contract.active_release;
+const manifest = contract.manifest;
 
 class Context implements WaitUntil {
   readonly pending: Promise<unknown>[] = [];
@@ -55,8 +38,8 @@ function dependencies(state: "active" | "pending_dns" = "active") {
       return manifest;
     },
     async object(id) {
-      if (id === objectId) return new TextEncoder().encode("home");
-      return new TextEncoder().encode("missing");
+      const encoded = contract.objects[id];
+      return encoded === undefined ? null : Uint8Array.from(Buffer.from(encoded, "base64"));
     },
   };
   const deps: PublicDependencies = {
@@ -89,12 +72,12 @@ test("only active, explicitly registered domains reach immutable releases", asyn
   const active = dependencies();
   const context = new Context();
   const response = await handlePublicRequest(
-    new Request("https://writing.example.com/"),
+    new Request("https://writing.example.com/essay/"),
     active.deps,
     context,
   );
   assert.equal(response.status, 200);
-  assert.equal(await response.text(), "home");
+  assert.equal(await response.text(), "essay");
   await Promise.all(context.pending);
   assert.deepEqual(active.views, [42]);
 
@@ -107,7 +90,7 @@ test("only active, explicitly registered domains reach immutable releases", asyn
 
   const pending = dependencies("pending_dns");
   const unavailable = await handlePublicRequest(
-    new Request("https://writing.example.com/"),
+    new Request("https://writing.example.com/essay/"),
     pending.deps,
     new Context(),
   );
@@ -127,7 +110,7 @@ test("an active domain without a published release is temporarily unavailable", 
   };
 
   const response = await handlePublicRequest(
-    new Request("https://writing.example.com/"),
+    new Request("https://writing.example.com/essay/"),
     state.deps,
     new Context(),
   );
@@ -199,7 +182,7 @@ test("a rejected asynchronous host lookup fails closed as not found", async () =
   };
 
   const response = await handlePublicRequest(
-    new Request("https://writing.example.com/"),
+    new Request("https://writing.example.com/essay/"),
     state.deps,
     new Context(),
   );
