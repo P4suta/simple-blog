@@ -1534,7 +1534,10 @@ mod portable_validator_tests {
             last_used_at: Some(at()),
             ..passkey("AQID", &"n".repeat(80))
         }];
-        boundary.recovery_codes = vec![recovery("0123456789abcdef".repeat(4))];
+        boundary.recovery_codes = vec![PortableRecoveryCode {
+            consumed_at: Some(at()),
+            ..recovery("0123456789abcdef".repeat(4))
+        }];
         validate_owner(&boundary).unwrap();
     }
 

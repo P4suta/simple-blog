@@ -851,3 +851,170 @@ mod inspection_tests {
         assert!(decoded_dimensions(b"not an image").is_err());
     }
 }
+
+#[cfg(test)]
+mod media_inspection_tests {
+    use super::*;
+
+    fn png(width: u32, height: u32) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        image::DynamicImage::new_rgb8(width, height)
+            .write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)
+            .unwrap();
+        bytes
+    }
+
+    fn expectation<'a>(
+        filename: &'a str,
+        bytes: &[u8],
+        checksum: Option<&'a str>,
+    ) -> MediaFileExpectation<'a> {
+        MediaFileExpectation {
+            filename,
+            kind: "media file",
+            byte_size: bytes.len() as u64,
+            mime_type: "image/png",
+            width: 4,
+            height: 2,
+            checksum,
+        }
+    }
+
+    fn issues_for(path: &Path, expected: MediaFileExpectation<'_>) -> Vec<String> {
+        let mut issues = Vec::new();
+        inspect_media_file(path, expected, &mut issues);
+        issues
+    }
+
+    #[test]
+    fn a_media_file_that_matches_its_record_raises_nothing() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("cover.png");
+        let bytes = png(4, 2);
+        std::fs::write(&path, &bytes).unwrap();
+        let checksum = checksum_file(&path).unwrap();
+
+        assert!(issues_for(&path, expectation("cover.png", &bytes, Some(&checksum))).is_empty());
+        assert!(issues_for(&path, expectation("cover.png", &bytes, None)).is_empty());
+    }
+
+    /// Each case breaks one thing the record claims, so no check can be
+    /// dropped without a corrupt installation reading as healthy.
+    #[test]
+    fn every_way_a_media_file_can_disagree_with_its_record_is_reported() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("cover.png");
+        let bytes = png(4, 2);
+        std::fs::write(&path, &bytes).unwrap();
+        let checksum = checksum_file(&path).unwrap();
+
+        let mut wrong_size = expectation("cover.png", &bytes, Some(&checksum));
+        wrong_size.byte_size += 1;
+        assert!(
+            issues_for(&path, wrong_size)
+                .iter()
+                .any(|issue| issue.contains("byte size mismatch"))
+        );
+
+        let elsewhere = "af".repeat(32);
+        assert!(
+            issues_for(&path, expectation("cover.png", &bytes, Some(&elsewhere)))
+                .iter()
+                .any(|issue| issue.contains("checksum mismatch"))
+        );
+
+        let mut wrong_type = expectation("cover.png", &bytes, None);
+        wrong_type.mime_type = "image/jpeg";
+        assert!(
+            issues_for(&path, wrong_type)
+                .iter()
+                .any(|issue| issue.contains("media type mismatch"))
+        );
+
+        let mut wrong_dimensions = expectation("cover.png", &bytes, None);
+        wrong_dimensions.width = 8;
+        assert!(
+            issues_for(&path, wrong_dimensions)
+                .iter()
+                .any(|issue| issue.contains("dimensions mismatch"))
+        );
+
+        // Something that is not an image at all cannot be decoded.
+        let broken = temp.path().join("broken.png");
+        std::fs::write(&broken, b"not an image").unwrap();
+        let mut expectation_for_broken = expectation("broken.png", b"not an image", None);
+        expectation_for_broken.byte_size = 12;
+        assert!(
+            issues_for(&broken, expectation_for_broken)
+                .iter()
+                .any(|issue| issue.contains("decode failed"))
+        );
+    }
+
+    #[test]
+    fn a_media_file_that_is_absent_or_not_a_file_is_reported_as_such() {
+        let temp = tempfile::tempdir().unwrap();
+        let bytes = png(4, 2);
+
+        let absent = temp.path().join("absent.png");
+        assert!(
+            issues_for(&absent, expectation("absent.png", &bytes, None))
+                .iter()
+                .any(|issue| issue.contains("missing media file")),
+            "an absent media file must be reported as missing"
+        );
+
+        let directory = temp.path().join("cover.png");
+        std::fs::create_dir(&directory).unwrap();
+        assert!(
+            issues_for(&directory, expectation("cover.png", &bytes, None))
+                .iter()
+                .any(|issue| issue.contains("is not a regular file")),
+            "a directory where a media file belongs must not read as missing"
+        );
+    }
+
+    #[test]
+    fn a_release_directory_that_cannot_be_enumerated_is_an_issue_not_an_absence() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("manifests");
+        std::fs::write(&file, b"not a directory").unwrap();
+
+        let mut issues = Vec::new();
+        let paths = regular_release_entries(&file, "manifest", &mut issues);
+        assert!(paths.is_empty());
+        assert_eq!(
+            issues.len(),
+            1,
+            "a manifests path that is a file must be reported, not read as no manifests"
+        );
+        assert!(issues[0].contains("could not enumerate"));
+    }
+
+    #[test]
+    fn a_directory_check_says_whether_it_tested_writing() {
+        let temp = tempfile::tempdir().unwrap();
+
+        let mut read_only = DoctorReport::default();
+        check_directory("filesystem.data", temp.path(), false, &mut read_only);
+        assert!(read_only.is_healthy());
+
+        let mut probed = DoctorReport::default();
+        check_directory("filesystem.data", temp.path(), true, &mut probed);
+        assert!(probed.is_healthy());
+        assert_eq!(
+            std::fs::read_dir(temp.path()).unwrap().count(),
+            0,
+            "a write probe leaves nothing behind"
+        );
+
+        let absent = temp.path().join("never-created");
+        let mut unreadable = DoctorReport::default();
+        check_directory("filesystem.data", &absent, false, &mut unreadable);
+        assert!(!unreadable.is_healthy());
+
+        let mut unwritable = DoctorReport::default();
+        check_directory("filesystem.data", &absent, true, &mut unwritable);
+        assert!(!unwritable.is_healthy());
+    }
+}

@@ -24,8 +24,10 @@ exclude_re = [
   # The flags themselves are pinned by value in `regular_file_tests`.
   "src/infrastructure/diagnostic_snapshot\\.rs:\\d+:\\d+: replace \\| with &",
 
-  # Timeout only. `index *= 1` leaves the scan on the same character, so the
-  # loop over a snippet that contains any non-matching character never ends.
-  # Line 305's `index += length` is a different mutant and stays checked.
-  "src/domain/search\\.rs:308:\\d+: replace \\+= with \\*= in excerpt",
+  # Timeout only. This is the step that carries the scan past a character the
+  # terms do not match. Every replacement of it leaves the loop unable to end
+  # - `*= 1` holds the position, `-= 1` walks backwards - so none of them can
+  # be reported as anything but a hang. Line 305's `index += length` is a
+  # different mutant and stays checked.
+  "src/domain/search\\.rs:308:\\d+: replace \\+= with .+ in excerpt",
 ]
