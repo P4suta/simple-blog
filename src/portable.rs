@@ -1105,10 +1105,15 @@ mod portable_contract_tests {
         assert!(validate_origin("not a url").is_err());
     }
 
+    /// The limit is on the bytes a filesystem has to store, not on the
+    /// characters a person sees, so 100 two-byte characters are the same
+    /// length as 200 one-byte ones.
     #[test]
     fn a_plain_media_filename_is_accepted() {
         validate_media_filename("cover.png").unwrap();
         validate_media_filename(&"a".repeat(200)).unwrap();
+        validate_media_filename(&"é".repeat(100)).unwrap();
+        assert!(validate_media_filename(&"é".repeat(101)).is_err());
     }
 
     #[test]
@@ -1313,6 +1318,12 @@ mod portable_validator_tests {
             (
                 "body is too long",
                 Box::new(|c: &mut Content| c.body_markdown = "b".repeat(MAX_MARKDOWN_BYTES + 1)),
+            ),
+            (
+                "body is too long in bytes rather than in characters",
+                Box::new(|c: &mut Content| {
+                    c.body_markdown = "é".repeat(MAX_MARKDOWN_BYTES / 2 + 1);
+                }),
             ),
             (
                 "seo title is blank",
@@ -2283,6 +2294,15 @@ mod archive_reader_tests {
                 "{name} beyond the metadata limit must be refused as too large, not as {error:?}"
             );
         }
+
+        // Exactly at the limit is within it. Such an archive is refused for
+        // the contents it turns out not to have, not for its declared size.
+        let at_the_limit = vec![(MANIFEST_PATH, MAX_METADATA_BYTES, b"{}".to_vec())];
+        let error = read_archive(&archive_bytes(&at_the_limit, b"")).unwrap_err();
+        assert!(
+            matches!(&error, PortableArchiveError::Io(_)),
+            "an entry the size of the limit is within it, not over it: {error:?}"
+        );
     }
 
     /// A tar archive is customarily padded out to a twenty-block boundary.
@@ -2416,6 +2436,65 @@ mod partial_cleanup_tests {
             reported.contains("portable.archive.partial_cleanup_failed")
                 && reported.contains("occupied"),
             "a partial archive that outlived its write must be named: {reported:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod manifest_entry_tests {
+    use super::*;
+    use chrono::TimeZone as _;
+
+    fn at() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap()
+    }
+
+    fn manifest(checksum: String, byte_size: u64) -> PortableArchiveManifest {
+        let identity = PortableArchiveIdentity {
+            archive_format_version: PORTABLE_ARCHIVE_FORMAT_VERSION,
+            site_format_version: PORTABLE_SITE_FORMAT_VERSION,
+            producer_version: env!("CARGO_PKG_VERSION").to_owned(),
+            exported_at: at(),
+            entries: BTreeMap::from([(
+                SITE_PATH.to_owned(),
+                PortableArchiveEntry {
+                    checksum,
+                    byte_size,
+                },
+            )]),
+        };
+        let archive_id = blake3::hash(&serde_json::to_vec(&identity).unwrap())
+            .to_hex()
+            .to_string();
+        PortableArchiveManifest {
+            archive_id,
+            identity,
+        }
+    }
+
+    /// The record carries both the length and the checksum of every entry,
+    /// and an entry has to answer to each of them on its own.
+    #[test]
+    fn an_entry_answers_to_its_recorded_length_and_to_its_recorded_checksum() {
+        let files = BTreeMap::from([(SITE_PATH.to_owned(), b"site".to_vec())]);
+        let checksum = blake3::hash(b"site").to_hex().to_string();
+        manifest(checksum.clone(), 4).verify(&files).unwrap();
+
+        // The same number of bytes, and not the same bytes.
+        let tampered = BTreeMap::from([(SITE_PATH.to_owned(), b"SITE".to_vec())]);
+        let error = manifest(checksum.clone(), 4).verify(&tampered).unwrap_err();
+        assert!(
+            matches!(&error, PortableArchiveError::InvalidArchive(message)
+                if message == &format!("checksum or size mismatch: {SITE_PATH}")),
+            "bytes that changed without changing length must be refused: {error:?}"
+        );
+
+        // The recorded bytes, and not the number of them the record claims.
+        let error = manifest(checksum, 5).verify(&files).unwrap_err();
+        assert!(
+            matches!(&error, PortableArchiveError::InvalidArchive(message)
+                if message == &format!("checksum or size mismatch: {SITE_PATH}")),
+            "an entry of another length must be refused: {error:?}"
         );
     }
 }

@@ -1185,6 +1185,23 @@ mod database_check_tests {
         repository.close().await;
     }
 
+    /// A piece left in the trash is not a fault, but an operator looking at a
+    /// database that seems short of content has to be able to see it.
+    #[tokio::test]
+    async fn what_is_waiting_in_the_trash_is_counted() {
+        let temp = tempfile::tempdir().unwrap();
+        let repository = repository(&temp).await;
+
+        let mut report = DoctorReport::default();
+        check_content_trash(&repository, &mut report).await;
+        assert!(report.is_healthy());
+        assert_eq!(
+            detail_of(&report, "content.trash"),
+            "0 piece(s) in the trash"
+        );
+        repository.close().await;
+    }
+
     /// A row pointing at a parent that is not there survives every query that
     /// does not join it. Only this check finds it.
     #[tokio::test]

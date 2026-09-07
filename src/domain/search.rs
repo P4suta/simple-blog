@@ -489,3 +489,28 @@ mod html_text_tests {
         assert_eq!(html_to_text("<p>&lt;p&gt;</p>"), "<p>");
     }
 }
+
+#[cfg(test)]
+mod excerpt_window_tests {
+    use super::*;
+
+    fn shape(segments: &[Segment]) -> Vec<(&str, bool)> {
+        segments
+            .iter()
+            .map(|segment| (segment.text.as_str(), segment.hit))
+            .collect()
+    }
+
+    /// A term can begin inside the window and run past its end. The snippet
+    /// is a window, so the highlight stops where the window does.
+    #[test]
+    fn a_match_that_runs_past_the_window_is_cut_where_the_window_ends() {
+        let (segments, before, after) = excerpt("xxabcdefgh", &["a", "cdefgh"], 6);
+        assert_eq!(
+            shape(&segments),
+            vec![("xx", false), ("a", true), ("b", false), ("cd", true)]
+        );
+        assert!(!before, "the window starts at the beginning of the text");
+        assert!(after, "the window stops before the end of the text");
+    }
+}

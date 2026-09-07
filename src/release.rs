@@ -1116,3 +1116,84 @@ mod temporary_cleanup_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod store_integrity_tests {
+    use super::*;
+
+    fn one_page(body: &[u8]) -> PreparedRelease {
+        ReleaseBuilder::clean(1, "https://writing.example")
+            .unwrap()
+            .asset("/", body.to_vec(), "text/html; charset=utf-8", None)
+            .unwrap()
+            .finish()
+            .unwrap()
+    }
+
+    /// A release is named by its own bytes. Both halves of that have to hold,
+    /// or the store would accept a manifest filed under someone else's name.
+    #[tokio::test]
+    async fn a_manifest_filed_under_the_wrong_identity_is_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = FilesystemReleaseStore::new(temp.path().join("releases"));
+        store
+            .put_manifest(&one_page(b"durable page"))
+            .await
+            .unwrap();
+
+        // The name does not belong to these bytes.
+        let mut renamed = one_page(b"durable page");
+        renamed.id = ReleaseId::parse("a".repeat(64)).unwrap();
+        let error = store.put_manifest(&renamed).await.unwrap_err();
+        assert!(
+            matches!(&error, ReleaseError::Integrity { kind, .. } if *kind == "manifest"),
+            "a manifest under another release's name must be refused: {error}"
+        );
+
+        // The bytes are named correctly and are not the canonical encoding.
+        let mut padded = one_page(b"durable page");
+        padded.manifest_bytes.push(b' ');
+        padded.id =
+            ReleaseId::parse(blake3::hash(&padded.manifest_bytes).to_hex().to_string()).unwrap();
+        let error = store.put_manifest(&padded).await.unwrap_err();
+        assert!(
+            matches!(&error, ReleaseError::Integrity { kind, .. } if *kind == "manifest"),
+            "a manifest that is not canonically encoded must be refused: {error}"
+        );
+    }
+
+    /// A content-addressed path that cannot be read is not the same as one
+    /// that is not there, and writing over it would destroy a release.
+    #[tokio::test]
+    async fn a_release_path_that_cannot_be_read_is_reported_rather_than_written_over() {
+        let temp = tempfile::tempdir().unwrap();
+        let occupied = temp.path().join("occupied");
+        std::fs::create_dir(&occupied).unwrap();
+
+        let error = write_content_addressed(&occupied, b"page")
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("read release file"),
+            "a path that could not be read must say so, not be written over: {error}"
+        );
+        assert!(
+            occupied.is_dir(),
+            "the refusal must leave what was already there"
+        );
+
+        // Absent is the case that goes ahead, and identical bytes are a
+        // repeat of a write that already succeeded.
+        let path = temp.path().join("object");
+        write_content_addressed(&path, b"page").await.unwrap();
+        write_content_addressed(&path, b"page").await.unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"page");
+
+        let error = write_content_addressed(&path, b"other").await.unwrap_err();
+        assert!(
+            matches!(&error, ReleaseError::Integrity { kind, .. }
+                if *kind == "existing release file"),
+            "different bytes at the same address must be refused: {error}"
+        );
+    }
+}
