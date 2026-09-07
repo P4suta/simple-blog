@@ -453,3 +453,39 @@ mod entity_and_excerpt_tests {
         assert_eq!(find_from(&[], &needle, 0), None);
     }
 }
+
+#[cfg(test)]
+mod html_text_tests {
+    use super::*;
+
+    /// A block boundary becomes one space and an inline tag becomes nothing,
+    /// because CJK prose must not grow a space around every `<em>`. Each case
+    /// pins one part of that: which tag is which, where the tag ends, and
+    /// where the text after it starts.
+    #[test]
+    fn a_block_boundary_becomes_a_space_and_an_inline_tag_becomes_nothing() {
+        assert_eq!(html_to_text("<p>検索</p><p>エンジン</p>"), "検索 エンジン");
+        assert_eq!(
+            html_to_text("<p>an <em>inline</em> word</p>"),
+            "an inline word"
+        );
+        assert_eq!(html_to_text("<p>a<br>b</p>"), "a b");
+        assert_eq!(html_to_text("<div>a</div>b"), "a b");
+        assert_eq!(html_to_text("plain"), "plain");
+    }
+
+    /// The reader stops at a tag it cannot see the end of rather than
+    /// treating the remainder of the document as text.
+    #[test]
+    fn an_unterminated_tag_takes_the_rest_of_the_document_with_it() {
+        assert_eq!(html_to_text("visible<p unterminated"), "visible");
+    }
+
+    /// Entities are decoded once the tags are gone, so an escaped bracket
+    /// cannot be read back as one.
+    #[test]
+    fn entities_are_decoded_after_the_tags_are_gone() {
+        assert_eq!(html_to_text("<p>a &amp; b</p>"), "a & b");
+        assert_eq!(html_to_text("<p>&lt;p&gt;</p>"), "<p>");
+    }
+}
