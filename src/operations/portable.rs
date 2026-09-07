@@ -37,8 +37,7 @@ impl PortableMigrationService {
     #[tracing::instrument(
         name = "operation.portable.export",
         skip_all,
-        fields(output = %output.display(), exported_at = %exported_at),
-        err
+        fields(output = %output.display(), exported_at = %exported_at)
     )]
     pub async fn export(
         config: &Config,
@@ -75,8 +74,7 @@ impl PortableMigrationService {
     #[tracing::instrument(
         name = "operation.portable.import",
         skip_all,
-        fields(archive = %archive.display(), destination = %config.data_dir.display()),
-        err
+        fields(archive = %archive.display(), destination = %config.data_dir.display())
     )]
     pub async fn import_package(
         archive: &Path,
@@ -120,11 +118,14 @@ impl PortableMigrationService {
                 return Err(error);
             }
         };
-        let replaced_data_dir = match activate_staging(&staging, &config.data_dir) {
-            Ok(backup) => backup,
+        let replaced_data_dir = match super::activation::activate(&staging, &config.data_dir, force)
+        {
+            Ok(previous) => previous,
             Err(error) => {
-                cleanup_staging(&staging);
-                return Err(error);
+                if matches!(super::activation::pending(&config.data_dir), Ok(false)) {
+                    cleanup_staging(&staging);
+                }
+                return Err(error.into());
             }
         };
         tracing::info!(
@@ -286,37 +287,6 @@ fn write_media_files(
     }
     sync_directory(directory)?;
     Ok(())
-}
-
-fn activate_staging(staging: &Path, destination: &Path) -> Result<Option<PathBuf>, OperationError> {
-    let parent = usable_parent(destination);
-    let previous = if destination.exists() {
-        let filename = destination
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("simple-blog-data");
-        let backup = parent.join(format!(
-            ".{filename}.before-portable-import-{}",
-            Uuid::new_v4()
-        ));
-        std::fs::rename(destination, &backup)?;
-        Some(backup)
-    } else {
-        None
-    };
-    if let Err(error) = std::fs::rename(staging, destination) {
-        if let Some(backup) = &previous
-            && let Err(rollback) = std::fs::rename(backup, destination)
-        {
-            return Err(OperationError::ImportActivation(format!(
-                "activation failed ({error}); rollback failed ({rollback}); previous data remains at {}",
-                backup.display()
-            )));
-        }
-        return Err(OperationError::ImportActivation(error.to_string()));
-    }
-    sync_directory(parent)?;
-    Ok(previous)
 }
 
 fn cleanup_staging(staging: &Path) {

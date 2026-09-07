@@ -1,0 +1,35 @@
+# Mutants that no test can distinguish, and why.
+#
+# The adversarial gate in `scripts/deep-checks.mjs` demands that every mutant
+# is caught and that none times out. That is the right default: a surviving
+# mutant is a behaviour no test pins down. But a mutation operator can also
+# produce a program that is *identical* to the original, one that cannot fail
+# any way except by hanging, or one that differs only for an input no machine
+# running these tests can build. None of those says anything about the tests,
+# and none can be answered by writing one.
+#
+# Every entry below opens with `Equivalent.`, `Timeout only.` or `Out of
+# reach.` and then says why. Nothing is excluded because a test would merely
+# be inconvenient to write — the check in `tests/repository_policy.sh` keeps
+# this list short, reasoned and commented so that stays visible.
+
+exclude_re = [
+  # Equivalent. O_NONBLOCK (0o4000) and O_NOFOLLOW (0o400000) occupy disjoint
+  # bits, so `^` computes exactly the value `|` computes. The two programs are
+  # the same program.
+  "src/infrastructure/diagnostic_snapshot\\.rs:\\d+:\\d+: replace \\| with \\^",
+
+  # Timeout only. `&` of those disjoint bits is 0, which opens a diagnostic
+  # input with no flags at all; a FIFO in place of the database then blocks
+  # forever. The mutant can only ever be reported as a hang, never as caught.
+  # The flags themselves are pinned by value in `regular_file_tests`.
+  "src/infrastructure/diagnostic_snapshot\\.rs:\\d+:\\d+: replace \\| with &",
+
+  # Out of reach. This is the ceiling on a decompression bomb, and it sits at
+  # eight gibibytes of declared entry sizes while one entry may declare two.
+  # Telling `>` from `==` or `>=` here means getting the unmutated reader past
+  # six to eight gibibytes of decoded entries, all of which it holds in memory
+  # at once. The per-entry ceiling that runs before it is checked by test, and
+  # so is the total once an archive that large is a thing a machine can hold.
+  "src/portable\\.rs:643:\\d+: replace > with (==|>=) in PortableArchive::read",
+]

@@ -11,7 +11,7 @@ fail() {
 }
 
 ((BASH_VERSINFO[0] >= 3)) || fail 'Bash 3 or newer is required'
-for command in awk cargo find grep jq sort; do
+for command in awk cargo find grep jq sort tr; do
   command -v "$command" >/dev/null || fail "required command is unavailable: $command"
 done
 
@@ -41,6 +41,9 @@ required_public_files=(
   contracts/diagnostics-v1.json
   contracts/domain-registration-v1.json
   contracts/release-resolution-v1.json
+  AGENTS.md
+  docs/verification-review.md
+  .github/actions/verification/action.yml
 )
 
 for path in "${required_public_files[@]}"; do
@@ -122,9 +125,9 @@ third_party_actions="$({
   awk '
     $1 == "-" && $2 == "uses:" {
       split($3, reference, "@")
-      if (reference[1] !~ /^(actions|github)\//) print reference[1]
+      if (reference[1] !~ /^(actions|github)\// && reference[1] !~ /^\.\//) print reference[1]
     }
-  ' .github/workflows/*.yml | sort -u
+  ' .github/workflows/*.yml .github/actions/verification/action.yml | sort -u
 })"
 
 while IFS= read -r action; do
@@ -140,10 +143,13 @@ actual_checks="$({
     .rules[]
     | select(.type == "required_status_checks")
     | .parameters.required_status_checks[].context
-  ' .github/rulesets/main.json | sort
+  ' .github/rulesets/main.json | tr -d '\r' | sort
 })"
 
 ci_checks=(
+  'Windows release symbols'
+  'Browser and recovery evidence'
+  'Parser and critical decision evidence'
   'Coverage floor'
   'Dependency policy'
   'Embedded frontend is reproducible'
@@ -207,7 +213,7 @@ if ! awk '
     finish_step()
     exit failed
   }
-' .github/workflows/*.yml; then
+' .github/workflows/*.yml .github/actions/verification/action.yml; then
   fail 'every checkout step must disable persisted credentials'
 fi
 
@@ -284,10 +290,11 @@ grep -Fq '* @P4suta' .github/CODEOWNERS \
   || fail 'the repository must retain an explicit default code owner'
 
 while IFS= read -r reference; do
+  [[ "$reference" == ./* ]] && continue
   version="${reference##*@}"
   [[ "$version" =~ ^[0-9a-f]{40}$ ]] \
     || fail "GitHub Action is not pinned to a full commit SHA: $reference"
-done < <(awk '$1 == "-" && $2 == "uses:" { print $3 }' .github/workflows/*.yml)
+done < <(awk '$1 == "-" && $2 == "uses:" { print $3 }' .github/workflows/*.yml .github/actions/verification/action.yml)
 
 rust_sources=(build.rs)
 while IFS= read -r path; do
@@ -612,5 +619,57 @@ done
 
 [[ "$inspected_fixtures" -ge 2 ]] \
   || fail "the fixture scan inspected only $inspected_fixtures contracts; contracts has changed shape"
+
+# A mutant the adversarial gate cannot answer is excluded by name, and only
+# ever for a reason that is a property of the mutation operator rather than of
+# the tests: the mutated program is the same program, it can fail no way
+# except by hanging, or it differs only for an input no machine running these
+# tests can build. Each exclusion carries the sentence that says which. An
+# exclusion added because a test would merely be tedious to write is a hole,
+# and keeping the list short is what makes one visible.
+mutants_config=.cargo/mutants.toml
+[[ -s "$mutants_config" ]] \
+  || fail "$mutants_config is missing or empty; the mutation exclusions are undeclared"
+grep -q '^exclude_re = \[$' "$mutants_config" \
+  || fail "$mutants_config must declare exclude_re as a multi-line list"
+
+exclusion_lines() {
+  awk '
+    /^exclude_re = \[$/ { inside = 1; next }
+    inside && /^\]/ { inside = 0; next }
+    inside && /^[[:space:]]*#/ { next }
+    inside && /^[[:space:]]*$/ { next }
+    inside { gsub(/^[[:space:]]*"|",?[[:space:]]*$/, ""); print }
+  ' "$mutants_config"
+}
+
+if ! awk '
+  /^exclude_re = \[$/ { inside = 1; next }
+  inside && /^\]/ { inside = 0; next }
+  inside && /^[[:space:]]*# (Equivalent|Timeout only|Out of reach)\./ { reasoned = 1; next }
+  inside && /^[[:space:]]*#/ { next }
+  inside && /^[[:space:]]*$/ { next }
+  inside {
+    if (!reasoned) { failed = 1 }
+    reasoned = 0
+  }
+  END { exit failed }
+' "$mutants_config"; then
+  fail 'every mutation exclusion must open with Equivalent., Timeout only. or Out of reach. and say why'
+fi
+
+excluded_mutants="$(exclusion_lines | grep -c .)"
+[[ "$excluded_mutants" -ge 1 ]] \
+  || fail 'the mutation exclusion scan found nothing; .cargo/mutants.toml has changed shape'
+[[ "$excluded_mutants" -le 8 ]] \
+  || fail "the mutation gate excludes $excluded_mutants mutants; that list is meant to stay small"
+
+while IFS= read -r excluded_pattern; do
+  [[ -n "$excluded_pattern" ]] || continue
+  case "$excluded_pattern" in
+    src/*) ;;
+    *) fail "a mutation exclusion must name the source it applies to: $excluded_pattern" ;;
+  esac
+done < <(exclusion_lines)
 
 printf 'repository policy: ok\n'

@@ -96,6 +96,38 @@ async fn seeded(temp: &tempfile::TempDir) -> (Config, Arc<SqliteRepository>) {
 }
 
 #[tokio::test]
+async fn restore_cleans_disposable_staging_when_activation_fails_before_an_intent() {
+    let source = tempfile::tempdir().unwrap();
+    let (source_config, repository) = seeded(&source).await;
+    let archive = BackupService::create(&source_config, repository.as_ref(), None, Utc::now())
+        .await
+        .unwrap();
+    let target = tempfile::tempdir().unwrap();
+    let destination = target.path().join("destination");
+    let hash = blake3::hash(b"destination").to_hex();
+    let lock_path = target
+        .path()
+        .join(format!(".simple-blog-{}.activation.lock", &hash[..16]));
+    let lock = std::fs::File::create(lock_path).unwrap();
+    lock.lock().unwrap();
+    let error = RestoreService::restore(&archive, &destination, false)
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("installation is in use"),
+        "the intended lock fault must fire"
+    );
+    assert!(!destination.exists());
+    assert!(std::fs::read_dir(target.path()).unwrap().all(|entry| {
+        !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".staging")
+    }));
+}
+
+#[tokio::test]
 async fn backup_and_restore_round_trip_database_config_and_media() {
     let source = tempfile::tempdir().unwrap();
     let (source_config, repository) = seeded(&source).await;

@@ -24,6 +24,7 @@ import {
 } from "./internal-publication.ts";
 import { handlePublicRequest } from "./public.ts";
 import { RegistrationService } from "./registration.ts";
+import { diagnosticMethod, diagnosticPath } from "./observability.ts";
 
 export { SiteCoordinator } from "./site-object.ts";
 
@@ -89,7 +90,7 @@ export default {
         new D1AdminRegistrationDirectory(env.REGISTRY),
         env.CORE,
         env.INTERNAL_DO_TOKEN,
-      ).handle(request);
+      ).handle(request, requestId);
       if (admin !== null) {
         status = admin.status;
         return withRequestId(admin, requestId);
@@ -118,8 +119,9 @@ export default {
       console.log(JSON.stringify({
         event: "request.completed",
         request_id: requestId,
-        method: request.method,
-        path: new URL(request.url).pathname,
+        operation_id: requestId,
+        method: diagnosticMethod(request.method),
+        path: diagnosticPath(new URL(request.url).pathname),
         status,
         latency_ms: Date.now() - started,
       }));
@@ -152,13 +154,14 @@ function diagnostic(
   event: string,
   requestId: string,
   request: Request,
-  error: unknown,
+  _error: unknown,
 ): void {
   console[level](JSON.stringify({
     event,
     request_id: requestId,
-    method: request.method,
-    path: new URL(request.url).pathname,
-    error: error instanceof Error ? error.message : "unknown error",
+    operation_id: requestId,
+    method: diagnosticMethod(request.method),
+    path: diagnosticPath(new URL(request.url).pathname),
+    error_code: event === "request.failed" ? "worker.internal" : "worker.background",
   }));
 }

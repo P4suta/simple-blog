@@ -34,6 +34,7 @@ import {
   toggleWrap,
 } from "./markdown-commands";
 import { applySuggestion, suggestTags } from "./tag-suggest";
+import { RequestFailure, withInquiry } from "./request-failure";
 
 // Word-wise cursor movement that actually understands 日本語. CodeMirror's
 // default group motion sees an unbroken CJK run as one giant word;
@@ -162,20 +163,10 @@ function credentialJSON(credential: PublicKeyCredential): Record<string, unknown
   };
 }
 
-/** A server answer the UI can explain: the status decides the sentence, the detail fills it in. */
-class RequestFailure extends Error {
-  constructor(
-    readonly status: number,
-    readonly detail: string,
-  ) {
-    super(detail || `HTTP ${status}`);
-  }
-}
-
 async function post(url: string, data: unknown): Promise<any> {
   const response = await fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", Accept: "application/json" },
     body: JSON.stringify(data),
   });
   const contentType = response.headers.get("content-type") ?? "";
@@ -183,7 +174,7 @@ async function post(url: string, data: unknown): Promise<any> {
     ? await response.json()
     : { error: await response.text() };
   if (!response.ok) {
-    throw new RequestFailure(response.status, payload.error || "");
+    throw new RequestFailure(response.status, payload.error || "", response.headers.get("x-request-id"));
   }
   return payload;
 }
@@ -206,7 +197,8 @@ function describeFailure(reason: unknown, messages: Record<string, string | unde
         ? reason.message
         : "";
   const template = messages[failureKey(status)] ?? messages.error_server ?? "Request failed";
-  return template.replace("{detail}", detail.trim()).replace(/[:：]\s*$/, "");
+  return withInquiry(template.replace("{detail}", detail.trim()).replace(/[:：]\s*$/, ""), reason,
+    document.documentElement.lang === "ja" ? "問い合わせID" : document.documentElement.lang === "zh" ? "查询 ID" : "Inquiry ID");
 }
 
 function failureMessages(source: DOMStringMap): Record<string, string | undefined> {
@@ -227,7 +219,7 @@ async function uploadMedia(csrf: string, file: File, altText = ""): Promise<any>
   data.set("alt_text", altText.trim() || file.name);
   data.set("file", file);
   const response = await fetch("/admin/media/", { method: "POST", body: data });
-  if (!response.ok) throw new RequestFailure(response.status, await response.text());
+  if (!response.ok) throw new RequestFailure(response.status, await response.text(), response.headers.get("x-request-id"));
   return response.json();
 }
 
@@ -554,10 +546,12 @@ function showSaved(
   site: unknown,
   savedText: string,
   pendingText: string,
+  requestId?: string | null,
 ): void {
   if (site === "pending") {
     chip.dataset.pending = "true";
-    chip.textContent = pendingText;
+    chip.textContent = withInquiry(pendingText, new RequestFailure(503, "", requestId),
+      document.documentElement.lang === "ja" ? "問い合わせID" : document.documentElement.lang === "zh" ? "查询 ID" : "Inquiry ID");
   } else {
     delete chip.dataset.pending;
     chip.textContent = savedText;
@@ -650,12 +644,12 @@ if (settingsForm) {
         headers: { Accept: "application/json" },
         body: parameters,
       });
-      if (!response.ok) throw new RequestFailure(response.status, await response.text());
+      if (!response.ok) throw new RequestFailure(response.status, await response.text(), response.headers.get("x-request-id"));
       const result = await response.json();
       if (!saveAgain) {
         dirty = false;
         delete saveState.dataset.error;
-        showSaved(saveState, result.site, msg.saved, msg.savedPending);
+        showSaved(saveState, result.site, msg.saved, msg.savedPending, response.headers.get("x-request-id"));
         themePreview?.contentWindow?.location.reload();
       }
     } catch (reason) {
@@ -1217,7 +1211,7 @@ if (editor) {
         );
         return;
       }
-      if (!response.ok) throw new RequestFailure(response.status, await response.text());
+      if (!response.ok) throw new RequestFailure(response.status, await response.text(), response.headers.get("x-request-id"));
       const result = await response.json();
       let version = editor.querySelector<HTMLInputElement>("[name=version]");
       if (!version) {
@@ -1258,6 +1252,7 @@ if (editor) {
           result.site,
           msg.savedAt.replace("{time}", time),
           msg.savedPending.replace("{time}", time),
+          response.headers.get("x-request-id"),
         );
       }
       schedulePreviewReload();
@@ -1373,7 +1368,7 @@ if (editor) {
         headers: { Accept: "application/json" },
         body: new URLSearchParams(new FormData(shareForm) as unknown as Record<string, string>),
       });
-      if (!response.ok) throw new RequestFailure(response.status, await response.text());
+      if (!response.ok) throw new RequestFailure(response.status, await response.text(), response.headers.get("x-request-id"));
       const link = await response.json();
       if (shareUrl) shareUrl.value = `${location.origin}${link.url}`;
       if (shareExpires) {

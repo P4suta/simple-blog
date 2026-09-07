@@ -201,11 +201,59 @@ async fn a_public_edit_activates_a_new_complete_release() {
 
     assert_ne!(second.release_id, first.release_id);
     assert!(second.staged_object_count < second.route_count);
+    let first_manifest = store.manifest(&first.release_id).await.unwrap();
+    let second_manifest = store.manifest(&second.release_id).await.unwrap();
+    let original_objects = first_manifest
+        .routes
+        .values()
+        .filter_map(|route| route.object_id())
+        .collect::<std::collections::HashSet<_>>();
+    let current_objects = second_manifest
+        .routes
+        .values()
+        .filter_map(|route| route.object_id())
+        .collect::<std::collections::HashSet<_>>();
+    assert!(current_objects.intersection(&original_objects).count() > 0);
+    assert_eq!(
+        second.staged_object_count,
+        current_objects.difference(&original_objects).count()
+    );
     assert!(
         body_for(&store, &second.release_id, "/original/")
             .await
             .contains("Edited")
     );
+}
+
+#[tokio::test]
+async fn a_noop_publish_checks_existing_objects_and_preserves_the_active_pointer_on_damage() {
+    let (temp, _repository, _content, store, publication) = harness().await;
+    let now = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
+    let published = publication.publish(now).await.unwrap();
+    let manifest = store.manifest(&published.release_id).await.unwrap();
+    let object = temp
+        .path()
+        .join("releases/objects")
+        .join(manifest.routes["/"].object_id().unwrap());
+    let original = std::fs::read(&object).unwrap();
+    for missing in [false, true] {
+        if missing {
+            std::fs::remove_file(&object).unwrap();
+        } else {
+            std::fs::write(&object, b"damaged object").unwrap();
+        }
+        let error = publication.publish(now).await.unwrap_err();
+        assert_eq!(error.code(), "publication_release_store_failed");
+        assert_eq!(
+            store.active().await.unwrap().unwrap().id,
+            published.release_id
+        );
+        std::fs::write(&object, &original).unwrap();
+        assert_eq!(
+            publication.publish(now).await.unwrap().disposition,
+            PublicationDisposition::Unchanged
+        );
+    }
 }
 
 async fn body_for(

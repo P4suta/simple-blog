@@ -64,6 +64,7 @@
     <span class="editor-status" data-status-label>{{ t["status." ~ content.status] }}</span>
     <time class="editor-status-time" data-status-time datetime="{{ content.publish_at }}"{% if content.status != 'scheduled' %} hidden{% endif %}>{{ content.publish_at }}</time>
     {% if not trashed %}
+    <noscript><button type="submit" class="editor-bar-button">{{ t["editor.save"] }}</button></noscript>
     <button type="submit" class="editor-bar-button" name="status" value="public" data-publish{% if content.status == 'public' %} hidden{% endif %}>{% if content.status == 'scheduled' %}{{ t["editor.schedule"] }}{% else %}{{ t["editor.publish"] }}{% endif %}</button>
     <details class="editor-confirm" data-unpublish{% if content.status == 'draft' %} hidden{% endif %}>
       <summary class="editor-bar-button">{{ t["editor.unpublish"] }}</summary>

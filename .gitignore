@@ -1,4 +1,5 @@
 /data/
+/.simple-blog-*
 /node_modules/
 /target/
 /.env
@@ -7,3 +8,8 @@
 *.log
 *.profraw
 lcov.info
+/fuzz/target/
+/fuzz/artifacts/
+/fuzz/corpus/
+/mutants.out/
+/mutants.out.old/

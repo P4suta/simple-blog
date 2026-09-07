@@ -58,6 +58,60 @@ async fn entropy_failure_is_explicit_and_never_persists_a_partial_capability() {
 }
 
 #[tokio::test]
+async fn a_known_passkey_commits_its_updated_state_and_a_usable_new_session() {
+    let temp = tempfile::tempdir().unwrap();
+    let repository = Arc::new(
+        SqliteRepository::connect(&temp.path().join("db"))
+            .await
+            .unwrap(),
+    );
+    let auth = AuthService::new(repository.clone(), system_entropy());
+    let accounts = PasskeyAccountService::new(repository.clone(), system_entropy());
+    let now = Utc::now();
+    let setup = auth
+        .issue_setup_token(SetupPurpose::Initial, now)
+        .await
+        .unwrap();
+    accounts
+        .complete_setup_registration(
+            setup.expose(),
+            SetupPurpose::Initial,
+            Uuid::new_v4(),
+            StoredPasskey {
+                credential_id: vec![1, 2, 3],
+                name: "Synthetic credential".into(),
+                passkey_json: "{\"counter\":0}".into(),
+            },
+            now,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let session = accounts
+        .complete_authentication(&[1, 2, 3], "{\"counter\":1}", now)
+        .await
+        .unwrap()
+        .expect("known credential signs in");
+    let identity = auth
+        .authenticate(session.session.expose(), now)
+        .await
+        .unwrap()
+        .expect("session committed");
+    assert!(auth.verify_csrf(&identity, session.csrf.expose()));
+    assert_eq!(
+        repository.list_passkeys().await.unwrap()[0].passkey_json,
+        "{\"counter\":1}"
+    );
+    assert!(
+        accounts
+            .complete_authentication(&[9], "{}", now)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
 async fn initial_registration_commits_owner_passkey_session_and_recovery_codes_atomically() {
     let temp = tempfile::tempdir().unwrap();
     let repository = Arc::new(
@@ -201,6 +255,19 @@ async fn owner_recovery_replaces_credentials_and_invalidates_old_sessions() {
         .issue_setup_token(SetupPurpose::Recovery, now)
         .await
         .unwrap();
+
+    // Recovery registers a replacement for an owner who already exists, so
+    // the browser is handed that owner's handle and told which key not to
+    // offer again. Initial registration is the case with no owner at all.
+    let context = accounts
+        .setup_context(recovery.expose(), now)
+        .await
+        .unwrap()
+        .expect("a recovery capability belongs to the owner it recovers");
+    assert_eq!(context.purpose, SetupPurpose::Recovery);
+    assert_eq!(context.user_handle, user_handle);
+    assert_eq!(context.excluded_credentials, vec![vec![1_u8]]);
+
     let recovered = accounts
         .complete_setup_registration(
             recovery.expose(),

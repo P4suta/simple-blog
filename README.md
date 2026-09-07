@@ -69,6 +69,21 @@ The site's time zone is adopted from the browser when the first passkey is regis
 
 ## Verify
 
+The common local/CI entry is `node scripts/verify.mjs` after
+`bun install --frozen-lockfile`. `browser`, `frontend`, `coverage` and `release`
+select smaller scopes. Install browser engines with
+`bun x playwright install chromium firefox webkit` (Linux CI also uses
+`--with-deps`). Commands, input hashes, revision, tool versions, seed and outcomes
+are retained under `target/verification`; `node scripts/collect-evidence.mjs`
+exports the vetted subset to `target/shareable`. CI retains this evidence for
+30 days even when checks fail. Do not share raw browser reports or test databases.
+
+`node scripts/deep-checks.mjs pr` runs applicable parser fuzzing (60 seconds per
+target) and mutation checks; set `VERIFY_BASE` to the actual comparison revision.
+An unavailable comparison selects every scope. Daily fuzzing lasts 10 minutes
+per target, and weekly mutation testing covers important decisions. Timeouts
+and unexecuted checks never count as successful detections.
+
 ```sh
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
@@ -101,6 +116,44 @@ cargo run --locked -- doctor --json
 ```
 
 The JSON diagnostic schema, stable error codes, and secret-redaction rules are compatibility contracts; query strings, cookies, bearer capabilities, and request bodies do not belong in traces. Every code and every doctor check is listed in [`contracts/diagnostics-v1.json`](contracts/diagnostics-v1.json) and explained in [`docs/diagnostics.md`](docs/diagnostics.md).
+
+Doctor opens a verified private copy of the database and WAL, never the source
+through SQLite. It does not migrate, checkpoint, recover an interrupted
+replacement, or change source sidecars. Active writes or a hot rollback journal
+can make diagnosis inconclusive; independent filesystem and release checks
+still run. Temporary storage is required for the copy. Default filesystem
+checks establish readability; `doctor --probe-writes` explicitly tests creation,
+synchronization and cleanup. JSON `inspection_scope`, check `code` and `hint`
+are additive to the existing keys and exit status.
+
+Stop the server before restore or portable import: an OS installation lease
+prevents concurrent CLI operations. Replacements retain the entire previous
+directory beside the installation. A durable activation record lets the next
+ordinary command recover an interrupted switch before loading configuration;
+doctor only reports it. Keep sibling staging, previous and activation files
+together until recovery is verified. Never delete the retained directory as an
+automatic cleanup step. Windows directory flushes remain best effort; process
+crash tests do not certify hardware power-loss behavior.
+Creating the initial sibling lease and replacing directories require access to
+the installation's parent. A writable data directory alone does not establish
+those capabilities; doctor reports only the inspection scope and paths listed.
+
+Release verification pairs Windows binaries and PDBs by compiler GUID and age;
+Linux exports separate debug information with a debug link. Artifact manifests
+include SHA-256 hashes of both. `target/verification/symbols-release` contains
+the matching set; keep it when diagnosing that build.
+
+`node scripts/verify.mjs performance` builds the disposable fixture and records
+three samples against a fixed 100-article dataset. Set `PERFORMANCE_BASELINE` to
+`docs/performance-baseline.json` for an environment-aware comparison. Different
+platforms or toolchains are marked incomparable. The checked-in debug-profile
+baseline documents time, peak memory and SQL counts; it is not a production SLA.
+Verification retains private source snapshots and rejects changes during a run;
+raw snapshots stay out of shared artifacts.
+CI records the job's start before setup and stops verification early enough to
+reserve five minutes for evidence. Exhausted work is `not_run` with
+`verification.budget_exhausted`; timed-out children remain `timeout`. A forcibly
+terminated runner or unavailable artifact service cannot guarantee an upload.
 
 The native adapter is runnable today. The [Cloudflare host adapter](adapters/cloudflare/README.md) has executable conformance, staging, activation, registration, scheduling, and diagnostic boundaries; deployment additionally requires the compatible multi-site internal Core service described there.
 

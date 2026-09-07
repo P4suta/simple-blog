@@ -15,6 +15,7 @@ use tracing::Instrument as _;
 use crate::{
     application::ports::{EngagementRepository, RepositoryError},
     domain::{content::ContentId, media::mime_for_media_filename},
+    observability::codes,
     release::{ReleaseId, ReleaseResolver, ResolvedAsset, ResolvedRoute},
     web::{AppState, WebError},
 };
@@ -163,15 +164,15 @@ fn record_view_in_background(
 ) {
     tokio::spawn(
         async move {
-            if let Err(error) = engagement
+            if let Err(_error) = engagement
                 .record_view(ContentId::from_i64(content_id))
                 .await
             {
                 tracing::warn!(
                     event = "views.record_failed",
+                    error_code = codes::VIEWS_RECORD_FAILED,
                     content_id,
-                    release_id = %release_id,
-                    error = %error
+                    release_id = %release_id
                 );
             }
         }

@@ -1,0 +1,82 @@
+{
+  "producer": "cargo-mutants 27.1.0",
+  "provenance": "Projection of the locally captured search mutation run on 2026-09-05; argument paths and timings omitted.",
+  "outcomes": [
+    {
+      "scenario": "Baseline",
+      "summary": "Success"
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/domain/search.rs:117:5: replace escape_like -> String with String::new()",
+          "package": "simple-blog",
+          "file": "src/domain/search.rs",
+          "function": {
+            "function_name": "escape_like",
+            "return_type": "-> String",
+            "span": {
+              "start": {
+                "line": 114,
+                "column": 1
+              },
+              "end": {
+                "line": 125,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 117,
+              "column": 5
+            },
+            "end": {
+              "line": 124,
+              "column": 12
+            }
+          },
+          "replacement": "String::new()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant"
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/domain/search.rs:117:5: replace escape_like -> String with \"xyzzy\".into()",
+          "package": "simple-blog",
+          "file": "src/domain/search.rs",
+          "function": {
+            "function_name": "escape_like",
+            "return_type": "-> String",
+            "span": {
+              "start": {
+                "line": 114,
+                "column": 1
+              },
+              "end": {
+                "line": 125,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 117,
+              "column": 5
+            },
+            "end": {
+              "line": 124,
+              "column": 12
+            }
+          },
+          "replacement": "\"xyzzy\".into()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant"
+    }
+  ]
+}

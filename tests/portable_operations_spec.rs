@@ -86,6 +86,39 @@ async fn source(temp: &tempfile::TempDir) -> (Config, Arc<SqliteRepository>, Str
 }
 
 #[tokio::test]
+async fn portable_import_cleans_disposable_staging_when_activation_fails_before_an_intent() {
+    let temp = tempfile::tempdir().unwrap();
+    let (source_config, repository, _) = source(&temp).await;
+    let archive = temp.path().join("site.simple-blog");
+    PortableMigrationService::export(&source_config, repository.as_ref(), &archive, Utc::now())
+        .await
+        .unwrap();
+    let destination = temp.path().join("destination");
+    let destination_config = config(&destination, "https://writing.example");
+    let hash = blake3::hash(b"destination").to_hex();
+    let lock_path = temp
+        .path()
+        .join(format!(".simple-blog-{}.activation.lock", &hash[..16]));
+    let lock = std::fs::File::create(lock_path).unwrap();
+    lock.lock().unwrap();
+    let error = PortableMigrationService::import(&archive, &destination_config, false)
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("installation is in use"),
+        "the intended lock fault must fire"
+    );
+    assert!(!destination.exists());
+    assert!(std::fs::read_dir(temp.path()).unwrap().all(|entry| {
+        !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".staging")
+    }));
+}
+
+#[tokio::test]
 async fn portable_export_and_fresh_import_verify_media_database_and_public_release() {
     let temp = tempfile::tempdir().unwrap();
     let (source_config, source_repository, media_filename) = source(&temp).await;

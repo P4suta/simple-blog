@@ -1630,12 +1630,15 @@ pub async fn setup_finish(
     // the first post; a failure here must never spoil a finished ceremony.
     if context.purpose == SetupPurpose::Initial
         && let Some(zone) = request.timezone.as_deref()
-        && let Err(error) = state
+        && let Err(_error) = state
             .site_service
             .adopt_timezone_once(zone, state.clock.now())
             .await
     {
-        tracing::warn!(event = "setup.timezone.not_adopted", error = %error);
+        tracing::warn!(
+            event = "setup.timezone.not_adopted",
+            error_code = "setup.timezone.not_adopted"
+        );
     }
     let recovery_codes: Vec<_> = completed
         .recovery_codes
@@ -2192,10 +2195,10 @@ async fn authenticate(
     // form posts and JSON calls fall back to the dashboard.
     let next = csrf.is_none().then(|| requested_path(headers)).flatten();
     let Some(session_token) = cookie(headers, "sb_session") else {
-        return Ok(Err(login_redirect(next.as_deref())));
+        return Ok(Err(authentication_required(headers, next.as_deref())));
     };
     let Some(csrf_cookie) = cookie(headers, "sb_csrf") else {
-        return Ok(Err(login_redirect(next.as_deref())));
+        return Ok(Err(authentication_required(headers, next.as_deref())));
     };
     let Some(identity) = state
         .auth
@@ -2203,7 +2206,7 @@ async fn authenticate(
         .await
         .map_err(WebError::auth)?
     else {
-        return Ok(Err(login_redirect(next.as_deref())));
+        return Ok(Err(authentication_required(headers, next.as_deref())));
     };
     if let Some(presented) = csrf
         && (presented != csrf_cookie || !state.auth.verify_csrf(&identity, presented))
@@ -2646,6 +2649,14 @@ fn set_auth_cookies(
         HeaderValue::from_str(&csrf).map_err(WebError::header)?,
     );
     Ok(())
+}
+
+fn authentication_required(headers: &HeaderMap, next: Option<&str>) -> Response {
+    if wants_json(headers) {
+        json_error(StatusCode::UNAUTHORIZED, "authentication required")
+    } else {
+        login_redirect(next)
+    }
 }
 
 fn login_redirect(next: Option<&str>) -> Response {

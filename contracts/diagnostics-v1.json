@@ -20,6 +20,7 @@
       { "code": "release.read", "emitter": "web", "meaning": "The release store could not be read." },
       { "code": "web.internal", "emitter": "web", "meaning": "An unexpected failure; the request ID leads to the trace with the cause." },
       { "code": "security.rate_limited", "emitter": "web", "meaning": "A client exceeded the authentication or like rate limit; Retry-After says when to try again." },
+      { "code": "views.record_failed", "emitter": "web", "meaning": "A view could not be counted; the page was served and the reader waited for nothing." },
       { "code": "publication_repository_failed", "emitter": "publication", "meaning": "The public snapshot could not be read from the database." },
       { "code": "publication_compile_failed", "emitter": "publication", "meaning": "The compiler rejected the snapshot; the site keeps its last release." },
       { "code": "publication_release_store_failed", "emitter": "publication", "meaning": "The compiled release could not be stored or activated." },

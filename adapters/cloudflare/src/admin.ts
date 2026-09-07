@@ -1,5 +1,6 @@
 import type { D1Database, Fetcher } from "./bindings.ts";
 import { normalizeDomain } from "./domain.ts";
+import { validCorrelationId } from "./observability.ts";
 import type { HostDirectory } from "./public.ts";
 
 export interface AdminSiteIdentity {
@@ -67,7 +68,7 @@ export class CoreAdminGateway {
     this.internalToken = internalToken;
   }
 
-  async handle(request: Request): Promise<Response | null> {
+  async handle(request: Request, parentOperationId?: string): Promise<Response | null> {
     const url = new URL(request.url);
     if (url.pathname !== "/admin" && !url.pathname.startsWith("/admin/")) return null;
     if (!ADMIN_METHODS.has(request.method)) {
@@ -88,6 +89,8 @@ export class CoreAdminGateway {
     const upstream = new Request(target, request);
     for (const header of [
       "authorization",
+      "x-request-id",
+      "x-simple-blog-parent-operation-id",
       "cf-connecting-ip",
       "cf-ipcountry",
       "cf-ray",
@@ -105,6 +108,12 @@ export class CoreAdminGateway {
     upstream.headers.set("X-Simple-Blog-Site-Id", site.siteId);
     upstream.headers.set("X-Simple-Blog-Canonical-Origin", `https://${domain}`);
     const response = await this.core.fetch(upstream);
+    if (parentOperationId !== undefined) {
+      const upstreamId = response.headers.get("x-request-id");
+      console.log(JSON.stringify({ event: "request.upstream.completed", request_id: parentOperationId,
+        operation_id: parentOperationId, upstream_request_id: validCorrelationId(upstreamId),
+        status: response.status }));
+    }
     const wrapped = new Response(response.body, response);
     wrapped.headers.set("Cache-Control", "no-store");
     return wrapped;

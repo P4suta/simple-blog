@@ -6,12 +6,19 @@
     "check:admin": "tsc --noEmit && node --check static/admin.js",
     "check:cloudflare": "tsc -p adapters/cloudflare/tsconfig.json",
     "test:frontend": "node --test frontend/*.test.cjs",
-    "test:cloudflare": "node --test adapters/cloudflare/test/*.test.ts"
+    "test:cloudflare": "node --test adapters/cloudflare/test/*.test.ts",
+    "verify": "node scripts/verify.mjs",
+    "test:tools": "node --test scripts/*.test.mjs",
+    "test:browser": "playwright test",
+    "verify:deep": "node scripts/deep-checks.mjs"
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.13.0",
     "@codemirror/lang-css": "^6.3.1",
     "@codemirror/lang-markdown": "^6.3.4",
+    "@playwright/test": "1.63.0",
     "codemirror": "^6.0.2",
+    "fflate": "0.8.3",
     "typescript": "^7.0.2"
   }
 }

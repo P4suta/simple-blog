@@ -169,14 +169,17 @@ pub fn html_to_text(html: &str) -> String {
     ];
     let mut text = String::with_capacity(html.len());
     let mut rest = html;
+    // Everything left to scan is taken from after the opening angle bracket,
+    // so each pass is strictly shorter than the one before it and the loop
+    // ends whatever the offsets inside it work out to.
     while let Some(open) = rest.find('<') {
         text.push_str(&rest[..open]);
-        let Some(close) = rest[open..].find('>') else {
+        let inside = &rest[open + 1..];
+        let Some(close) = inside.find('>') else {
             rest = "";
             break;
         };
-        let tag = &rest[open + 1..open + close];
-        let name: String = tag
+        let name: String = inside[..close]
             .trim_start_matches('/')
             .chars()
             .take_while(char::is_ascii_alphanumeric)
@@ -184,7 +187,7 @@ pub fn html_to_text(html: &str) -> String {
         if BLOCK_TAGS.contains(&name.to_ascii_lowercase().as_str()) {
             text.push(' ');
         }
-        rest = &rest[open + close + 1..];
+        rest = &inside[close + 1..];
     }
     text.push_str(rest);
     let decoded = decode_entities(&text);
@@ -282,31 +285,36 @@ pub fn excerpt(display: &str, terms: &[&str], window: usize) -> (Vec<Segment>, b
 
     let mut segments = Vec::new();
     let mut plain_start = start;
-    let mut index = start;
-    while index < end {
+    // The scan visits every position in the window exactly once and skips
+    // what a match already covered, so it advances by construction rather
+    // than by arithmetic that has to be got right.
+    let mut resume_at = start;
+    for index in start..end {
+        if index < resume_at {
+            continue;
+        }
         // Longest match first so「検索エンジン」wins over「検索」at the same spot.
-        let hit_length = term_chars
+        let Some(length) = term_chars
             .iter()
             .filter(|term| folded_chars[index..].starts_with(term))
             .map(Vec::len)
-            .max();
-        if let Some(length) = hit_length {
-            let length = length.min(end - index);
-            if plain_start < index {
-                segments.push(Segment {
-                    text: display_chars[plain_start..index].iter().collect(),
-                    hit: false,
-                });
-            }
+            .max()
+        else {
+            continue;
+        };
+        let length = length.min(end - index);
+        if plain_start < index {
             segments.push(Segment {
-                text: display_chars[index..index + length].iter().collect(),
-                hit: true,
+                text: display_chars[plain_start..index].iter().collect(),
+                hit: false,
             });
-            index += length;
-            plain_start = index;
-        } else {
-            index += 1;
         }
+        segments.push(Segment {
+            text: display_chars[index..index + length].iter().collect(),
+            hit: true,
+        });
+        resume_at = index + length;
+        plain_start = resume_at;
     }
     if plain_start < end {
         segments.push(Segment {
@@ -322,4 +330,187 @@ fn find_from(haystack: &[char], needle: &[char], from: usize) -> Option<usize> {
         return None;
     }
     (from..=haystack.len() - needle.len()).find(|&i| haystack[i..].starts_with(needle))
+}
+
+#[cfg(test)]
+mod entity_and_excerpt_tests {
+    use super::*;
+
+    fn shape(segments: &[Segment]) -> Vec<(&str, bool)> {
+        segments
+            .iter()
+            .map(|segment| (segment.text.as_str(), segment.hit))
+            .collect()
+    }
+
+    #[test]
+    fn every_named_entity_decodes_to_its_own_character() {
+        assert_eq!(decode_entities("&amp;"), "&");
+        assert_eq!(decode_entities("&lt;"), "<");
+        assert_eq!(decode_entities("&gt;"), ">");
+        assert_eq!(decode_entities("&quot;"), "\"");
+        assert_eq!(decode_entities("&apos;"), "'");
+        assert_eq!(
+            decode_entities("&lt;p&gt;it&apos;s &quot;quoted&quot; &amp; safe&lt;/p&gt;"),
+            "<p>it's \"quoted\" & safe</p>"
+        );
+    }
+
+    #[test]
+    fn numeric_entities_decode_in_both_bases() {
+        assert_eq!(decode_entities("&#65;"), "A");
+        assert_eq!(decode_entities("&#x41;"), "A");
+        assert_eq!(decode_entities("&#X41;"), "A");
+        assert_eq!(decode_entities("&#26085;"), "\u{65e5}");
+    }
+
+    #[test]
+    fn an_entity_that_is_not_one_is_left_alone() {
+        // No semicolon at all, and none within the twelve bytes scanned.
+        assert_eq!(decode_entities("a & b"), "a & b");
+        assert_eq!(decode_entities("&notanentityatall;"), "&notanentityatall;");
+        // Well formed but unknown, and numeric forms that name no character.
+        assert_eq!(decode_entities("&nope;"), "&nope;");
+        assert_eq!(decode_entities("&#xZZ;"), "&#xZZ;");
+        assert_eq!(decode_entities("&#1114112;"), "&#1114112;");
+        assert_eq!(decode_entities("plain"), "plain");
+    }
+
+    #[test]
+    fn a_match_at_the_start_opens_the_snippet_with_the_hit_itself() {
+        let (segments, before, after) = excerpt("alpha beta", &["alpha"], 100);
+        assert_eq!(shape(&segments), vec![("alpha", true), (" beta", false)]);
+        assert!(!before);
+        assert!(!after);
+    }
+
+    #[test]
+    fn a_match_at_the_end_closes_the_snippet_with_the_hit_itself() {
+        let (segments, before, after) = excerpt("alpha beta", &["beta"], 100);
+        assert_eq!(shape(&segments), vec![("alpha ", false), ("beta", true)]);
+        assert!(!before);
+        assert!(!after);
+    }
+
+    #[test]
+    fn the_window_opens_a_third_ahead_of_the_first_match() {
+        // 26 characters; the only match starts at 12. A window of 12 opens a
+        // third of it earlier, at 8, and ends at 20.
+        let text = "abcdefghijklmatchnopqrstuv";
+        let (segments, before, after) = excerpt(text, &["match"], 12);
+        assert_eq!(
+            shape(&segments),
+            vec![("ijkl", false), ("match", true), ("nop", false)]
+        );
+        assert!(before);
+        assert!(after);
+    }
+
+    #[test]
+    fn a_match_running_past_the_window_is_clipped_to_it() {
+        // The window ends inside the match, which must be trimmed to the
+        // window rather than reaching past the snippet.
+        let (segments, _, after) = excerpt("abcdefghijmatchingtail", &["matching"], 12);
+        let text: String = segments
+            .iter()
+            .map(|segment| segment.text.as_str())
+            .collect();
+        assert_eq!(text.chars().count(), 12);
+        assert!(after);
+    }
+
+    #[test]
+    fn the_longest_term_wins_where_two_start_together() {
+        let (segments, _, _) = excerpt("searching now", &["search", "searching"], 100);
+        assert_eq!(shape(&segments), vec![("searching", true), (" now", false)]);
+    }
+
+    #[test]
+    fn text_without_a_match_starts_at_the_beginning() {
+        let (segments, before, after) = excerpt("alpha beta", &["gamma"], 5);
+        assert_eq!(shape(&segments), vec![("alpha", false)]);
+        assert!(!before);
+        assert!(after);
+    }
+
+    #[test]
+    fn a_needle_is_found_only_where_it_fits() {
+        let haystack: Vec<char> = "abcabc".chars().collect();
+        let exact: Vec<char> = "abcabc".chars().collect();
+        let needle: Vec<char> = "abc".chars().collect();
+        let absent: Vec<char> = "xyz".chars().collect();
+        let longer: Vec<char> = "abcabcabc".chars().collect();
+
+        // A needle the whole length of the haystack still matches at zero.
+        assert_eq!(find_from(&haystack, &exact, 0), Some(0));
+        assert_eq!(find_from(&haystack, &needle, 0), Some(0));
+        assert_eq!(find_from(&haystack, &needle, 1), Some(3));
+        assert_eq!(find_from(&haystack, &needle, 4), None);
+        // Nothing is found beyond the end, and no index past it is probed.
+        assert_eq!(find_from(&haystack, &absent, 0), None);
+        assert_eq!(find_from(&haystack, &longer, 0), None);
+        assert_eq!(find_from(&haystack, &[], 0), None);
+        assert_eq!(find_from(&[], &needle, 0), None);
+    }
+}
+
+#[cfg(test)]
+mod html_text_tests {
+    use super::*;
+
+    /// A block boundary becomes one space and an inline tag becomes nothing,
+    /// because CJK prose must not grow a space around every `<em>`. Each case
+    /// pins one part of that: which tag is which, where the tag ends, and
+    /// where the text after it starts.
+    #[test]
+    fn a_block_boundary_becomes_a_space_and_an_inline_tag_becomes_nothing() {
+        assert_eq!(html_to_text("<p>検索</p><p>エンジン</p>"), "検索 エンジン");
+        assert_eq!(
+            html_to_text("<p>an <em>inline</em> word</p>"),
+            "an inline word"
+        );
+        assert_eq!(html_to_text("<p>a<br>b</p>"), "a b");
+        assert_eq!(html_to_text("<div>a</div>b"), "a b");
+        assert_eq!(html_to_text("plain"), "plain");
+    }
+
+    /// The reader stops at a tag it cannot see the end of rather than
+    /// treating the remainder of the document as text.
+    #[test]
+    fn an_unterminated_tag_takes_the_rest_of_the_document_with_it() {
+        assert_eq!(html_to_text("visible<p unterminated"), "visible");
+    }
+
+    /// Entities are decoded once the tags are gone, so an escaped bracket
+    /// cannot be read back as one.
+    #[test]
+    fn entities_are_decoded_after_the_tags_are_gone() {
+        assert_eq!(html_to_text("<p>a &amp; b</p>"), "a & b");
+        assert_eq!(html_to_text("<p>&lt;p&gt;</p>"), "<p>");
+    }
+}
+
+#[cfg(test)]
+mod excerpt_window_tests {
+    use super::*;
+
+    fn shape(segments: &[Segment]) -> Vec<(&str, bool)> {
+        segments
+            .iter()
+            .map(|segment| (segment.text.as_str(), segment.hit))
+            .collect()
+    }
+
+    /// A term can begin inside the window and run past its end. The snippet
+    /// is a window, so the highlight stops where the window does.
+    #[test]
+    fn a_match_that_runs_past_the_window_is_cut_where_the_window_ends() {
+        let (segments, before, after) = excerpt("xxabcdefgh", &["a", "cdefgh"], 6);
+        assert_eq!(
+            shape(&segments),
+            vec![("xx", false), ("a", true), ("b", false), ("cd", true)]
+        );
+        assert!(!before, "the window starts at the beginning of the text");
+        assert!(after, "the window stops before the end of the text");
+    }
 }

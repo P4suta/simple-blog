@@ -1,0 +1,48 @@
+name: Sustained verification
+on:
+  schedule:
+    - cron: '23 2 * * *'
+    - cron: '41 4 * * 0'
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        options: [daily, weekly]
+        default: daily
+permissions:
+  contents: read
+concurrency:
+  group: sustained-${{ github.event.schedule || inputs.mode }}
+  cancel-in-progress: false
+jobs:
+  adversarial:
+    name: Sustained parser and decision tests (${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      VERIFY_JOB_TIMEOUT_MINUTES: "360"
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - name: Start the verification deadline
+        shell: bash
+        run: echo "VERIFY_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install stable nightly --profile minimal --component rust-src
+      - run: cargo +stable install cargo-fuzz --version 0.13.2 --locked
+      - run: cargo +stable install cargo-mutants --version 27.1.0 --locked
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        timeout-minutes: 2
+        with:
+          node-version: 24
+      - uses: ./.github/actions/verification
+        env:
+          VERIFY_SHARD_INDEX: ${{ matrix.shard }}
+          VERIFY_SHARD_COUNT: 8
+        with:
+          checks: ${{ (github.event.schedule == '41 4 * * 0' || inputs.mode == 'weekly') && 'deep-weekly' || 'deep-daily' }}
+          artifact-suffix: shard-${{ matrix.shard }}

@@ -1,3 +1,4 @@
+pub mod activation;
 mod backup;
 mod doctor;
 mod export;

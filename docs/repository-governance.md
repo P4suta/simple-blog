@@ -18,6 +18,14 @@ and the selected Actions allowlist are similarly versioned in
 - branches must be current with `main`; and
 - every named CI and CodeQL job in `.github/rulesets/main.json` must succeed.
 
+The desired required checks now also include `Browser and recovery evidence`,
+`Parser and critical decision evidence`, and `Windows release symbols`. The
+versioned ruleset was applied to live ruleset `21865745` on 2026-09-06 and read
+back to confirm all 15 checks, existing protections and empty bypass list. Future
+versioned edits do not by themselves apply the live GitHub ruleset. Artifact export is conditional on the secret gate
+passing, runs even after check failures, and retains evidence for 30 days.
+Daily parser fuzzing and weekly decision mutation run separately from PR checks.
+
 There is currently one maintainer. The required approval count is therefore
 zero: requiring a second approval would make maintenance impossible without
 inventing a bypass that silently weakens every other rule. CI and conversation
