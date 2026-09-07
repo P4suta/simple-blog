@@ -31,5 +31,5 @@ exclude_re = [
   # six to eight gibibytes of decoded entries, all of which it holds in memory
   # at once. The per-entry ceiling that runs before it is checked by test, and
   # so is the total once an archive that large is a thing a machine can hold.
-  "src/portable\\.rs:700:\\d+: replace > with (==|>=) in PortableArchive::read",
+  "src/portable\\.rs:700:30: replace > with (==|>=) in PortableArchive::read",
 ]

@@ -266,8 +266,8 @@ struct EditorContent {
     status: &'static str,
     /// RFC 3339 publication instant, or empty for a draft.
     publish_at: String,
-    /// The same instant shaped for a `datetime-local` control, in UTC; the
-    /// browser script re-expresses it in the writer's own zone.
+    /// The same instant shaped for a `datetime-local` control, on the site's
+    /// clock. The browser presents it as given rather than re-expressing it.
     publish_at_input: String,
     seo_title: String,
     seo_description: String,

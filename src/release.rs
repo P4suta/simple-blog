@@ -673,10 +673,13 @@ impl<S: ReleaseStore + ?Sized> ReleasePublisher<S> {
         );
         for (id, bytes) in &release.objects {
             if let Err(error) = self.store.put_object(id, bytes).await {
+                // The identity is the object's own checksum: it names which
+                // object failed without carrying anything the store said.
                 tracing::error!(
                     event = "release.publish.failed",
                     error_code = codes::RELEASE_OBJECT_STORE_FAILED,
-                    phase = "object"
+                    phase = "object",
+                    object_id = %id
                 );
                 return Err(error);
             }

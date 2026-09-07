@@ -658,7 +658,7 @@ if ! awk '
   fail 'every mutation exclusion must open with Equivalent., Timeout only. or Out of reach. and say why'
 fi
 
-excluded_mutants="$(exclusion_lines | grep -c .)"
+excluded_mutants="$(exclusion_lines | grep -c . || true)"
 [[ "$excluded_mutants" -ge 1 ]] \
   || fail 'the mutation exclusion scan found nothing; .cargo/mutants.toml has changed shape'
 [[ "$excluded_mutants" -le 8 ]] \
