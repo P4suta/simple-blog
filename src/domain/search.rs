@@ -169,14 +169,17 @@ pub fn html_to_text(html: &str) -> String {
     ];
     let mut text = String::with_capacity(html.len());
     let mut rest = html;
+    // Everything left to scan is taken from after the opening angle bracket,
+    // so each pass is strictly shorter than the one before it and the loop
+    // ends whatever the offsets inside it work out to.
     while let Some(open) = rest.find('<') {
         text.push_str(&rest[..open]);
-        let Some(close) = rest[open..].find('>') else {
+        let inside = &rest[open + 1..];
+        let Some(close) = inside.find('>') else {
             rest = "";
             break;
         };
-        let tag = &rest[open + 1..open + close];
-        let name: String = tag
+        let name: String = inside[..close]
             .trim_start_matches('/')
             .chars()
             .take_while(char::is_ascii_alphanumeric)
@@ -184,7 +187,7 @@ pub fn html_to_text(html: &str) -> String {
         if BLOCK_TAGS.contains(&name.to_ascii_lowercase().as_str()) {
             text.push(' ');
         }
-        rest = &rest[open + close + 1..];
+        rest = &inside[close + 1..];
     }
     text.push_str(rest);
     let decoded = decode_entities(&text);
