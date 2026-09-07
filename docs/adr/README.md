@@ -22,4 +22,5 @@ Each ADR uses: `Status`, `Context`, `Decision`, and `Consequences`.
 | [0014](0014-recoverable-trash.md) | Recoverable trash is durable content state | Accepted |
 | [0015](0015-site-local-time.md) | The site has a local time | Accepted |
 | [0016](0016-capability-preview-links.md) | Preview links are short-lived bearer capabilities | Accepted |
+| [0017](0017-verifiable-diagnostics-and-critical-review.md) | Verifiable diagnostics and repeated critical review | Accepted |
 | [0018](0018-declared-public-surface.md) | A declared public surface | Accepted |

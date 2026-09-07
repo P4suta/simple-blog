@@ -66,6 +66,19 @@ impl BackupService {
         output: Option<PathBuf>,
         now: DateTime<Utc>,
     ) -> Result<PathBuf, OperationError> {
+        crate::observability::operation(
+            "backup",
+            Self::create_inner(config, repository, output, now),
+        )
+        .await
+    }
+
+    async fn create_inner(
+        config: &Config,
+        repository: &SqliteRepository,
+        output: Option<PathBuf>,
+        now: DateTime<Utc>,
+    ) -> Result<PathBuf, OperationError> {
         std::fs::create_dir_all(config.backup_dir())?;
         let output = output.unwrap_or_else(|| {
             config.backup_dir().join(format!(
@@ -166,7 +179,15 @@ pub(super) fn archive_files(
         append_bytes(&mut archive, "manifest.json", &manifest)?;
         let encoder = archive.into_inner()?;
         encoder.finish()?.sync_all()?;
+        tracing::info!(event = "backup.archive.synchronized");
         std::fs::rename(&partial, output)?;
+        crate::durable_fs::sync_directory(
+            output
+                .parent()
+                .filter(|path| !path.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new(".")),
+        )?;
+        tracing::info!(event = "backup.archive.activated");
         Ok::<_, OperationError>(())
     })();
     if result.is_err() {

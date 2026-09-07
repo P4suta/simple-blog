@@ -1,0 +1,88 @@
+{
+  "schema": 1,
+  "environment": {
+    "platform": "win32",
+    "arch": "x64",
+    "os": "10.0.26200",
+    "cpu": "AMD Ryzen 7 5800H with Radeon Graphics         ",
+    "profile": "debug",
+    "rust": "rustc 1.98.0 (88d9e12ae 2026-08-18)"
+  },
+  "summary": {
+    "dataset": "synthetic-100-v1",
+    "dataset_time": "2026-09-05T00:00:00Z",
+    "samples": 3,
+    "memory_status": "measured",
+    "median_ms": {
+      "render_store_ms": 280,
+      "publish_ms": 663,
+      "search_100_ms": 2169,
+      "restore_ms": 42
+    },
+    "peak_resident_bytes": 38445056,
+    "db_operations": {
+      "publish": 107,
+      "render_store": 1000,
+      "search_100": 100
+    }
+  },
+  "samples": [
+    {
+      "archive_bytes": 19145,
+      "articles": 100,
+      "dataset": "synthetic-100-v1",
+      "dataset_time": "2026-09-05T00:00:00Z",
+      "db_operations": {
+        "publish": 107,
+        "render_store": 1000,
+        "search_100": 100
+      },
+      "memory_scope": "whole fixture process including setup",
+      "peak_resident_bytes": 38445056,
+      "publish_ms": 832,
+      "published_routes": 231,
+      "render_store_ms": 327,
+      "restore_ms": 48,
+      "schema": 1,
+      "search_100_ms": 2524
+    },
+    {
+      "archive_bytes": 19142,
+      "articles": 100,
+      "dataset": "synthetic-100-v1",
+      "dataset_time": "2026-09-05T00:00:00Z",
+      "db_operations": {
+        "publish": 107,
+        "render_store": 1000,
+        "search_100": 100
+      },
+      "memory_scope": "whole fixture process including setup",
+      "peak_resident_bytes": 38436864,
+      "publish_ms": 541,
+      "published_routes": 231,
+      "render_store_ms": 280,
+      "restore_ms": 39,
+      "schema": 1,
+      "search_100_ms": 2169
+    },
+    {
+      "archive_bytes": 19144,
+      "articles": 100,
+      "dataset": "synthetic-100-v1",
+      "dataset_time": "2026-09-05T00:00:00Z",
+      "db_operations": {
+        "publish": 107,
+        "render_store": 1000,
+        "search_100": 100
+      },
+      "memory_scope": "whole fixture process including setup",
+      "peak_resident_bytes": 38457344,
+      "publish_ms": 663,
+      "published_routes": 231,
+      "render_store_ms": 272,
+      "restore_ms": 42,
+      "schema": 1,
+      "search_100_ms": 2062
+    }
+  ]
+}

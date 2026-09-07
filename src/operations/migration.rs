@@ -49,8 +49,10 @@ impl MigrationCoordinator {
             Err(error) => {
                 tracing::error!(
                     event = "database.migration.failed",
-                    safety_backup = safety_backup.as_ref().map(|path| path.display().to_string()),
-                    error = %error,
+                    safety_backup = safety_backup
+                        .as_ref()
+                        .map(|path| path.display().to_string()),
+                    error_code = "database.migration.failed",
                 );
                 return match safety_backup {
                     Some(backup) => Err(OperationError::Migration {
@@ -103,7 +105,7 @@ async fn create_safety_backup(
         if let Err(cleanup_error) = cleanup {
             tracing::warn!(
                 event = "database.migration.snapshot_cleanup_failed",
-                error = %cleanup_error
+                error_kind = ?cleanup_error.kind()
             );
         }
         return Err(error);

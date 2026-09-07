@@ -75,7 +75,7 @@ export class SiteCoordinator {
         event: "publication.alarm.retry_scheduled",
         site_id: publication.site_id,
         retry_at: new Date(retryAt).toISOString(),
-        error: error instanceof Error ? error.message : "unknown error",
+        error_code: "publication.alarm.upstream_failed",
       }));
     }
   }

@@ -417,3 +417,42 @@ pub(crate) fn random_token(
 pub fn hash_secret(value: &str) -> SecretHash {
     SecretHash::new(Sha256::digest(value.as_bytes()).into())
 }
+
+#[cfg(test)]
+mod session_renewal_tests {
+    use super::*;
+    use chrono::TimeZone as _;
+
+    fn identity(expires_at: DateTime<Utc>) -> SessionIdentity {
+        SessionIdentity {
+            token_hash: SecretHash::new([1; 32]),
+            csrf_hash: SecretHash::new([2; 32]),
+            expires_at,
+            reauthenticated_at: expires_at,
+        }
+    }
+
+    /// The threshold is a boundary, not a range: a session with exactly the
+    /// threshold left is not renewed, one a second inside it is.
+    #[test]
+    fn a_session_is_renewed_only_once_it_is_inside_the_threshold() {
+        let now = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
+        let threshold = Duration::days(SESSION_RENEWAL_THRESHOLD_DAYS);
+
+        assert!(!AuthService::needs_renewal(&identity(now + threshold), now));
+        assert!(AuthService::needs_renewal(
+            &identity(now + threshold - Duration::seconds(1)),
+            now
+        ));
+        assert!(!AuthService::needs_renewal(
+            &identity(now + threshold + Duration::seconds(1)),
+            now
+        ));
+
+        // A session already past its expiry is inside the threshold too.
+        assert!(AuthService::needs_renewal(
+            &identity(now - Duration::seconds(1)),
+            now
+        ));
+    }
+}

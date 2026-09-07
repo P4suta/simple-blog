@@ -55,6 +55,7 @@ slug = "0.1"
 sqlx = { version = "0.9.0", default-features = false, features = ["chrono", "json", "macros", "migrate", "runtime-tokio", "sqlite", "uuid"] }
 subtle = "2.6"
 tar = "0.4"
+tempfile = "3.20"
 thiserror = "2.0"
 tokio = { version = "1.46", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["io"] }
@@ -70,10 +71,20 @@ webauthn-rs = "0.5.2"
 webpkit = { version = "0.1.0", features = ["image"] }
 zstd = "0.13"
 
+[target.'cfg(unix)'.dependencies]
+# Nonblocking, no-follow diagnostic opens prevent a concurrently replaced FIFO
+# or symlink from turning observational diagnosis into blocking or external I/O.
+libc = "0.2"
+
 [target.'cfg(windows)'.dependencies.openssl]
 # webauthn-rs uses OpenSSL. A vendored Windows build keeps the binary contract
 # independent of machine-global OpenSSL or vcpkg installations.
 version = "0.10"
+features = ["vendored"]
+
+[target.'cfg(windows)'.dependencies.openssl-sys]
+# Build metadata locates the exact vendored PDB for the linked OpenSSL archive.
+version = "0.9"
 features = ["vendored"]
 
 [dev-dependencies]
@@ -81,14 +92,24 @@ http-body-util = "0.1"
 proptest = "1.7"
 scraper = "0.27"
 serde_urlencoded = "0.7"
-tempfile = "3.20"
 tower = { version = "0.5", features = ["util"] }
 
 [profile.release]
 codegen-units = 1
 lto = "thin"
 opt-level = "z"
-strip = true
+debug = "line-tables-only"
+strip = false
+
+[profile.mutation]
+inherits = "dev"
+debug = "line-tables-only"
+incremental = false
+
+[profile.verification]
+inherits = "dev"
+debug = "line-tables-only"
+incremental = false
 
 [lints.rust]
 unsafe_code = "forbid"

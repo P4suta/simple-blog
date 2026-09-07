@@ -40,6 +40,8 @@ pub(crate) static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 #[derive(Clone, Debug)]
 pub struct SqliteRepository {
     pool: SqlitePool,
+    // Kept alive across repository clones; only diagnostic connections own one.
+    diagnostic_snapshot: Option<std::sync::Arc<tempfile::TempDir>>,
 }
 
 #[async_trait]
@@ -487,6 +489,38 @@ struct ContentRow {
 }
 
 impl SqliteRepository {
+    #[must_use]
+    pub const fn is_diagnostic_snapshot(&self) -> bool {
+        self.diagnostic_snapshot.is_some()
+    }
+
+    /// Reads a verified stable copy; SQLite never opens the investigation source.
+    pub async fn connect_diagnostics(path: &Path) -> Result<Self, RepositoryError> {
+        let source = path.to_owned();
+        let snapshot =
+            tokio::task::spawn_blocking(move || super::diagnostic_snapshot::capture(&source))
+                .await
+                .map_err(storage)?
+                .map_err(storage)?;
+        let options = SqliteConnectOptions::new()
+            .filename(snapshot.path().join("database.sqlite3"))
+            .create_if_missing(false)
+            .read_only(true)
+            .foreign_keys(true)
+            .busy_timeout(Duration::from_secs(5))
+            .pragma("query_only", "ON");
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(Duration::from_secs(10))
+            .connect_with(options)
+            .await
+            .map_err(storage)?;
+        Ok(Self {
+            pool,
+            diagnostic_snapshot: Some(std::sync::Arc::new(snapshot)),
+        })
+    }
+
     pub async fn connect(path: &Path) -> Result<Self, RepositoryError> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(storage)?;
@@ -517,7 +551,10 @@ impl SqliteRepository {
             .await
             .map_err(storage)?;
         MIGRATOR.run(&pool).await.map_err(storage)?;
-        let repository = Self { pool };
+        let repository = Self {
+            pool,
+            diagnostic_snapshot: None,
+        };
         repository.backfill_search_index().await?;
         Ok(repository)
     }

@@ -130,39 +130,41 @@ where
             release_id = tracing::field::Empty,
             disposition = tracing::field::Empty,
         );
-        async move {
-            let started = Instant::now();
-            tracing::info!(event = "publication.build.started", effective_at = %effective_at);
-            let result = self.publish_inner(build_id, effective_at).await;
-            match &result {
-                Ok(outcome) => {
-                    tracing::Span::current()
-                        .record("public_revision", outcome.public_revision)
-                        .record("release_id", outcome.release_id.as_str())
-                        .record("disposition", format_args!("{:?}", outcome.disposition));
-                    tracing::info!(
-                        event = "publication.build.completed",
-                        release_id = %outcome.release_id,
-                        public_revision = outcome.public_revision,
-                        route_count = outcome.route_count,
-                        staged_object_count = outcome.staged_object_count,
-                        disposition = ?outcome.disposition,
-                        elapsed_ms = started.elapsed().as_millis()
-                    );
+        crate::observability::operation(
+            "publication",
+            async move {
+                let started = Instant::now();
+                tracing::info!(event = "publication.build.started", effective_at = %effective_at);
+                let result = self.publish_inner(build_id, effective_at).await;
+                match &result {
+                    Ok(outcome) => {
+                        tracing::Span::current()
+                            .record("public_revision", outcome.public_revision)
+                            .record("release_id", outcome.release_id.as_str())
+                            .record("disposition", format_args!("{:?}", outcome.disposition));
+                        tracing::info!(
+                            event = "publication.build.completed",
+                            release_id = %outcome.release_id,
+                            public_revision = outcome.public_revision,
+                            route_count = outcome.route_count,
+                            staged_object_count = outcome.staged_object_count,
+                            disposition = ?outcome.disposition,
+                            elapsed_ms = started.elapsed().as_millis()
+                        );
+                    }
+                    Err(error) => {
+                        tracing::error!(
+                            event = "publication.build.failed",
+                            error_code = error.code(),
+                            phase = error.phase(),
+                            elapsed_ms = started.elapsed().as_millis()
+                        );
+                    }
                 }
-                Err(error) => {
-                    tracing::error!(
-                        event = "publication.build.failed",
-                        error_code = error.code(),
-                        phase = error.phase(),
-                        elapsed_ms = started.elapsed().as_millis(),
-                        error = %error
-                    );
-                }
+                result
             }
-            result
-        }
-        .instrument(span)
+            .instrument(span),
+        )
         .await
     }
 

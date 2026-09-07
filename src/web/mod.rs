@@ -85,6 +85,7 @@ pub struct AppState {
     publication_lock: Arc<Mutex<()>>,
     repository: Arc<SqliteRepository>,
     publication_wakeup: Arc<Notify>,
+    publication_parent: Arc<Mutex<Option<uuid::Uuid>>>,
     /// Raised when the last build failed after a committed change, so the
     /// scheduler keeps retrying and the dashboard can say so.
     site_stale: Arc<AtomicBool>,
@@ -153,13 +154,22 @@ impl AppState {
             publication,
             publication_lock: Arc::new(Mutex::new(())),
             publication_wakeup: Arc::new(Notify::new()),
+            publication_parent: Arc::new(Mutex::new(None)),
             site_stale: Arc::new(AtomicBool::new(false)),
         })
     }
 
     pub async fn publish_now(&self) -> Result<PublicationOutcome, PublicationServiceError> {
         let _guard = self.publication_lock.lock().await;
-        let outcome = self.publication.publish(self.clock.now()).await;
+        let parent =
+            crate::observability::current_operation_id().or(*self.publication_parent.lock().await);
+        let publishing = self.publication.publish(self.clock.now());
+        let outcome = if let Some(parent) = parent {
+            crate::observability::request_scope(parent, publishing).await
+        } else {
+            publishing.await
+        };
+        *self.publication_parent.lock().await = if outcome.is_err() { parent } else { None };
         self.site_stale.store(outcome.is_err(), Ordering::Release);
         self.publication_wakeup.notify_waiters();
         outcome
@@ -177,8 +187,7 @@ impl AppState {
                     event = "publication.deferred",
                     error_code = error.code(),
                     phase = error.phase(),
-                    trigger,
-                    error = %error
+                    trigger
                 );
                 self.publication_wakeup.notify_one();
                 SiteState::Pending
@@ -256,10 +265,9 @@ impl AppState {
                     event = "backup.scheduled.created",
                     path = %archive.display()
                 ),
-                Err(error) => tracing::error!(
+                Err(_error) => tracing::error!(
                     event = "backup.scheduled.failed",
-                    error_code = "backup_scheduled_failed",
-                    error = %error
+                    error_code = "backup_scheduled_failed"
                 ),
             }
             delay = cadence.every;
@@ -314,14 +322,13 @@ impl AppState {
         let now = self.clock.now();
         let due = match self.publication.publication_state().await {
             Ok(state) => publication_delay(state, now, maximum_idle),
-            Err(error) => {
+            Err(_error) => {
                 *failures += 1;
                 let retry = schedule.delay(*failures - 1);
                 tracing::error!(
                     event = "publication.scheduler.state_failed",
                     error_code = "publication_scheduler_state_failed",
-                    retry_ms = retry.as_millis(),
-                    error = %error
+                    retry_ms = retry.as_millis()
                 );
                 return retry;
             }
@@ -342,8 +349,7 @@ impl AppState {
                     error_code = error.code(),
                     phase = error.phase(),
                     attempt = *failures,
-                    retry_ms = retry.as_millis(),
-                    error = %error
+                    retry_ms = retry.as_millis()
                 );
                 retry
             }
@@ -718,7 +724,6 @@ impl IntoResponse for WebError {
         tracing::error!(
             event = "http.request.failed",
             error_code = self.diagnostic_code(),
-            error = %self,
             "request failed"
         );
         if active_release_missing {

@@ -1,6 +1,7 @@
 //! Adapters for databases, files, Markdown, images, and archives.
 
 pub mod clock;
+mod diagnostic_snapshot;
 pub mod entropy;
 pub mod markdown;
 pub mod media;

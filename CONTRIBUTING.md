@@ -27,6 +27,32 @@ automated reproduction is impossible.
 
 ## Verification
 
+Every phase (design, implementation, testing, release preparation) requires
+three critical passes: users and requirements; failures, concurrency, privacy
+and compatibility; and the ability of the checks themselves to detect mistakes.
+For each finding record evidence → reproduction → correction → revalidation in
+[`docs/verification-review.md`](docs/verification-review.md). After fixes, perform
+two consecutive reviews with different evidence and no new actionable findings.
+A phase closes only when these and all mandatory checks pass. Timeouts,
+inconclusive results, skips and unexecuted checks are not success.
+
+Use `bun install --frozen-lockfile`, then `node scripts/verify.mjs`. Select names
+such as `browser`, `coverage` or `release` to reproduce one scope. Install the
+browser engines using `bun x playwright install --with-deps chromium firefox
+webkit`; on Windows omit `--with-deps`. The runner records command arguments,
+revision, dirty state, tool versions, seed, duration and result under
+`target/verification`. Export shareable results using
+`node scripts/collect-evidence.mjs`; raw browser reports and disposable data must
+not be uploaded. CI retains these exports for 30 days, including failed runs.
+
+Parser changes require 60 seconds per selected fuzz target and important
+decision changes require scoped mutation testing (`node scripts/deep-checks.mjs
+pr`, with `VERIFY_BASE` set to the actual comparison revision). Missing comparison
+data selects all scopes. Daily CI runs each target for 10 minutes; weekly CI
+mutates the critical decision modules. Promote new fuzz counterexamples to
+`tests/corpus` so normal tests replay them. Do not treat mutation timeouts or
+unviable builds as caught defects.
+
 Run the commands documented in the [README](README.md#verify). Also run:
 
 ```sh

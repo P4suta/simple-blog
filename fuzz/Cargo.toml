@@ -1,0 +1,37 @@
+[package]
+name = "simple-blog-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+simple-blog = { path = ".." }
+serde_json = "1"
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "search"
+path = "fuzz_targets/search.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "release_manifest"
+path = "fuzz_targets/release_manifest.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "portable_site"
+path = "fuzz_targets/portable_site.rs"
+test = false
+doc = false
+bench = false

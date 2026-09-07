@@ -420,7 +420,7 @@ fn invalid_diagnostic_configuration_fails_before_touching_the_data_directory() {
 }
 
 #[tokio::test]
-async fn every_operational_database_open_applies_pending_migrations_after_a_safety_backup() {
+async fn normal_database_open_applies_pending_migrations_after_a_safety_backup() {
     let temp = tempfile::tempdir().unwrap();
     let data = temp.path().join("data");
     let init = binary()
@@ -443,7 +443,7 @@ async fn every_operational_database_open_applies_pending_migrations_after_a_safe
     for _ in 0..2 {
         let doctor = binary()
             .env("SIMPLE_BLOG_LOG_FORMAT", "json")
-            .args(["--data-dir", data.to_str().unwrap(), "doctor"])
+            .args(["--data-dir", data.to_str().unwrap(), "build"])
             .output()
             .unwrap();
         assert!(

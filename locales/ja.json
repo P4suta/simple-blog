@@ -64,6 +64,7 @@
   "status.trashed": "ゴミ箱",
 
   "editor.back": "← 一覧",
+  "editor.save": "保存",
   "editor.saved": "保存済み",
   "editor.saving": "保存中…",
   "editor.unsaved": "未保存",

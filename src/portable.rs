@@ -38,6 +38,9 @@ const MAX_DECODED_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const MAX_MARKDOWN_BYTES: usize = 2 * 1024 * 1024;
 const MAX_SQLITE_INTEGER: u64 = 9_223_372_036_854_775_807;
 const MAX_TAR_ZERO_PADDING: usize = 20 * 512;
+/// Starting size for an entry buffer. A hint only, and therefore invisible
+/// to any behavioural test, so it is named and pinned rather than inlined.
+const ENTRY_READ_CAPACITY: u64 = 64 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -642,7 +645,7 @@ impl PortableArchive {
                     "decoded archive is too large".into(),
                 ));
             }
-            let capacity = usize::try_from(declared.min(64 * 1024))
+            let capacity = usize::try_from(declared.min(ENTRY_READ_CAPACITY))
                 .map_err(|error| PortableArchiveError::SafetyLimit(error.to_string()))?;
             let mut bytes = Vec::with_capacity(capacity);
             entry.read_to_end(&mut bytes)?;
@@ -1049,4 +1052,1449 @@ pub enum PortableArchiveError {
     SafetyLimit(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
+}
+
+#[cfg(test)]
+mod portable_contract_tests {
+    use super::*;
+
+    /// The limits are a compatibility promise: an archive one build accepts,
+    /// another build of the same format version must accept too. Spelling the
+    /// numbers out here means an edit to the arithmetic has to be deliberate.
+    #[test]
+    fn the_portable_limits_are_the_documented_numbers() {
+        assert_eq!(MAX_ENTRY_COUNT, 100_000);
+        assert_eq!(MAX_METADATA_BYTES, 67_108_864);
+        assert_eq!(MAX_MEDIA_FILE_BYTES, 2_147_483_648);
+        assert_eq!(MAX_DECODED_BYTES, 8_589_934_592);
+        assert_eq!(MAX_MARKDOWN_BYTES, 2_097_152);
+        assert_eq!(MAX_SQLITE_INTEGER, 9_223_372_036_854_775_807);
+        assert_eq!(MAX_TAR_ZERO_PADDING, 10_240);
+        assert_eq!(ENTRY_READ_CAPACITY, 65_536);
+        assert_eq!(PORTABLE_SITE_FORMAT_VERSION, 1);
+        assert_eq!(PORTABLE_ARCHIVE_FORMAT_VERSION, 1);
+    }
+
+    #[test]
+    fn a_normalized_origin_is_accepted() {
+        validate_origin("https://writing.example").unwrap();
+        validate_origin("http://writing.example").unwrap();
+        validate_origin("https://writing.example:8443").unwrap();
+    }
+
+    /// One case per clause, each tripping exactly that clause, so no clause can
+    /// be dropped from the guard without a case turning green.
+    #[test]
+    fn every_way_an_origin_is_not_normalized_is_rejected() {
+        // Each origin is already in the form Url::parse would print, so it
+        // trips exactly one clause and no other.
+        for origin in [
+            "ftp://writing.example",
+            "https://writer@writing.example",
+            "https://:secret@writing.example",
+            "https://writing.example/?draft=1",
+            "https://writing.example/#top",
+            "https://writing.example/blog",
+            "https://writing.example/",
+        ] {
+            assert!(
+                validate_origin(origin).is_err(),
+                "accepted an origin that is not normalized: {origin}"
+            );
+        }
+        assert!(validate_origin("not a url").is_err());
+    }
+
+    /// The limit is on the bytes a filesystem has to store, not on the
+    /// characters a person sees, so 100 two-byte characters are the same
+    /// length as 200 one-byte ones.
+    #[test]
+    fn a_plain_media_filename_is_accepted() {
+        validate_media_filename("cover.png").unwrap();
+        validate_media_filename(&"a".repeat(200)).unwrap();
+        validate_media_filename(&"é".repeat(100)).unwrap();
+        assert!(validate_media_filename(&"é".repeat(101)).is_err());
+    }
+
+    #[test]
+    fn every_unsafe_media_filename_shape_is_rejected() {
+        for filename in ["", "a/b.png", r"a\b.png", "a\0b.png", ".", ".."] {
+            assert!(
+                validate_media_filename(filename).is_err(),
+                "accepted an unsafe media filename: {filename:?}"
+            );
+        }
+        assert!(validate_media_filename(&"a".repeat(201)).is_err());
+    }
+
+    #[test]
+    fn a_byte_size_matches_only_the_length_it_declares() {
+        validate_byte_size("cover.png", 3, 3).unwrap();
+        assert!(validate_byte_size("cover.png", 3, 4).is_err());
+        assert!(validate_byte_size("cover.png", 4, 3).is_err());
+    }
+
+    #[test]
+    fn engagement_accounts_for_every_content_identity_and_stays_in_range() {
+        let ids = BTreeSet::from([7_i64]);
+        let totals =
+            |likes: u64, views: u64| BTreeMap::from([(7_i64, PortableEngagement { likes, views })]);
+
+        validate_engagement(&totals(0, 0), &ids).unwrap();
+        // The maximum is representable: the guard is `>`, not `>=`.
+        validate_engagement(&totals(MAX_SQLITE_INTEGER, MAX_SQLITE_INTEGER), &ids).unwrap();
+
+        assert!(validate_engagement(&BTreeMap::new(), &ids).is_err());
+        assert!(validate_engagement(&totals(0, 0), &BTreeSet::from([7_i64, 8_i64])).is_err());
+        assert!(validate_engagement(&totals(MAX_SQLITE_INTEGER + 1, 0), &ids).is_err());
+        assert!(validate_engagement(&totals(0, MAX_SQLITE_INTEGER + 1), &ids).is_err());
+    }
+}
+
+#[cfg(test)]
+mod portable_validator_tests {
+    use super::*;
+    use chrono::TimeZone as _;
+
+    use crate::domain::{
+        content::{ContentKind, Publication, Tag},
+        media::MediaVariant,
+    };
+
+    fn at() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap()
+    }
+
+    fn hex(fill: char, length: usize) -> String {
+        std::iter::repeat_n(fill, length).collect()
+    }
+
+    fn content() -> Content {
+        Content {
+            id: ContentId::from_i64(7),
+            kind: ContentKind::Post,
+            title: "Portable".into(),
+            slug: Slug::parse("portable").unwrap(),
+            summary: "Leaves any host".into(),
+            body_markdown: "# Canonical".into(),
+            body_html: "<h1>Canonical</h1>".into(),
+            tags: Vec::new(),
+            cover_media_id: None,
+            seo_title: None,
+            seo_description: None,
+            publication: Publication::Public { publish_at: at() },
+            version: 3,
+            created_at: at(),
+            updated_at: at(),
+            deleted_at: None,
+        }
+    }
+
+    fn tag(name: &str, slug: &str) -> Tag {
+        Tag {
+            name: name.into(),
+            slug: Slug::parse(slug).unwrap(),
+        }
+    }
+
+    fn asset(id_fill: char, filename: &str) -> MediaAsset {
+        MediaAsset {
+            id: MediaId::parse(hex(id_fill, 64)).unwrap(),
+            original_name: "Cover".into(),
+            original_filename: filename.into(),
+            mime_type: "image/png".into(),
+            extension: "png".into(),
+            width: 800,
+            height: 600,
+            byte_size: 1024,
+            alt_text: String::new(),
+            caption: String::new(),
+            animated: false,
+            variants: Vec::new(),
+            created_at: at(),
+        }
+    }
+
+    fn variant(width: u32, filename: &str) -> MediaVariant {
+        MediaVariant {
+            width,
+            height: 600,
+            byte_size: 512,
+            filename: filename.into(),
+        }
+    }
+
+    fn passkey(credential_id: &str, name: &str) -> PortablePasskey {
+        PortablePasskey {
+            credential_id: credential_id.into(),
+            name: name.into(),
+            passkey_json: "{}".into(),
+            created_at: at(),
+            last_used_at: None,
+        }
+    }
+
+    fn recovery(code_hash: String) -> PortableRecoveryCode {
+        PortableRecoveryCode {
+            code_hash,
+            consumed_at: None,
+            created_at: at(),
+        }
+    }
+
+    fn owner() -> PortableOwner {
+        PortableOwner {
+            user_handle: Uuid::nil(),
+            created_at: at(),
+            passkeys: vec![passkey("AQID", "Laptop")],
+            recovery_codes: vec![recovery(hex('a', 64))],
+        }
+    }
+
+    type Cases<T> = Vec<(&'static str, Box<dyn Fn(&mut T)>)>;
+
+    /// Each case trips exactly one clause of a guard, so dropping any clause
+    /// leaves one case accepting a package the contract forbids.
+    fn each<T>(base: impl Fn() -> T, cases: Cases<T>, rejected: impl Fn(&T) -> bool) {
+        for (label, mutate) in cases {
+            let mut value = base();
+            mutate(&mut value);
+            assert!(
+                rejected(&value),
+                "accepted what the contract forbids: {label}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_conforming_piece_of_content_is_accepted() {
+        validate_content(&content(), ContentId::from_i64(7)).unwrap();
+    }
+
+    #[test]
+    fn the_content_contract_holds_at_its_boundaries() {
+        let mut exact = content();
+        exact.title = "t".repeat(200);
+        exact.summary = "s".repeat(500);
+        exact.body_markdown = "b".repeat(MAX_MARKDOWN_BYTES);
+        exact.seo_title = Some("o".repeat(70));
+        exact.seo_description = Some("d".repeat(200));
+        exact.version = 1;
+        validate_content(&exact, ContentId::from_i64(7)).unwrap();
+
+        let mut minimal = content();
+        minimal.id = ContentId::from_i64(1);
+        validate_content(&minimal, ContentId::from_i64(1)).unwrap();
+    }
+
+    #[test]
+    fn every_way_content_can_violate_the_contract_is_rejected() {
+        let cases: Cases<Content> = vec![
+            (
+                "identity does not match",
+                Box::new(|c: &mut Content| c.id = ContentId::from_i64(8)),
+            ),
+            ("version is zero", Box::new(|c: &mut Content| c.version = 0)),
+            (
+                "title is untrimmed",
+                Box::new(|c: &mut Content| c.title = " Portable ".into()),
+            ),
+            (
+                "title is empty",
+                Box::new(|c: &mut Content| c.title = String::new()),
+            ),
+            (
+                "title is too long",
+                Box::new(|c: &mut Content| c.title = "t".repeat(201)),
+            ),
+            (
+                "summary is untrimmed",
+                Box::new(|c: &mut Content| c.summary = " Leaves ".into()),
+            ),
+            (
+                "summary is too long",
+                Box::new(|c: &mut Content| c.summary = "s".repeat(501)),
+            ),
+            (
+                "body is too long",
+                Box::new(|c: &mut Content| c.body_markdown = "b".repeat(MAX_MARKDOWN_BYTES + 1)),
+            ),
+            (
+                "body is too long in bytes rather than in characters",
+                Box::new(|c: &mut Content| {
+                    c.body_markdown = "é".repeat(MAX_MARKDOWN_BYTES / 2 + 1);
+                }),
+            ),
+            (
+                "seo title is blank",
+                Box::new(|c: &mut Content| c.seo_title = Some("   ".into())),
+            ),
+            (
+                "seo title is untrimmed",
+                Box::new(|c: &mut Content| c.seo_title = Some(" Title ".into())),
+            ),
+            (
+                "seo title is too long",
+                Box::new(|c: &mut Content| c.seo_title = Some("o".repeat(71))),
+            ),
+            (
+                "seo description is blank",
+                Box::new(|c: &mut Content| c.seo_description = Some("   ".into())),
+            ),
+            (
+                "seo description is untrimmed",
+                Box::new(|c: &mut Content| c.seo_description = Some(" Text ".into())),
+            ),
+            (
+                "seo description is too long",
+                Box::new(|c: &mut Content| c.seo_description = Some("d".repeat(201))),
+            ),
+            (
+                "created after updated",
+                Box::new(|c: &mut Content| {
+                    c.created_at = c.updated_at + chrono::Duration::seconds(1);
+                }),
+            ),
+            (
+                "deleted before created",
+                Box::new(|c: &mut Content| {
+                    c.deleted_at = Some(c.created_at - chrono::Duration::seconds(1));
+                }),
+            ),
+        ];
+        each(content, cases, |c| {
+            validate_content(c, ContentId::from_i64(7)).is_err()
+        });
+    }
+
+    #[test]
+    fn a_content_identity_at_or_below_zero_is_rejected() {
+        for identity in [0_i64, -1] {
+            let mut record = content();
+            record.id = ContentId::from_i64(identity);
+            assert!(
+                validate_content(&record, ContentId::from_i64(identity)).is_err(),
+                "accepted content identity {identity}"
+            );
+        }
+    }
+
+    #[test]
+    fn tags_are_accepted_up_to_their_limits() {
+        let mut twenty = content();
+        twenty.tags = (0..20)
+            .map(|index| tag("Tag", &format!("tag-{index}")))
+            .collect();
+        validate_tags(&twenty, &mut BTreeMap::new()).unwrap();
+
+        let mut longest = content();
+        longest.tags = vec![tag(&"n".repeat(50), "long")];
+        validate_tags(&longest, &mut BTreeMap::new()).unwrap();
+    }
+
+    #[test]
+    fn every_invalid_tag_shape_is_rejected() {
+        let cases: Vec<(&str, Vec<Tag>)> = vec![
+            (
+                "too many tags",
+                (0..21)
+                    .map(|index| tag("Tag", &format!("tag-{index}")))
+                    .collect(),
+            ),
+            ("untrimmed name", vec![tag(" Tag ", "topic")]),
+            ("empty name", vec![tag("", "topic")]),
+            ("name too long", vec![tag(&"n".repeat(51), "topic")]),
+            (
+                "duplicate slug",
+                vec![tag("One", "topic"), tag("Two", "topic")],
+            ),
+        ];
+        for (label, tags) in cases {
+            let mut record = content();
+            record.tags = tags;
+            assert!(
+                validate_tags(&record, &mut BTreeMap::new()).is_err(),
+                "accepted an invalid tag set: {label}"
+            );
+        }
+    }
+
+    #[test]
+    fn one_tag_slug_may_not_carry_two_names_across_content() {
+        let mut known = BTreeMap::new();
+        let mut first = content();
+        first.tags = vec![tag("Rust", "rust")];
+        validate_tags(&first, &mut known).unwrap();
+
+        let mut repeated = content();
+        repeated.tags = vec![tag("Rust", "rust")];
+        validate_tags(&repeated, &mut known).unwrap();
+
+        let mut conflicting = content();
+        conflicting.tags = vec![tag("Rustlang", "rust")];
+        assert!(validate_tags(&conflicting, &mut known).is_err());
+    }
+
+    #[test]
+    fn conforming_media_metadata_returns_every_asset_identity() {
+        let media = vec![asset('a', "one.png"), asset('b', "two.png")];
+        let first = hex('a', 64);
+        let second = hex('b', 64);
+        assert_eq!(
+            validate_media_metadata(&media).unwrap(),
+            BTreeSet::from([first.as_str(), second.as_str()])
+        );
+        assert!(validate_media_metadata(&[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn media_byte_sizes_are_accepted_up_to_the_portable_integer_range() {
+        let mut largest = asset('a', "one.png");
+        largest.byte_size = MAX_SQLITE_INTEGER;
+        largest.variants = vec![MediaVariant {
+            byte_size: MAX_SQLITE_INTEGER,
+            ..variant(400, "one-400.png")
+        }];
+        validate_media_metadata(std::slice::from_ref(&largest)).unwrap();
+    }
+
+    #[test]
+    fn every_invalid_media_shape_is_rejected() {
+        let cases: Cases<Vec<MediaAsset>> = vec![
+            (
+                "duplicate media identity",
+                Box::new(|m: &mut Vec<MediaAsset>| m.push(asset('a', "other.png"))),
+            ),
+            (
+                "zero width",
+                Box::new(|m: &mut Vec<MediaAsset>| m[0].width = 0),
+            ),
+            (
+                "zero height",
+                Box::new(|m: &mut Vec<MediaAsset>| m[0].height = 0),
+            ),
+            (
+                "zero byte size",
+                Box::new(|m: &mut Vec<MediaAsset>| m[0].byte_size = 0),
+            ),
+            (
+                "byte size beyond the portable integer range",
+                Box::new(|m: &mut Vec<MediaAsset>| m[0].byte_size = MAX_SQLITE_INTEGER + 1),
+            ),
+            (
+                "duplicate original filename",
+                Box::new(|m: &mut Vec<MediaAsset>| m.push(asset('b', "one.png"))),
+            ),
+            (
+                "variant of zero width",
+                Box::new(|m: &mut Vec<MediaAsset>| m[0].variants = vec![variant(0, "v.png")]),
+            ),
+            (
+                "variant of zero height",
+                Box::new(|m: &mut Vec<MediaAsset>| {
+                    m[0].variants = vec![MediaVariant {
+                        height: 0,
+                        ..variant(400, "v.png")
+                    }];
+                }),
+            ),
+            (
+                "variant of zero byte size",
+                Box::new(|m: &mut Vec<MediaAsset>| {
+                    m[0].variants = vec![MediaVariant {
+                        byte_size: 0,
+                        ..variant(400, "v.png")
+                    }];
+                }),
+            ),
+            (
+                "variant byte size beyond the portable integer range",
+                Box::new(|m: &mut Vec<MediaAsset>| {
+                    m[0].variants = vec![MediaVariant {
+                        byte_size: MAX_SQLITE_INTEGER + 1,
+                        ..variant(400, "v.png")
+                    }];
+                }),
+            ),
+            (
+                "two variants of the same width",
+                Box::new(|m: &mut Vec<MediaAsset>| {
+                    m[0].variants = vec![variant(400, "v.png"), variant(400, "w.png")];
+                }),
+            ),
+            (
+                "variant filename collides with the original",
+                Box::new(|m: &mut Vec<MediaAsset>| {
+                    m[0].variants = vec![variant(400, "one.png")];
+                }),
+            ),
+        ];
+        each(
+            || vec![asset('a', "one.png")],
+            cases,
+            |m| validate_media_metadata(m).is_err(),
+        );
+    }
+
+    #[test]
+    fn a_conforming_owner_is_accepted() {
+        validate_owner(&owner()).unwrap();
+
+        let mut boundary = owner();
+        boundary.passkeys = vec![PortablePasskey {
+            last_used_at: Some(at()),
+            ..passkey("AQID", &"n".repeat(80))
+        }];
+        boundary.recovery_codes = vec![PortableRecoveryCode {
+            consumed_at: Some(at()),
+            ..recovery("0123456789abcdef".repeat(4))
+        }];
+        validate_owner(&boundary).unwrap();
+    }
+
+    #[test]
+    fn every_invalid_owner_credential_is_rejected() {
+        let cases: Cases<PortableOwner> = vec![
+            (
+                "no passkey at all",
+                Box::new(|o: &mut PortableOwner| o.passkeys.clear()),
+            ),
+            (
+                "credential is not base64",
+                Box::new(|o: &mut PortableOwner| {
+                    o.passkeys[0].credential_id = "not base64!".into();
+                }),
+            ),
+            (
+                "credential decodes to nothing",
+                Box::new(|o: &mut PortableOwner| o.passkeys[0].credential_id = String::new()),
+            ),
+            (
+                "duplicate credential",
+                Box::new(|o: &mut PortableOwner| o.passkeys.push(passkey("AQID", "Phone"))),
+            ),
+            (
+                "passkey name is untrimmed",
+                Box::new(|o: &mut PortableOwner| o.passkeys[0].name = " Laptop ".into()),
+            ),
+            (
+                "passkey name is empty",
+                Box::new(|o: &mut PortableOwner| o.passkeys[0].name = String::new()),
+            ),
+            (
+                "passkey name is too long",
+                Box::new(|o: &mut PortableOwner| o.passkeys[0].name = "n".repeat(81)),
+            ),
+            (
+                "passkey predates the owner",
+                Box::new(|o: &mut PortableOwner| {
+                    o.passkeys[0].created_at = o.created_at - chrono::Duration::seconds(1);
+                }),
+            ),
+            (
+                "passkey used before it existed",
+                Box::new(|o: &mut PortableOwner| {
+                    o.passkeys[0].last_used_at =
+                        Some(o.passkeys[0].created_at - chrono::Duration::seconds(1));
+                }),
+            ),
+            (
+                "passkey JSON is malformed",
+                Box::new(|o: &mut PortableOwner| o.passkeys[0].passkey_json = "{".into()),
+            ),
+            (
+                "recovery hash is short",
+                Box::new(|o: &mut PortableOwner| o.recovery_codes[0].code_hash = hex('a', 63)),
+            ),
+            (
+                "recovery hash is long",
+                Box::new(|o: &mut PortableOwner| o.recovery_codes[0].code_hash = hex('a', 65)),
+            ),
+            (
+                "recovery hash is not hexadecimal",
+                Box::new(|o: &mut PortableOwner| o.recovery_codes[0].code_hash = hex('g', 64)),
+            ),
+            (
+                "recovery hash is uppercase",
+                Box::new(|o: &mut PortableOwner| o.recovery_codes[0].code_hash = hex('A', 64)),
+            ),
+            (
+                "duplicate recovery hash",
+                Box::new(|o: &mut PortableOwner| o.recovery_codes.push(recovery(hex('a', 64)))),
+            ),
+            (
+                "recovery code predates the owner",
+                Box::new(|o: &mut PortableOwner| {
+                    o.recovery_codes[0].created_at = o.created_at - chrono::Duration::seconds(1);
+                }),
+            ),
+            (
+                "recovery code consumed before it existed",
+                Box::new(|o: &mut PortableOwner| {
+                    o.recovery_codes[0].consumed_at =
+                        Some(o.recovery_codes[0].created_at - chrono::Duration::seconds(1));
+                }),
+            ),
+        ];
+        each(owner, cases, |o| validate_owner(o).is_err());
+    }
+}
+
+#[cfg(test)]
+mod portable_graph_tests {
+    use super::*;
+    use chrono::TimeZone as _;
+
+    use crate::domain::content::{ContentKind, Publication, SaveIntent, Tag};
+
+    type Cases = Vec<(&'static str, Box<dyn Fn(&mut Vec<PortableContent>)>)>;
+
+    fn at() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap()
+    }
+
+    fn content(id: i64, slug: &str) -> Content {
+        Content {
+            id: ContentId::from_i64(id),
+            kind: ContentKind::Post,
+            title: "Portable".into(),
+            slug: Slug::parse(slug).unwrap(),
+            summary: "Leaves any host".into(),
+            body_markdown: "# Canonical".into(),
+            body_html: "<h1>Canonical</h1>".into(),
+            tags: Vec::new(),
+            cover_media_id: None,
+            seo_title: None,
+            seo_description: None,
+            publication: Publication::Public { publish_at: at() },
+            version: 3,
+            created_at: at(),
+            updated_at: at(),
+            deleted_at: None,
+        }
+    }
+
+    fn revision(id: i64, content_id: i64, version: i64) -> ContentRevision {
+        let mut snapshot = content(content_id, "portable");
+        snapshot.version = version;
+        ContentRevision {
+            id,
+            content_id: ContentId::from_i64(content_id),
+            intent: SaveIntent::Explicit,
+            snapshot,
+            created_at: at(),
+        }
+    }
+
+    fn record() -> PortableContent {
+        PortableContent {
+            current: content(7, "portable"),
+            revisions: vec![revision(1, 7, 2)],
+        }
+    }
+
+    fn item(id: i64, position: u16, label: &str) -> NavigationItem {
+        NavigationItem {
+            id,
+            label: label.into(),
+            destination: "/about".into(),
+            is_external: false,
+            position,
+        }
+    }
+
+    #[test]
+    fn a_conforming_content_graph_yields_its_identities_and_slugs() {
+        let (ids, slugs) = validate_contents(std::slice::from_ref(&record())).unwrap();
+        assert_eq!(ids, BTreeSet::from([7]));
+        assert_eq!(slugs, BTreeSet::from([Slug::parse("portable").unwrap()]));
+
+        let (empty_ids, empty_slugs) = validate_contents(&[]).unwrap();
+        assert!(empty_ids.is_empty());
+        assert!(empty_slugs.is_empty());
+    }
+
+    #[test]
+    fn every_broken_content_graph_is_rejected() {
+        let cases: Cases = vec![
+            (
+                "two records with one identity",
+                Box::new(|r: &mut Vec<PortableContent>| {
+                    let mut duplicate = record();
+                    duplicate.current.slug = Slug::parse("other").unwrap();
+                    duplicate.revisions = vec![revision(2, 7, 2)];
+                    r.push(duplicate);
+                }),
+            ),
+            (
+                "two records with one slug",
+                Box::new(|r: &mut Vec<PortableContent>| {
+                    let mut duplicate = record();
+                    duplicate.current.id = ContentId::from_i64(8);
+                    duplicate.revisions = vec![revision(2, 8, 2)];
+                    r.push(duplicate);
+                }),
+            ),
+            (
+                "a revision belonging to other content",
+                Box::new(|r: &mut Vec<PortableContent>| {
+                    r[0].revisions[0].content_id = ContentId::from_i64(8);
+                }),
+            ),
+            (
+                "a revision identity at zero",
+                Box::new(|r: &mut Vec<PortableContent>| r[0].revisions[0].id = 0),
+            ),
+            (
+                "a revision newer than the piece it belongs to",
+                Box::new(|r: &mut Vec<PortableContent>| {
+                    r[0].revisions[0].snapshot.version = r[0].current.version + 1;
+                }),
+            ),
+            (
+                "two revisions with one identity",
+                Box::new(|r: &mut Vec<PortableContent>| {
+                    r[0].revisions.push(revision(1, 7, 1));
+                }),
+            ),
+        ];
+        for (label, mutate) in cases {
+            let mut records = vec![record()];
+            mutate(&mut records);
+            assert!(
+                validate_contents(&records).is_err(),
+                "accepted a content graph that cannot be restored: {label}"
+            );
+        }
+    }
+
+    #[test]
+    fn one_tag_slug_with_two_names_across_records_is_rejected() {
+        let mut first = record();
+        first.current.tags = vec![Tag {
+            name: "Rust".into(),
+            slug: Slug::parse("rust").unwrap(),
+        }];
+        first.revisions = Vec::new();
+        let mut second = record();
+        second.current.id = ContentId::from_i64(8);
+        second.current.slug = Slug::parse("second").unwrap();
+        second.current.tags = vec![Tag {
+            name: "Rustlang".into(),
+            slug: Slug::parse("rust").unwrap(),
+        }];
+        second.revisions = Vec::new();
+
+        assert!(validate_contents(&[first, second]).is_err());
+    }
+
+    #[test]
+    fn a_redirect_points_from_a_retired_slug_to_a_piece_that_is_here() {
+        let ids = BTreeSet::from([7_i64]);
+        let slugs = BTreeSet::from([Slug::parse("portable").unwrap()]);
+        let redirect = |slug: &str, id: i64| PortableRedirect {
+            old_slug: Slug::parse(slug).unwrap(),
+            content_id: ContentId::from_i64(id),
+            created_at: at(),
+        };
+
+        validate_redirects(&[redirect("older", 7)], &ids, &slugs).unwrap();
+        validate_redirects(&[], &ids, &slugs).unwrap();
+
+        for (label, redirects) in [
+            (
+                "the same retired slug twice",
+                vec![redirect("older", 7), redirect("older", 7)],
+            ),
+            (
+                "a retired slug that is still live",
+                vec![redirect("portable", 7)],
+            ),
+            (
+                "a destination that is not in the archive",
+                vec![redirect("older", 8)],
+            ),
+        ] {
+            assert!(
+                validate_redirects(&redirects, &ids, &slugs).is_err(),
+                "accepted a redirect graph that cannot be restored: {label}"
+            );
+        }
+    }
+
+    #[test]
+    fn navigation_travels_only_in_its_canonical_form() {
+        validate_portable_navigation(&[]).unwrap();
+        validate_portable_navigation(&[item(1, 0, "About"), item(2, 1, "Contact")]).unwrap();
+
+        for (label, items) in [
+            ("a label that is not trimmed", vec![item(1, 0, " About ")]),
+            ("an identity at zero", vec![item(0, 0, "About")]),
+            (
+                "a position that is not the item's own",
+                vec![item(1, 3, "About")],
+            ),
+            (
+                "two items with one identity",
+                vec![item(1, 0, "About"), item(1, 1, "Contact")],
+            ),
+        ] {
+            assert!(
+                validate_portable_navigation(&items).is_err(),
+                "accepted navigation that is not canonical: {label}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod publication_clock_tests {
+    use super::*;
+    use chrono::TimeZone as _;
+
+    use crate::domain::{
+        content::{ContentKind, Publication},
+        theme::Locale,
+    };
+
+    fn at() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap()
+    }
+
+    fn later(days: i64) -> DateTime<Utc> {
+        at() + chrono::Duration::days(days)
+    }
+
+    fn scheduled(id: i64, slug: &str, publish_at: DateTime<Utc>) -> PortableContent {
+        PortableContent {
+            current: Content {
+                id: ContentId::from_i64(id),
+                kind: ContentKind::Post,
+                title: "Portable".into(),
+                slug: Slug::parse(slug).unwrap(),
+                summary: String::new(),
+                body_markdown: "# Canonical".into(),
+                body_html: "<h1>Canonical</h1>".into(),
+                tags: Vec::new(),
+                cover_media_id: None,
+                seo_title: None,
+                seo_description: None,
+                publication: Publication::Public { publish_at },
+                version: 1,
+                created_at: at(),
+                updated_at: at(),
+                deleted_at: None,
+            },
+            revisions: Vec::new(),
+        }
+    }
+
+    fn site(contents: Vec<PortableContent>, next: Option<DateTime<Utc>>) -> PortableSiteV1 {
+        PortableSiteV1 {
+            format_version: PORTABLE_SITE_FORMAT_VERSION,
+            exported_at: at(),
+            canonical_origin: "https://writing.example".into(),
+            settings: SiteSettings {
+                site_title: "Portable site".into(),
+                site_description: String::new(),
+                locale: Locale::En,
+                logo_media_id: None,
+                favicon_media_id: None,
+                custom_css: String::new(),
+                timezone: "UTC".into(),
+                author_name: String::new(),
+                custom_css_backup: None,
+            },
+            navigation: Vec::new(),
+            contents,
+            redirects: Vec::new(),
+            media: Vec::new(),
+            engagement: BTreeMap::new(),
+            owner: None,
+            publication: PortablePublicationState {
+                public_revision: 1,
+                next_publish_at: next,
+            },
+        }
+    }
+
+    #[test]
+    fn a_public_revision_is_accepted_right_up_to_the_portable_integer_range() {
+        let mut largest = site(Vec::new(), None);
+        largest.publication.public_revision = MAX_SQLITE_INTEGER;
+        validate_publication_state(&largest).unwrap();
+
+        let mut beyond = site(Vec::new(), None);
+        beyond.publication.public_revision = MAX_SQLITE_INTEGER + 1;
+        assert!(validate_publication_state(&beyond).is_err());
+    }
+
+    #[test]
+    fn the_clock_is_the_earliest_piece_still_ahead_of_the_export() {
+        let contents = vec![
+            scheduled(7, "later", later(9)),
+            scheduled(8, "sooner", later(2)),
+            scheduled(9, "already-out", later(-3)),
+        ];
+        validate_publication_state(&site(contents.clone(), Some(later(2)))).unwrap();
+
+        // Naming any other moment, or none at all, is a clock that disagrees
+        // with the content the archive carries.
+        assert!(validate_publication_state(&site(contents.clone(), Some(later(9)))).is_err());
+        assert!(validate_publication_state(&site(contents, None)).is_err());
+    }
+
+    #[test]
+    fn nothing_scheduled_means_no_clock_at_all() {
+        validate_publication_state(&site(Vec::new(), None)).unwrap();
+        validate_publication_state(&site(vec![scheduled(7, "already-out", later(-1))], None))
+            .unwrap();
+        assert!(validate_publication_state(&site(Vec::new(), Some(later(1)))).is_err());
+    }
+
+    #[test]
+    fn a_scheduled_piece_in_the_trash_does_not_hold_the_clock() {
+        let mut trashed = scheduled(7, "trashed", later(2));
+        trashed.current.deleted_at = Some(at());
+        let live = scheduled(8, "live", later(5));
+
+        validate_publication_state(&site(vec![trashed.clone(), live], Some(later(5)))).unwrap();
+        validate_publication_state(&site(vec![trashed], None)).unwrap();
+    }
+
+    #[test]
+    fn a_draft_never_sets_the_clock() {
+        let mut draft = scheduled(7, "draft", later(2));
+        draft.current.publication = Publication::Draft;
+        validate_publication_state(&site(vec![draft], None)).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod archive_entry_tests {
+    use super::*;
+    use chrono::TimeZone as _;
+
+    use crate::domain::{
+        content::{ContentKind, Publication},
+        theme::Locale,
+    };
+
+    fn at() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap()
+    }
+
+    fn hex(fill: char) -> String {
+        std::iter::repeat_n(fill, 64).collect()
+    }
+
+    /// Renders the visitor's own description of what it accepts.
+    struct Expectation(StrictJsonVisitor);
+
+    impl std::fmt::Display for Expectation {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            self.0.expecting(formatter)
+        }
+    }
+
+    fn site() -> PortableSiteV1 {
+        PortableSiteV1 {
+            format_version: PORTABLE_SITE_FORMAT_VERSION,
+            exported_at: at(),
+            canonical_origin: "https://writing.example".into(),
+            settings: SiteSettings {
+                site_title: "Portable site".into(),
+                site_description: String::new(),
+                locale: Locale::En,
+                logo_media_id: None,
+                favicon_media_id: None,
+                custom_css: String::new(),
+                timezone: "UTC".into(),
+                author_name: String::new(),
+                custom_css_backup: None,
+            },
+            navigation: Vec::new(),
+            contents: Vec::new(),
+            redirects: Vec::new(),
+            media: Vec::new(),
+            engagement: BTreeMap::new(),
+            owner: None,
+            publication: PortablePublicationState {
+                public_revision: 1,
+                next_publish_at: None,
+            },
+        }
+    }
+
+    fn with_cover(media_id: &str) -> PortableContent {
+        PortableContent {
+            current: Content {
+                id: ContentId::from_i64(7),
+                kind: ContentKind::Post,
+                title: "Portable".into(),
+                slug: Slug::parse("portable").unwrap(),
+                summary: String::new(),
+                body_markdown: "# Canonical".into(),
+                body_html: "<h1>Canonical</h1>".into(),
+                tags: Vec::new(),
+                cover_media_id: Some(media_id.to_owned()),
+                seo_title: None,
+                seo_description: None,
+                publication: Publication::Public { publish_at: at() },
+                version: 1,
+                created_at: at(),
+                updated_at: at(),
+                deleted_at: None,
+            },
+            revisions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn an_archive_carries_two_documents_and_a_flat_media_directory() {
+        assert_eq!(
+            validate_archive_path(Path::new(MANIFEST_PATH)).unwrap(),
+            MANIFEST_PATH
+        );
+        assert_eq!(
+            validate_archive_path(Path::new(SITE_PATH)).unwrap(),
+            SITE_PATH
+        );
+        assert_eq!(
+            validate_archive_path(Path::new("media/cover.png")).unwrap(),
+            "media/cover.png"
+        );
+    }
+
+    #[test]
+    fn every_archive_entry_outside_that_shape_is_unsafe() {
+        for entry in [
+            "/etc/passwd",
+            "../escape",
+            "./manifest.json",
+            "other.json",
+            "media",
+            "media/",
+            "media/nested/cover.png",
+            "media/../escape.png",
+            "media/.",
+            "media/..",
+        ] {
+            assert!(
+                validate_archive_path(Path::new(entry)).is_err(),
+                "accepted an archive entry outside the portable shape: {entry}"
+            );
+        }
+        assert!(validate_archive_path(Path::new(&format!("media/{}", "a".repeat(201)))).is_err());
+    }
+
+    #[test]
+    fn every_referenced_media_identity_has_to_be_in_the_archive() {
+        let present = hex('a');
+        let absent = hex('b');
+        let ids = BTreeSet::from([present.as_str()]);
+
+        let mut referencing = site();
+        referencing.contents = vec![with_cover(&present)];
+        validate_media_references(&referencing, &ids).unwrap();
+        validate_media_references(&site(), &ids).unwrap();
+
+        let mut missing_cover = site();
+        missing_cover.contents = vec![with_cover(&absent)];
+        assert!(validate_media_references(&missing_cover, &ids).is_err());
+
+        let mut missing_logo = site();
+        missing_logo.settings.logo_media_id = Some(absent.clone());
+        assert!(validate_media_references(&missing_logo, &ids).is_err());
+
+        let mut missing_favicon = site();
+        missing_favicon.settings.favicon_media_id = Some(absent);
+        assert!(validate_media_references(&missing_favicon, &ids).is_err());
+
+        let mut malformed = site();
+        malformed.settings.logo_media_id = Some("not-a-media-identity".into());
+        assert!(validate_media_references(&malformed, &ids).is_err());
+    }
+
+    #[test]
+    fn an_archive_is_installed_only_where_nothing_stands() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("archive.partial");
+        std::fs::write(&source, b"complete archive").unwrap();
+
+        let destination = temp.path().join("site.simple-blog");
+        install_without_overwrite(&source, &destination).unwrap();
+        assert_eq!(std::fs::read(&destination).unwrap(), b"complete archive");
+
+        let error = install_without_overwrite(&source, &destination).unwrap_err();
+        assert!(
+            matches!(&error, PortableArchiveError::OutputExists(path) if path == &destination),
+            "a destination that already exists must be reported as such, not as {error:?}"
+        );
+        assert_eq!(std::fs::read(&destination).unwrap(), b"complete archive");
+
+        // Anything else stays the I/O failure it is.
+        let into_nowhere = temp.path().join("absent").join("site.simple-blog");
+        assert!(matches!(
+            install_without_overwrite(&source, &into_nowhere).unwrap_err(),
+            PortableArchiveError::Io(_)
+        ));
+    }
+
+    #[test]
+    fn strict_json_names_what_it_expected() {
+        // A well-formed document parses.
+        strict_json_value(br#"{"a":1,"b":[true,null,"x"]}"#).unwrap();
+
+        // A duplicate field is the thing this visitor exists to refuse.
+        let error = strict_json_value(br#"{"a":1,"a":2}"#).unwrap_err();
+        assert!(matches!(error, PortableArchiveError::InvalidArchive(_)));
+        assert!(error.to_string().contains("duplicate"));
+
+        // JSON carries no value this visitor leaves unhandled, so serde never
+        // formats its expectation while parsing. It is still the sentence a
+        // reader of any future invalid-type error would get, so it is pinned
+        // by rendering it directly.
+        assert_eq!(
+            Expectation(StrictJsonVisitor).to_string(),
+            "JSON without duplicate object fields"
+        );
+    }
+}
+
+#[cfg(test)]
+mod archive_reader_tests {
+    use super::*;
+    use chrono::TimeZone as _;
+
+    use crate::domain::theme::Locale;
+
+    fn at() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap()
+    }
+
+    fn site() -> PortableSiteV1 {
+        PortableSiteV1 {
+            format_version: PORTABLE_SITE_FORMAT_VERSION,
+            exported_at: at(),
+            canonical_origin: "https://writing.example".into(),
+            settings: SiteSettings {
+                site_title: "Portable site".into(),
+                site_description: String::new(),
+                locale: Locale::En,
+                logo_media_id: None,
+                favicon_media_id: None,
+                custom_css: String::new(),
+                timezone: "UTC".into(),
+                author_name: String::new(),
+                custom_css_backup: None,
+            },
+            navigation: Vec::new(),
+            contents: Vec::new(),
+            redirects: Vec::new(),
+            media: Vec::new(),
+            engagement: BTreeMap::new(),
+            owner: None,
+            publication: PortablePublicationState {
+                public_revision: 1,
+                next_publish_at: None,
+            },
+        }
+    }
+
+    /// Writes a tar.zst stream from entries given as name, declared size and
+    /// bytes. A declared size that disagrees with the bytes, or data after the
+    /// tar terminator, is what a hostile archive looks like and what this
+    /// crate would never itself produce.
+    fn archive_bytes(entries: &[(&str, u64, Vec<u8>)], trailing: &[u8]) -> Vec<u8> {
+        let mut encoder = zstd::Encoder::new(Vec::new(), 1).unwrap();
+        {
+            let mut builder = Builder::new(&mut encoder);
+            for (name, declared, bytes) in entries {
+                let mut header = Header::new_gnu();
+                header.set_path(name).unwrap();
+                header.set_size(*declared);
+                header.set_mode(0o644);
+                header.set_mtime(0);
+                header.set_entry_type(EntryType::Regular);
+                header.set_cksum();
+                builder.append(&header, bytes.as_slice()).unwrap();
+            }
+            builder.finish().unwrap();
+        }
+        encoder.write_all(trailing).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    /// The two documents of a well-formed archive, carrying an identity that
+    /// matches them.
+    fn documents() -> Vec<(&'static str, u64, Vec<u8>)> {
+        let site_bytes = serde_json::to_vec(&site()).unwrap();
+        let entries = BTreeMap::from([(
+            SITE_PATH.to_owned(),
+            PortableArchiveEntry {
+                checksum: blake3::hash(&site_bytes).to_hex().to_string(),
+                byte_size: u64::try_from(site_bytes.len()).unwrap(),
+            },
+        )]);
+        let identity = PortableArchiveIdentity {
+            archive_format_version: PORTABLE_ARCHIVE_FORMAT_VERSION,
+            site_format_version: PORTABLE_SITE_FORMAT_VERSION,
+            producer_version: env!("CARGO_PKG_VERSION").to_owned(),
+            exported_at: at(),
+            entries,
+        };
+        let archive_id = blake3::hash(&serde_json::to_vec(&identity).unwrap())
+            .to_hex()
+            .to_string();
+        let manifest_bytes = serde_json::to_vec(&PortableArchiveManifest {
+            archive_id,
+            identity,
+        })
+        .unwrap();
+        vec![
+            (
+                MANIFEST_PATH,
+                u64::try_from(manifest_bytes.len()).unwrap(),
+                manifest_bytes,
+            ),
+            (
+                SITE_PATH,
+                u64::try_from(site_bytes.len()).unwrap(),
+                site_bytes,
+            ),
+        ]
+    }
+
+    fn read_archive(bytes: &[u8]) -> Result<PortablePackage, PortableArchiveError> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("site.simple-blog");
+        std::fs::write(&path, bytes)?;
+        PortableArchive::read(&path)
+    }
+
+    #[test]
+    fn a_hand_written_archive_of_the_documented_shape_reads_back() {
+        let package = read_archive(&archive_bytes(&documents(), b"")).unwrap();
+        assert_eq!(package.site.canonical_origin, "https://writing.example");
+        assert!(package.media_files.is_empty());
+    }
+
+    /// Which size limit applies is decided by the entry's own name: the two
+    /// documents are metadata, capped far below a media file. An entry over
+    /// its limit is refused from the header alone, before a byte is decoded.
+    #[test]
+    fn a_document_over_the_metadata_limit_is_refused_before_it_is_decoded() {
+        for name in [MANIFEST_PATH, SITE_PATH] {
+            let oversized = vec![(name, MAX_METADATA_BYTES + 1, b"{}".to_vec())];
+            let error = read_archive(&archive_bytes(&oversized, b"")).unwrap_err();
+            assert!(
+                matches!(&error, PortableArchiveError::SafetyLimit(message)
+                    if message == &format!("archive entry is too large: {name}")),
+                "{name} beyond the metadata limit must be refused as too large, not as {error:?}"
+            );
+        }
+
+        // Exactly at the limit is within it. Such an archive is refused for
+        // the contents it turns out not to have, not for its declared size.
+        let at_the_limit = vec![(MANIFEST_PATH, MAX_METADATA_BYTES, b"{}".to_vec())];
+        let error = read_archive(&archive_bytes(&at_the_limit, b"")).unwrap_err();
+        assert!(
+            matches!(&error, PortableArchiveError::Io(_)),
+            "an entry the size of the limit is within it, not over it: {error:?}"
+        );
+    }
+
+    /// A tar archive is customarily padded out to a twenty-block boundary.
+    /// That much zero padding is part of the format; one byte more is not, and
+    /// a byte that is not zero is not padding at all.
+    #[test]
+    fn trailing_data_is_padding_only_while_it_is_zero_and_within_the_block_factor() {
+        // tar ends an archive with two zero blocks, of which the reader
+        // consumes one. What is left of it is padding like any other.
+        const TERMINATOR_REMAINDER: usize = 512;
+
+        let at_the_boundary = vec![0_u8; MAX_TAR_ZERO_PADDING - TERMINATOR_REMAINDER];
+        read_archive(&archive_bytes(&documents(), &at_the_boundary)).unwrap();
+
+        let one_byte_too_far = vec![0_u8; MAX_TAR_ZERO_PADDING - TERMINATOR_REMAINDER + 1];
+        let error = read_archive(&archive_bytes(&documents(), &one_byte_too_far)).unwrap_err();
+        assert!(
+            matches!(&error, PortableArchiveError::InvalidArchive(message)
+                if message == "trailing decoded data after tar archive"),
+            "padding beyond the block factor must be refused, not read as {error:?}"
+        );
+
+        let error = read_archive(&archive_bytes(&documents(), b"appended")).unwrap_err();
+        assert!(
+            matches!(&error, PortableArchiveError::InvalidArchive(message)
+                if message == "trailing decoded data after tar archive"),
+            "data smuggled after the tar terminator must be refused, not read as {error:?}"
+        );
+    }
+
+    fn manifest(producer_version: &str) -> PortableArchiveManifest {
+        let identity = PortableArchiveIdentity {
+            archive_format_version: PORTABLE_ARCHIVE_FORMAT_VERSION,
+            site_format_version: PORTABLE_SITE_FORMAT_VERSION,
+            producer_version: producer_version.to_owned(),
+            exported_at: at(),
+            entries: BTreeMap::new(),
+        };
+        let archive_id = blake3::hash(&serde_json::to_vec(&identity).unwrap())
+            .to_hex()
+            .to_string();
+        PortableArchiveManifest {
+            archive_id,
+            identity,
+        }
+    }
+
+    /// The producer version is written into every archive and read back by
+    /// another host, so it is one short printable line and nothing else. Each
+    /// case breaks exactly one clause of that sentence.
+    #[test]
+    fn a_producer_version_is_one_short_printable_line() {
+        let empty = BTreeMap::new();
+        manifest("0.1.0").verify(&empty).unwrap();
+        manifest(&"v".repeat(128)).verify(&empty).unwrap();
+
+        for (label, version) in [
+            ("surrounded by whitespace", " 0.1.0 ".to_owned()),
+            ("empty", String::new()),
+            ("one character too long", "v".repeat(129)),
+            ("carrying a control character", "0.1\u{7}.0".to_owned()),
+        ] {
+            let error = manifest(&version).verify(&empty).unwrap_err();
+            assert!(
+                matches!(&error, PortableArchiveError::InvalidArchive(message)
+                    if message == "invalid archive producer version"),
+                "a producer version {label} must be refused as invalid, not as {error:?}"
+            );
+        }
+    }
+
+    /// A name whose bytes are not text on this platform.
+    #[cfg(unix)]
+    fn unreadable_name() -> std::ffi::OsString {
+        use std::os::unix::ffi::OsStringExt as _;
+
+        std::ffi::OsString::from_vec(vec![0xff])
+    }
+
+    #[cfg(windows)]
+    fn unreadable_name() -> std::ffi::OsString {
+        use std::os::windows::ffi::OsStringExt as _;
+
+        std::ffi::OsString::from_wide(&[0xd800])
+    }
+
+    /// The guard exists to refuse a path that leaves the archive, and it says
+    /// so whatever the bytes of that path turn out to be. Its own answer must
+    /// not be shadowed by the encoding check that follows it.
+    #[test]
+    fn an_entry_that_leaves_the_archive_is_refused_as_unsafe_whatever_its_bytes() {
+        let escaping = Path::new("..").join(unreadable_name());
+        let error = validate_archive_path(&escaping).unwrap_err();
+        assert!(
+            matches!(&error, PortableArchiveError::UnsafeEntry(entry)
+                if entry != "non-UTF-8 entry"),
+            "a traversal entry must be named as the unsafe path it is, not as {error:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod partial_cleanup_tests {
+    use super::*;
+
+    /// A partial archive left behind by a failed write is named to the
+    /// operator, and one that is simply gone is not worth a word.
+    #[test]
+    fn a_partial_archive_that_cannot_be_removed_is_named_and_an_absent_one_is_not() {
+        let temp = tempfile::tempdir().unwrap();
+        let (traces, _guard) = crate::observability::capture::traces();
+
+        cleanup_failed_archive_path(
+            &temp.path().join("absent"),
+            "portable.archive.partial_cleanup_failed",
+        );
+        assert_eq!(
+            traces.text(),
+            "",
+            "a partial archive that is already gone is the cleanup having succeeded"
+        );
+
+        // A directory standing where the partial archive belongs cannot be
+        // removed as a file, and the operator has to hear about it.
+        let occupied = temp.path().join("occupied");
+        std::fs::create_dir(&occupied).unwrap();
+        cleanup_failed_archive_path(&occupied, "portable.archive.partial_cleanup_failed");
+
+        let reported = traces.text();
+        assert!(
+            reported.contains("portable.archive.partial_cleanup_failed")
+                && reported.contains("occupied"),
+            "a partial archive that outlived its write must be named: {reported:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod manifest_entry_tests {
+    use super::*;
+    use chrono::TimeZone as _;
+
+    fn at() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap()
+    }
+
+    fn manifest(checksum: String, byte_size: u64) -> PortableArchiveManifest {
+        let identity = PortableArchiveIdentity {
+            archive_format_version: PORTABLE_ARCHIVE_FORMAT_VERSION,
+            site_format_version: PORTABLE_SITE_FORMAT_VERSION,
+            producer_version: env!("CARGO_PKG_VERSION").to_owned(),
+            exported_at: at(),
+            entries: BTreeMap::from([(
+                SITE_PATH.to_owned(),
+                PortableArchiveEntry {
+                    checksum,
+                    byte_size,
+                },
+            )]),
+        };
+        let archive_id = blake3::hash(&serde_json::to_vec(&identity).unwrap())
+            .to_hex()
+            .to_string();
+        PortableArchiveManifest {
+            archive_id,
+            identity,
+        }
+    }
+
+    /// The record carries both the length and the checksum of every entry,
+    /// and an entry has to answer to each of them on its own.
+    #[test]
+    fn an_entry_answers_to_its_recorded_length_and_to_its_recorded_checksum() {
+        let files = BTreeMap::from([(SITE_PATH.to_owned(), b"site".to_vec())]);
+        let checksum = blake3::hash(b"site").to_hex().to_string();
+        manifest(checksum.clone(), 4).verify(&files).unwrap();
+
+        // The same number of bytes, and not the same bytes.
+        let tampered = BTreeMap::from([(SITE_PATH.to_owned(), b"SITE".to_vec())]);
+        let error = manifest(checksum.clone(), 4).verify(&tampered).unwrap_err();
+        assert!(
+            matches!(&error, PortableArchiveError::InvalidArchive(message)
+                if message == &format!("checksum or size mismatch: {SITE_PATH}")),
+            "bytes that changed without changing length must be refused: {error:?}"
+        );
+
+        // The recorded bytes, and not the number of them the record claims.
+        let error = manifest(checksum, 5).verify(&files).unwrap_err();
+        assert!(
+            matches!(&error, PortableArchiveError::InvalidArchive(message)
+                if message == &format!("checksum or size mismatch: {SITE_PATH}")),
+            "an entry of another length must be refused: {error:?}"
+        );
+    }
 }

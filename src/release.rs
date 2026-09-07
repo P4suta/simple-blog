@@ -669,27 +669,26 @@ impl<S: ReleaseStore + ?Sized> ReleasePublisher<S> {
                 tracing::error!(
                     event = "release.publish.failed",
                     error_code = "release_object_store_failed",
-                    phase = "object",
-                    error = %error
+                    phase = "object"
                 );
                 return Err(error);
             }
         }
+        tracing::info!(event = "release.publish.objects_stored");
         if let Err(error) = self.store.put_manifest(release).await {
             tracing::error!(
                 event = "release.publish.failed",
                 error_code = "release_manifest_store_failed",
-                phase = "manifest",
-                error = %error
+                phase = "manifest"
             );
             return Err(error);
         }
+        tracing::info!(event = "release.publish.manifest_stored");
         if let Err(error) = self.store.activate(expected, &release.id).await {
             tracing::error!(
                 event = "release.publish.failed",
                 error_code = "release_activation_failed",
-                phase = "activation",
-                error = %error
+                phase = "activation"
             );
             return Err(error);
         }
@@ -855,17 +854,20 @@ async fn atomic_create(path: &Path, bytes: &[u8]) -> Result<(), ReleaseError> {
         }
     }
     .await;
-    if result.is_err()
-        && let Err(error) = tokio::fs::remove_file(&temporary).await
-        && error.kind() != std::io::ErrorKind::NotFound
-    {
-        tracing::warn!(
-            event = "release.temporary_cleanup_failed",
-            path = %temporary.display(),
-            error = %error
-        );
+    if result.is_err() {
+        cleanup_failed_temporary(&temporary, "release.temporary_cleanup_failed").await;
     }
     result
+}
+
+/// A temporary that outlived the operation it belonged to is worth saying so
+/// about. Its absence is not: that is the operation having cleaned up already.
+async fn cleanup_failed_temporary(path: &Path, event: &'static str) {
+    if let Err(error) = tokio::fs::remove_file(path).await
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(event, path = %path.display(), error_kind = ?error.kind());
+    }
 }
 
 async fn atomic_replace(path: &Path, bytes: &[u8]) -> Result<(), ReleaseError> {
@@ -894,15 +896,8 @@ async fn atomic_replace(path: &Path, bytes: &[u8]) -> Result<(), ReleaseError> {
         sync_directory(parent).await
     }
     .await;
-    if result.is_err()
-        && let Err(error) = tokio::fs::remove_file(&temporary).await
-        && error.kind() != std::io::ErrorKind::NotFound
-    {
-        tracing::warn!(
-            event = "release.active_cleanup_failed",
-            path = %temporary.display(),
-            error = %error
-        );
+    if result.is_err() {
+        cleanup_failed_temporary(&temporary, "release.active_cleanup_failed").await;
     }
     result
 }
@@ -941,5 +936,264 @@ fn io(operation: &'static str, path: &Path, error: &std::io::Error) -> ReleaseEr
         operation,
         path: path.display().to_string(),
         message: error.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod release_boundary_tests {
+    use super::*;
+
+    #[test]
+    fn a_canonical_origin_keeps_its_scheme_and_authority_and_drops_the_root_slash() {
+        assert_eq!(
+            canonical_origin("https://writing.example").unwrap(),
+            "https://writing.example"
+        );
+        assert_eq!(
+            canonical_origin("https://writing.example/").unwrap(),
+            "https://writing.example"
+        );
+        assert_eq!(
+            canonical_origin("http://writing.example:8080/").unwrap(),
+            "http://writing.example:8080"
+        );
+    }
+
+    #[test]
+    fn every_way_an_origin_is_not_canonical_is_rejected() {
+        for origin in [
+            "ftp://writing.example",
+            "https://writer@writing.example",
+            "https://writer:secret@writing.example",
+            "https://writing.example?draft=1",
+            "https://writing.example#top",
+            "https://writing.example/blog",
+        ] {
+            assert!(
+                canonical_origin(origin).is_err(),
+                "accepted an origin that is not canonical: {origin}"
+            );
+        }
+        assert!(canonical_origin("not a url").is_err());
+    }
+
+    #[test]
+    fn a_header_value_is_accepted_up_to_its_length_and_never_with_a_control_character() {
+        validate_header_value("x-test", "value").unwrap();
+        validate_header_value("x-test", &"v".repeat(256)).unwrap();
+
+        assert!(validate_header_value("x-test", "").is_err());
+        assert!(validate_header_value("x-test", &"v".repeat(257)).is_err());
+        for value in ["a\rb", "a\nb", "a\0b"] {
+            assert!(
+                validate_header_value("x-test", value).is_err(),
+                "accepted a header value carrying a control character: {value:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_required_release_file_is_read_or_reported_missing_by_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let present = temp.path().join("manifest.json");
+        tokio::fs::write(&present, b"{}").await.unwrap();
+        assert_eq!(
+            read_required("manifest", "r1", &present).await.unwrap(),
+            b"{}"
+        );
+
+        let absent = temp.path().join("missing.json");
+        let error = read_required("manifest", "r1", &absent).await.unwrap_err();
+        assert!(
+            matches!(&error, ReleaseError::NotFound { kind, id } if *kind == "manifest" && id == "r1"),
+            "a missing file must be reported as NotFound, not as {error:?}"
+        );
+
+        // Anything other than absence stays an I/O failure: reading a
+        // directory must not be mistaken for a release that does not exist.
+        let directory = temp.path().to_path_buf();
+        let error = read_required("manifest", "r1", &directory)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, ReleaseError::Io { .. }),
+            "reading a directory must stay an I/O failure, not {error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_content_addressed_write_is_idempotent_and_never_silently_replaces() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("object");
+
+        write_content_addressed(&path, b"canonical").await.unwrap();
+        assert_eq!(tokio::fs::read(&path).await.unwrap(), b"canonical");
+
+        // The same bytes again are a no-op.
+        write_content_addressed(&path, b"canonical").await.unwrap();
+        assert_eq!(tokio::fs::read(&path).await.unwrap(), b"canonical");
+
+        // Different bytes under the same content address are corruption.
+        let error = write_content_addressed(&path, b"different")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, ReleaseError::Integrity { .. }),
+            "a differing content-addressed write must be an integrity failure, not {error:?}"
+        );
+        assert_eq!(tokio::fs::read(&path).await.unwrap(), b"canonical");
+    }
+
+    #[tokio::test]
+    async fn syncing_a_directory_that_is_not_there_is_reported_not_ignored() {
+        let temp = tempfile::tempdir().unwrap();
+        sync_directory(temp.path()).await.unwrap();
+
+        let absent = temp.path().join("never-created");
+        let error = sync_directory(&absent).await.unwrap_err();
+        assert!(matches!(error, ReleaseError::Io { .. }));
+    }
+
+    #[tokio::test]
+    async fn ensuring_the_layout_creates_both_release_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = FilesystemReleaseStore::new(temp.path().join("releases"));
+        assert!(!store.objects_dir().exists());
+        assert!(!store.manifests_dir().exists());
+
+        store.ensure_layout().await.unwrap();
+
+        assert!(store.objects_dir().is_dir());
+        assert!(store.manifests_dir().is_dir());
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_active_pointer_is_an_error_rather_than_no_release() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = FilesystemReleaseStore::new(temp.path().to_path_buf());
+        assert!(store.read_active_id().await.unwrap().is_none());
+
+        // A directory where the pointer belongs is not "no active release".
+        tokio::fs::create_dir_all(store.active_path())
+            .await
+            .unwrap();
+        assert!(store.read_active_id().await.is_err());
+    }
+}
+
+#[cfg(test)]
+mod temporary_cleanup_tests {
+    use super::*;
+
+    /// A temporary left behind by a failed write is named to the operator,
+    /// and one that is simply gone is not worth a word.
+    #[tokio::test]
+    async fn a_temporary_that_cannot_be_removed_is_named_and_an_absent_one_is_not() {
+        let temp = tempfile::tempdir().unwrap();
+        let (traces, _guard) = crate::observability::capture::traces();
+
+        cleanup_failed_temporary(
+            &temp.path().join("absent"),
+            "release.temporary_cleanup_failed",
+        )
+        .await;
+        assert_eq!(
+            traces.text(),
+            "",
+            "a temporary that is already gone is the cleanup having succeeded"
+        );
+
+        // A directory standing where a temporary file belongs cannot be
+        // removed as a file, and the operator has to hear about it.
+        let occupied = temp.path().join("occupied");
+        std::fs::create_dir(&occupied).unwrap();
+        cleanup_failed_temporary(&occupied, "release.temporary_cleanup_failed").await;
+
+        let reported = traces.text();
+        assert!(
+            reported.contains("release.temporary_cleanup_failed") && reported.contains("occupied"),
+            "a temporary that outlived its operation must be named: {reported:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod store_integrity_tests {
+    use super::*;
+
+    fn one_page(body: &[u8]) -> PreparedRelease {
+        ReleaseBuilder::clean(1, "https://writing.example")
+            .unwrap()
+            .asset("/", body.to_vec(), "text/html; charset=utf-8", None)
+            .unwrap()
+            .finish()
+            .unwrap()
+    }
+
+    /// A release is named by its own bytes. Both halves of that have to hold,
+    /// or the store would accept a manifest filed under someone else's name.
+    #[tokio::test]
+    async fn a_manifest_filed_under_the_wrong_identity_is_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = FilesystemReleaseStore::new(temp.path().join("releases"));
+        store
+            .put_manifest(&one_page(b"durable page"))
+            .await
+            .unwrap();
+
+        // The name does not belong to these bytes.
+        let mut renamed = one_page(b"durable page");
+        renamed.id = ReleaseId::parse("a".repeat(64)).unwrap();
+        let error = store.put_manifest(&renamed).await.unwrap_err();
+        assert!(
+            matches!(&error, ReleaseError::Integrity { kind, .. } if *kind == "manifest"),
+            "a manifest under another release's name must be refused: {error}"
+        );
+
+        // The bytes are named correctly and are not the canonical encoding.
+        let mut padded = one_page(b"durable page");
+        padded.manifest_bytes.push(b' ');
+        padded.id =
+            ReleaseId::parse(blake3::hash(&padded.manifest_bytes).to_hex().to_string()).unwrap();
+        let error = store.put_manifest(&padded).await.unwrap_err();
+        assert!(
+            matches!(&error, ReleaseError::Integrity { kind, .. } if *kind == "manifest"),
+            "a manifest that is not canonically encoded must be refused: {error}"
+        );
+    }
+
+    /// A content-addressed path that cannot be read is not the same as one
+    /// that is not there, and writing over it would destroy a release.
+    #[tokio::test]
+    async fn a_release_path_that_cannot_be_read_is_reported_rather_than_written_over() {
+        let temp = tempfile::tempdir().unwrap();
+        let occupied = temp.path().join("occupied");
+        std::fs::create_dir(&occupied).unwrap();
+
+        let error = write_content_addressed(&occupied, b"page")
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("read release file"),
+            "a path that could not be read must say so, not be written over: {error}"
+        );
+        assert!(
+            occupied.is_dir(),
+            "the refusal must leave what was already there"
+        );
+
+        // Absent is the case that goes ahead, and identical bytes are a
+        // repeat of a write that already succeeded.
+        let path = temp.path().join("object");
+        write_content_addressed(&path, b"page").await.unwrap();
+        write_content_addressed(&path, b"page").await.unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"page");
+
+        let error = write_content_addressed(&path, b"other").await.unwrap_err();
+        assert!(
+            matches!(&error, ReleaseError::Integrity { kind, .. }
+                if *kind == "existing release file"),
+            "different bytes at the same address must be refused: {error}"
+        );
     }
 }

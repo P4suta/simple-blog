@@ -1,0 +1,43 @@
+name: Reproducible verification
+description: Run the same checks locally and in CI, retaining safe evidence on every outcome.
+inputs:
+  checks:
+    description: Space separated names from scripts/verification.config.mjs
+    required: true
+  toolchain:
+    description: Rust toolchain used by every cargo subprocess
+    default: stable
+  artifact-suffix:
+    description: Unique suffix for parallel verification shards
+    default: primary
+runs:
+  using: composite
+  steps:
+    - name: Select native Windows Perl for vendored OpenSSL
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $nativePerl = 'C:\Strawberry\perl\bin\perl.exe'
+        if (-not (Test-Path -LiteralPath $nativePerl -PathType Leaf)) { throw 'Native Strawberry Perl is required for the MSVC OpenSSL build' }
+        & $nativePerl -MIPC::Cmd -e 'print "$^V\n"'
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        "OPENSSL_SRC_PERL=$nativePerl" >> $env:GITHUB_ENV
+    - name: Verify
+      shell: bash
+      env:
+        VERIFY_CHECKS: ${{ inputs.checks }}
+        RUSTUP_TOOLCHAIN: ${{ inputs.toolchain }}
+      run: node scripts/verify.mjs
+    - name: Prepare shareable evidence
+      id: export
+      if: always()
+      shell: bash
+      run: node scripts/collect-evidence.mjs
+    - name: Retain evidence for 30 days
+      if: ${{ always() && steps.export.outcome == 'success' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      with:
+        name: evidence-${{ github.job }}-${{ runner.os }}-${{ inputs.toolchain }}-${{ inputs.artifact-suffix }}
+        path: target/shareable/
+        retention-days: 30
+        if-no-files-found: error
