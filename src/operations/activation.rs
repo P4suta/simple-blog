@@ -609,14 +609,6 @@ mod activation_record_tests {
                 "a previous name whose suffix is not a UUID",
                 Box::new(|i: &mut Intent| i.previous = ".simple-blog-previous-not-a-uuid".into()),
             ),
-            (
-                "staging that would overwrite the destination",
-                Box::new(|i: &mut Intent| i.staging = "site".into()),
-            ),
-            (
-                "a retained copy that would overwrite the destination",
-                Box::new(|i: &mut Intent| i.previous = "site".into()),
-            ),
         ];
         for (label, mutate) in cases {
             let mut record = intent();
@@ -626,6 +618,53 @@ mod activation_record_tests {
                 "accepted an activation record that must be refused: {label}"
             );
         }
+    }
+
+    /// A staging or retained directory named exactly like the destination is
+    /// refused for that reason alone, and reaching that clause means giving
+    /// the destination a name the earlier clauses already accept.
+    #[test]
+    fn a_record_whose_staging_or_retained_copy_is_the_destination_is_refused() {
+        let staging_named = PathBuf::from("/data/.simple-blog-abcd.staging");
+        let mut collides_with_staging = intent();
+        collides_with_staging.destination = ".simple-blog-abcd.staging".into();
+        assert!(validate_intent(&collides_with_staging, &staging_named).is_err());
+
+        let previous_name = format!(".simple-blog-previous-{UUID}");
+        let previous_named = PathBuf::from(format!("/data/{previous_name}"));
+        let mut collides_with_previous = intent();
+        collides_with_previous.destination = previous_name;
+        assert!(validate_intent(&collides_with_previous, &previous_named).is_err());
+    }
+
+    #[test]
+    fn a_tree_is_copied_whole_and_a_special_file_stops_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        std::fs::create_dir_all(source.join("nested")).unwrap();
+        std::fs::write(source.join("config.toml"), b"[site]").unwrap();
+        std::fs::write(source.join("nested/data.sqlite3"), b"pages").unwrap();
+
+        let destination = temp.path().join("destination");
+        copy_tree(&source, &destination).unwrap();
+        assert_eq!(
+            std::fs::read(destination.join("config.toml")).unwrap(),
+            b"[site]"
+        );
+        assert_eq!(
+            std::fs::read(destination.join("nested/data.sqlite3")).unwrap(),
+            b"pages"
+        );
+
+        // A single file is a whole tree too.
+        let one_file = temp.path().join("one");
+        copy_tree(&source.join("config.toml"), &one_file).unwrap();
+        assert_eq!(std::fs::read(&one_file).unwrap(), b"[site]");
+
+        // Copying over something that is already there is a failure, not a
+        // silent overwrite.
+        assert!(copy_tree(&source, &destination).is_err());
+        assert!(copy_tree(&temp.path().join("absent"), &temp.path().join("out")).is_err());
     }
 
     #[test]
