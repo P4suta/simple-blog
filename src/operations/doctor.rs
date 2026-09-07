@@ -1517,3 +1517,42 @@ mod integrity_tests {
         damaged.close().await;
     }
 }
+
+#[cfg(test)]
+mod limit_report_tests {
+    use super::*;
+
+    /// Every limit is reported as a passing check so an operator can read
+    /// them without running into one, and a schedule that is switched off
+    /// says so rather than reporting a count of zero.
+    #[test]
+    fn the_backup_limit_says_whether_the_schedule_is_on_at_all() {
+        let mut kept = report_for_a_check();
+        let mut limits = kept.limits;
+        limits.backup_generations = 3;
+        kept = DoctorReport::new(limits);
+        check_limits(&mut kept);
+        let detail = |report: &DoctorReport| {
+            report
+                .checks
+                .iter()
+                .find(|check| check.name == "limits.backups")
+                .expect("the backup limit is reported")
+                .detail
+                .clone()
+        };
+        assert_eq!(
+            detail(&kept),
+            "3 scheduled backup(s) kept (backup_retention in config.toml)"
+        );
+
+        limits.backup_generations = 0;
+        let mut off = DoctorReport::new(limits);
+        check_limits(&mut off);
+        assert_eq!(
+            detail(&off),
+            "scheduled backups are off (backup_retention = 0 in config.toml)"
+        );
+        assert!(off.is_healthy(), "a limit is not a fault");
+    }
+}

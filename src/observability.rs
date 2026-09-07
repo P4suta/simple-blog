@@ -147,6 +147,8 @@ pub mod codes {
     pub const WEB_INTERNAL: &str = "web.internal";
     pub const SECURITY_RATE_LIMITED: &str = "security.rate_limited";
     pub const VIEWS_RECORD_FAILED: &str = "views.record_failed";
+    pub const SETUP_TIMEZONE_NOT_ADOPTED: &str = "setup.timezone.not_adopted";
+    pub const DATABASE_MIGRATION_FAILED: &str = "database.migration.failed";
     pub const PUBLICATION_REPOSITORY_FAILED: &str = "publication_repository_failed";
     pub const PUBLICATION_COMPILE_FAILED: &str = "publication_compile_failed";
     pub const PUBLICATION_RELEASE_STORE_FAILED: &str = "publication_release_store_failed";
@@ -180,6 +182,8 @@ pub const fn diagnostic_codes() -> &'static [&'static str] {
         codes::WEB_INTERNAL,
         codes::SECURITY_RATE_LIMITED,
         codes::VIEWS_RECORD_FAILED,
+        codes::SETUP_TIMEZONE_NOT_ADOPTED,
+        codes::DATABASE_MIGRATION_FAILED,
         codes::PUBLICATION_REPOSITORY_FAILED,
         codes::PUBLICATION_COMPILE_FAILED,
         codes::PUBLICATION_RELEASE_STORE_FAILED,

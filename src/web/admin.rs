@@ -31,6 +31,7 @@ use crate::{
         theme::{Locale, NavigationItem, SiteSettings, TimezoneGroup, timezone_choices},
     },
     i18n::Translations,
+    observability::codes,
     web::{AppState, EMBEDDABLE_CSP, WebError},
 };
 
@@ -1637,7 +1638,7 @@ pub async fn setup_finish(
     {
         tracing::warn!(
             event = "setup.timezone.not_adopted",
-            error_code = "setup.timezone.not_adopted"
+            error_code = codes::SETUP_TIMEZONE_NOT_ADOPTED
         );
     }
     let recovery_codes: Vec<_> = completed

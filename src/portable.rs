@@ -2558,3 +2558,48 @@ mod manifest_entry_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod settings_revision_tests {
+    use super::*;
+    use chrono::TimeZone as _;
+
+    use crate::domain::theme::Locale;
+
+    fn at(minute: u32) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 9, 2, 12, minute, 0).unwrap()
+    }
+
+    fn revision(created_at: DateTime<Utc>) -> PortableSettingsRevision {
+        PortableSettingsRevision {
+            settings: SiteSettings {
+                site_title: "Portable site".into(),
+                site_description: String::new(),
+                locale: Locale::En,
+                logo_media_id: None,
+                favicon_media_id: None,
+                custom_css: String::new(),
+                timezone: "UTC".into(),
+                author_name: String::new(),
+                custom_css_backup: None,
+            },
+            navigation: Vec::new(),
+            created_at,
+        }
+    }
+
+    /// The kept states are oldest first. Two saved in the same second are in
+    /// order; one saved before the state it follows is not.
+    #[test]
+    fn settings_revisions_run_forwards_and_may_share_an_instant() {
+        validate_settings_revisions(&[]).unwrap();
+        validate_settings_revisions(&[revision(at(0)), revision(at(1))]).unwrap();
+        validate_settings_revisions(&[revision(at(0)), revision(at(0))]).unwrap();
+
+        let error = validate_settings_revisions(&[revision(at(1)), revision(at(0))]).unwrap_err();
+        assert!(
+            error.to_string().contains("not in time order"),
+            "a revision older than the one before it must be refused: {error}"
+        );
+    }
+}
