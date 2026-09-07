@@ -828,6 +828,27 @@ mod recovery_state_tests {
         assert!(unaccounted.record_remains());
     }
 
+    /// Durability is the whole point of the step, so a tree it could not
+    /// reach is reported rather than assumed to be on disk.
+    #[test]
+    fn a_tree_that_cannot_be_synced_is_reported_rather_than_assumed() {
+        let temp = tempfile::tempdir().unwrap();
+        let tree = temp.path().join("tree");
+        std::fs::create_dir_all(tree.join("nested")).unwrap();
+        std::fs::write(tree.join("config.toml"), b"[site]").unwrap();
+        std::fs::write(tree.join("nested/data.sqlite3"), b"pages").unwrap();
+        sync_tree(&tree).unwrap();
+
+        assert!(
+            sync_tree(&temp.path().join("absent")).is_err(),
+            "a tree that is not there cannot have been written to disk"
+        );
+        assert!(
+            sync_tree(&tree.join("nested").join("absent.sqlite3")).is_err(),
+            "a file that is not there cannot have been written to disk"
+        );
+    }
+
     /// Replacing an installation that still holds data is the one thing that
     /// has to be asked for explicitly.
     #[test]
