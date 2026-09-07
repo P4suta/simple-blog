@@ -255,6 +255,19 @@ async fn owner_recovery_replaces_credentials_and_invalidates_old_sessions() {
         .issue_setup_token(SetupPurpose::Recovery, now)
         .await
         .unwrap();
+
+    // Recovery registers a replacement for an owner who already exists, so
+    // the browser is handed that owner's handle and told which key not to
+    // offer again. Initial registration is the case with no owner at all.
+    let context = accounts
+        .setup_context(recovery.expose(), now)
+        .await
+        .unwrap()
+        .expect("a recovery capability belongs to the owner it recovers");
+    assert_eq!(context.purpose, SetupPurpose::Recovery);
+    assert_eq!(context.user_handle, user_handle);
+    assert_eq!(context.excluded_credentials, vec![vec![1_u8]]);
+
     let recovered = accounts
         .complete_setup_registration(
             recovery.expose(),

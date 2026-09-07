@@ -220,7 +220,7 @@ fn name(path: &Path) -> io::Result<String> {
         .ok_or_else(|| invalid("destination must have a safe directory name"))
 }
 
-fn sibling_path(destination: &Path, suffix: &str) -> io::Result<PathBuf> {
+pub(super) fn sibling_path(destination: &Path, suffix: &str) -> io::Result<PathBuf> {
     // Existing aliases must coordinate on the actual installation. Before a
     // directory exists, Windows spelling variants still name the same lock.
     let canonical = destination.canonicalize().ok();

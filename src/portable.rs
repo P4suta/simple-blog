@@ -2383,3 +2383,39 @@ mod archive_reader_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod partial_cleanup_tests {
+    use super::*;
+
+    /// A partial archive left behind by a failed write is named to the
+    /// operator, and one that is simply gone is not worth a word.
+    #[test]
+    fn a_partial_archive_that_cannot_be_removed_is_named_and_an_absent_one_is_not() {
+        let temp = tempfile::tempdir().unwrap();
+        let (traces, _guard) = crate::observability::capture::traces();
+
+        cleanup_failed_archive_path(
+            &temp.path().join("absent"),
+            "portable.archive.partial_cleanup_failed",
+        );
+        assert_eq!(
+            traces.text(),
+            "",
+            "a partial archive that is already gone is the cleanup having succeeded"
+        );
+
+        // A directory standing where the partial archive belongs cannot be
+        // removed as a file, and the operator has to hear about it.
+        let occupied = temp.path().join("occupied");
+        std::fs::create_dir(&occupied).unwrap();
+        cleanup_failed_archive_path(&occupied, "portable.archive.partial_cleanup_failed");
+
+        let reported = traces.text();
+        assert!(
+            reported.contains("portable.archive.partial_cleanup_failed")
+                && reported.contains("occupied"),
+            "a partial archive that outlived its write must be named: {reported:?}"
+        );
+    }
+}

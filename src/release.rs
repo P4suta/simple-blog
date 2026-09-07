@@ -854,17 +854,20 @@ async fn atomic_create(path: &Path, bytes: &[u8]) -> Result<(), ReleaseError> {
         }
     }
     .await;
-    if result.is_err()
-        && let Err(error) = tokio::fs::remove_file(&temporary).await
-        && error.kind() != std::io::ErrorKind::NotFound
-    {
-        tracing::warn!(
-            event = "release.temporary_cleanup_failed",
-            path = %temporary.display(),
-            error_kind = ?error.kind()
-        );
+    if result.is_err() {
+        cleanup_failed_temporary(&temporary, "release.temporary_cleanup_failed").await;
     }
     result
+}
+
+/// A temporary that outlived the operation it belonged to is worth saying so
+/// about. Its absence is not: that is the operation having cleaned up already.
+async fn cleanup_failed_temporary(path: &Path, event: &'static str) {
+    if let Err(error) = tokio::fs::remove_file(path).await
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(event, path = %path.display(), error_kind = ?error.kind());
+    }
 }
 
 async fn atomic_replace(path: &Path, bytes: &[u8]) -> Result<(), ReleaseError> {
@@ -893,15 +896,8 @@ async fn atomic_replace(path: &Path, bytes: &[u8]) -> Result<(), ReleaseError> {
         sync_directory(parent).await
     }
     .await;
-    if result.is_err()
-        && let Err(error) = tokio::fs::remove_file(&temporary).await
-        && error.kind() != std::io::ErrorKind::NotFound
-    {
-        tracing::warn!(
-            event = "release.active_cleanup_failed",
-            path = %temporary.display(),
-            error_kind = ?error.kind()
-        );
+    if result.is_err() {
+        cleanup_failed_temporary(&temporary, "release.active_cleanup_failed").await;
     }
     result
 }
@@ -1082,5 +1078,41 @@ mod release_boundary_tests {
             .await
             .unwrap();
         assert!(store.read_active_id().await.is_err());
+    }
+}
+
+#[cfg(test)]
+mod temporary_cleanup_tests {
+    use super::*;
+
+    /// A temporary left behind by a failed write is named to the operator,
+    /// and one that is simply gone is not worth a word.
+    #[tokio::test]
+    async fn a_temporary_that_cannot_be_removed_is_named_and_an_absent_one_is_not() {
+        let temp = tempfile::tempdir().unwrap();
+        let (traces, _guard) = crate::observability::capture::traces();
+
+        cleanup_failed_temporary(
+            &temp.path().join("absent"),
+            "release.temporary_cleanup_failed",
+        )
+        .await;
+        assert_eq!(
+            traces.text(),
+            "",
+            "a temporary that is already gone is the cleanup having succeeded"
+        );
+
+        // A directory standing where a temporary file belongs cannot be
+        // removed as a file, and the operator has to hear about it.
+        let occupied = temp.path().join("occupied");
+        std::fs::create_dir(&occupied).unwrap();
+        cleanup_failed_temporary(&occupied, "release.temporary_cleanup_failed").await;
+
+        let reported = traces.text();
+        assert!(
+            reported.contains("release.temporary_cleanup_failed") && reported.contains("occupied"),
+            "a temporary that outlived its operation must be named: {reported:?}"
+        );
     }
 }

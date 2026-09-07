@@ -972,6 +972,16 @@ mod media_inspection_tests {
                 .any(|issue| issue.contains("is not a regular file")),
             "a directory where a media file belongs must not read as missing"
         );
+
+        // A name the operating system will not even accept cannot be looked
+        // at, which is a different thing from having looked and found nothing.
+        let unaskable = temp.path().join("cover\0.png");
+        assert!(
+            issues_for(&unaskable, expectation("cover\0.png", &bytes, None))
+                .iter()
+                .any(|issue| issue.contains("could not inspect")),
+            "a media path that cannot be asked about must not read as missing"
+        );
     }
 
     #[test]
@@ -998,10 +1008,22 @@ mod media_inspection_tests {
         let mut read_only = DoctorReport::default();
         check_directory("filesystem.data", temp.path(), false, &mut read_only);
         assert!(read_only.is_healthy());
+        assert!(
+            read_only.checks[0]
+                .detail
+                .contains("writability was not tested"),
+            "a check that did not probe must say it did not: {}",
+            read_only.checks[0].detail
+        );
 
         let mut probed = DoctorReport::default();
         check_directory("filesystem.data", temp.path(), true, &mut probed);
         assert!(probed.is_healthy());
+        assert!(
+            probed.checks[0].detail.contains("is writable"),
+            "a check that probed must say what the probe found: {}",
+            probed.checks[0].detail
+        );
         assert_eq!(
             std::fs::read_dir(temp.path()).unwrap().count(),
             0,
@@ -1016,5 +1038,308 @@ mod media_inspection_tests {
         let mut unwritable = DoctorReport::default();
         check_directory("filesystem.data", &absent, true, &mut unwritable);
         assert!(!unwritable.is_healthy());
+    }
+}
+
+#[cfg(test)]
+mod orphan_media_tests {
+    use super::*;
+
+    fn detail_of(report: &DoctorReport, name: &str) -> String {
+        report
+            .checks
+            .iter()
+            .find(|check| check.name == name)
+            .unwrap_or_else(|| panic!("{name} was not checked"))
+            .detail
+            .clone()
+    }
+
+    /// A media directory holding only what the database references is what a
+    /// healthy installation looks like.
+    #[test]
+    fn a_media_directory_of_referenced_files_alone_raises_nothing() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("cover.png"), b"x").unwrap();
+
+        let mut report = DoctorReport::default();
+        let expected = BTreeSet::from(["cover.png".to_owned()]);
+        check_orphan_media(temp.path(), &expected, &mut report);
+        assert!(report.is_healthy());
+        assert_eq!(
+            detail_of(&report, "media.orphans"),
+            "no unreferenced media files"
+        );
+    }
+
+    /// An upload interrupted part way has a name of its own, so the operator
+    /// is told it was an interruption and not a file nobody accounts for.
+    #[test]
+    fn an_interrupted_upload_is_named_as_one_and_anything_else_as_an_orphan() {
+        let temp = tempfile::tempdir().unwrap();
+        for name in [
+            "cover.png",
+            "stranger.png",
+            ".upload-abcd.tmp",
+            ".upload-abcd.png",
+        ] {
+            std::fs::write(temp.path().join(name), b"x").unwrap();
+        }
+
+        let mut report = DoctorReport::default();
+        let expected = BTreeSet::from(["cover.png".to_owned()]);
+        check_orphan_media(temp.path(), &expected, &mut report);
+        assert!(!report.is_healthy());
+
+        let detail = detail_of(&report, "media.orphans");
+        assert!(
+            detail.contains("interrupted upload: .upload-abcd.tmp"),
+            "a half-written upload must be named as one: {detail}"
+        );
+        assert!(
+            detail.contains("orphan media file: .upload-abcd.png"),
+            "an upload name that is not a temporary file is still an orphan: {detail}"
+        );
+        assert!(
+            detail.contains("orphan media file: stranger.png"),
+            "a file the database does not reference is an orphan: {detail}"
+        );
+        assert!(
+            !detail.contains("cover.png"),
+            "a referenced file must not be reported at all: {detail}"
+        );
+    }
+
+    /// A media directory that is not there at all is one failure, not one per
+    /// file the database expected.
+    #[test]
+    fn a_media_directory_that_cannot_be_read_is_reported_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut report = DoctorReport::default();
+        check_orphan_media(&temp.path().join("absent"), &BTreeSet::new(), &mut report);
+        assert_eq!(report.issues.len(), 1);
+        assert!(!detail_of(&report, "media.orphans").is_empty());
+    }
+}
+
+#[cfg(test)]
+mod database_check_tests {
+    use super::*;
+
+    async fn repository(temp: &tempfile::TempDir) -> SqliteRepository {
+        SqliteRepository::connect(&temp.path().join("simple-blog.sqlite3"))
+            .await
+            .unwrap()
+    }
+
+    fn detail_of(report: &DoctorReport, name: &str) -> String {
+        report
+            .checks
+            .iter()
+            .find(|check| check.name == name)
+            .unwrap_or_else(|| panic!("{name} was not checked"))
+            .detail
+            .clone()
+    }
+
+    /// The runtime settings are not a preference. Each of them is what keeps a
+    /// concurrent writer from losing data, so a database running without one
+    /// is reported even though every query still answers.
+    #[tokio::test]
+    async fn a_database_not_running_on_the_settings_it_needs_is_reported() {
+        let temp = tempfile::tempdir().unwrap();
+        let repository = repository(&temp).await;
+
+        let mut healthy = DoctorReport::default();
+        check_runtime_pragmas(&repository, &mut healthy).await;
+        assert!(healthy.is_healthy());
+        let reported = detail_of(&healthy, "sqlite.runtime_pragmas");
+        assert!(
+            reported.contains("journal_mode=wal") && reported.contains("busy_timeout=5000ms"),
+            "an application database runs in write-ahead logging and waits out a writer: {reported}"
+        );
+
+        // Every one of the pool's connections has to be reached, because the
+        // check reads whichever one is free when it asks.
+        let mut held = Vec::new();
+        for _ in 0..5 {
+            let mut connection = repository.pool().acquire().await.unwrap();
+            sqlx::query("PRAGMA busy_timeout = 100")
+                .execute(&mut *connection)
+                .await
+                .unwrap();
+            held.push(connection);
+        }
+        drop(held);
+
+        let mut downgraded = DoctorReport::default();
+        check_runtime_pragmas(&repository, &mut downgraded).await;
+        assert!(
+            !downgraded.is_healthy(),
+            "a database that no longer waits out a writer must be reported"
+        );
+        assert!(
+            detail_of(&downgraded, "sqlite.runtime_pragmas").contains("busy_timeout=100ms"),
+            "the report must name the setting it found"
+        );
+        repository.close().await;
+    }
+
+    /// A row pointing at a parent that is not there survives every query that
+    /// does not join it. Only this check finds it.
+    #[tokio::test]
+    async fn a_row_whose_parent_is_gone_is_reported_as_a_violation() {
+        let temp = tempfile::tempdir().unwrap();
+        let repository = repository(&temp).await;
+
+        let mut healthy = DoctorReport::default();
+        check_foreign_keys(&repository, &mut healthy).await;
+        assert!(healthy.is_healthy());
+        assert_eq!(detail_of(&healthy, "sqlite.foreign_keys"), "no violations");
+
+        // Enforcement is per connection, which is exactly how a row like this
+        // gets written in the first place.
+        let mut connection = repository.pool().acquire().await.unwrap();
+        sqlx::query("PRAGMA foreign_keys = OFF")
+            .execute(&mut *connection)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO content_tags (content_id, tag_id, position) VALUES (?, ?, 0)")
+            .bind(9_999_i64)
+            .bind(9_999_i64)
+            .execute(&mut *connection)
+            .await
+            .unwrap();
+        drop(connection);
+
+        let mut violated = DoctorReport::default();
+        check_foreign_keys(&repository, &mut violated).await;
+        assert!(
+            !violated.is_healthy(),
+            "a row whose parent is gone must be reported"
+        );
+        assert!(
+            detail_of(&violated, "sqlite.foreign_keys").contains("violation"),
+            "the report must say how many violations it found"
+        );
+        repository.close().await;
+    }
+}
+
+#[cfg(test)]
+mod release_history_tests {
+    use super::*;
+
+    use crate::release::ReleaseBuilder;
+
+    fn detail_of(report: &DoctorReport, name: &str) -> String {
+        report
+            .checks
+            .iter()
+            .find(|check| check.name == name)
+            .unwrap_or_else(|| panic!("{name} was not checked"))
+            .detail
+            .clone()
+    }
+
+    /// The history check reads every release ever published, not only the
+    /// active one, and says how much of it it actually read.
+    #[tokio::test]
+    async fn a_release_history_says_how_much_of_it_was_verified() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("releases");
+        let store = FilesystemReleaseStore::new(root.clone());
+
+        let mut empty = DoctorReport::default();
+        check_release_history(&root, &store, &mut empty).await;
+        assert!(empty.is_healthy());
+        assert_eq!(
+            detail_of(&empty, "release.history"),
+            "0 manifest(s), 0 object(s), 0 byte(s) verified"
+        );
+
+        for (revision, body) in [(1_u64, b"first page ".as_slice()), (2, b"second page")] {
+            let release = ReleaseBuilder::clean(revision, "https://writing.example")
+                .unwrap()
+                .asset("/", body.to_vec(), "text/html; charset=utf-8", None)
+                .unwrap()
+                .finish()
+                .unwrap();
+            for (id, bytes) in &release.objects {
+                store.put_object(id, bytes).await.unwrap();
+            }
+            store.put_manifest(&release).await.unwrap();
+        }
+
+        let mut published = DoctorReport::default();
+        check_release_history(&root, &store, &mut published).await;
+        assert!(published.is_healthy());
+        assert_eq!(
+            detail_of(&published, "release.history"),
+            "2 manifest(s), 2 object(s), 22 byte(s) verified",
+            "the history has to account for every release it read"
+        );
+    }
+}
+
+#[cfg(test)]
+mod integrity_tests {
+    use super::*;
+
+    fn detail_of(report: &DoctorReport, name: &str) -> String {
+        report
+            .checks
+            .iter()
+            .find(|check| check.name == name)
+            .unwrap_or_else(|| panic!("{name} was not checked"))
+            .detail
+            .clone()
+    }
+
+    /// A database can open, migrate and answer every query while part of it is
+    /// already damaged. This is the check that looks, so what it finds has to
+    /// reach the operator instead of being read as health.
+    #[tokio::test]
+    async fn a_database_that_opens_but_is_damaged_is_reported_with_what_sqlite_found() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("simple-blog.sqlite3");
+        let repository = SqliteRepository::connect(&path).await.unwrap();
+        sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+            .execute(repository.pool())
+            .await
+            .unwrap();
+
+        let mut healthy = DoctorReport::default();
+        check_quick_check(&repository, &mut healthy).await;
+        assert!(healthy.is_healthy());
+        assert_eq!(detail_of(&healthy, "sqlite.quick_check"), "ok");
+        repository.close().await;
+
+        // The head of a page is where a b-tree keeps the pointers the check
+        // follows, so overwriting it is damage the file survives being opened.
+        let mut bytes = std::fs::read(&path).unwrap();
+        let page_size = match u16::from_be_bytes([bytes[16], bytes[17]]) {
+            1 => 65_536,
+            value => usize::from(value),
+        };
+        let last_page = bytes.len() - page_size;
+        for byte in &mut bytes[last_page..last_page + 200] {
+            *byte = 0xff;
+        }
+        std::fs::write(&path, &bytes).unwrap();
+
+        let damaged = SqliteRepository::connect(&path).await.unwrap();
+        let mut report = DoctorReport::default();
+        check_quick_check(&damaged, &mut report).await;
+        assert!(
+            !report.is_healthy(),
+            "a damaged database must not be reported as healthy"
+        );
+        let detail = detail_of(&report, "sqlite.quick_check");
+        assert!(
+            detail.contains("in database main"),
+            "the operator has to be told what SQLite found: {detail}"
+        );
+        damaged.close().await;
     }
 }

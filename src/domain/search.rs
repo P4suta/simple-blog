@@ -282,31 +282,36 @@ pub fn excerpt(display: &str, terms: &[&str], window: usize) -> (Vec<Segment>, b
 
     let mut segments = Vec::new();
     let mut plain_start = start;
-    let mut index = start;
-    while index < end {
+    // The scan visits every position in the window exactly once and skips
+    // what a match already covered, so it advances by construction rather
+    // than by arithmetic that has to be got right.
+    let mut resume_at = start;
+    for index in start..end {
+        if index < resume_at {
+            continue;
+        }
         // Longest match first so「検索エンジン」wins over「検索」at the same spot.
-        let hit_length = term_chars
+        let Some(length) = term_chars
             .iter()
             .filter(|term| folded_chars[index..].starts_with(term))
             .map(Vec::len)
-            .max();
-        if let Some(length) = hit_length {
-            let length = length.min(end - index);
-            if plain_start < index {
-                segments.push(Segment {
-                    text: display_chars[plain_start..index].iter().collect(),
-                    hit: false,
-                });
-            }
+            .max()
+        else {
+            continue;
+        };
+        let length = length.min(end - index);
+        if plain_start < index {
             segments.push(Segment {
-                text: display_chars[index..index + length].iter().collect(),
-                hit: true,
+                text: display_chars[plain_start..index].iter().collect(),
+                hit: false,
             });
-            index += length;
-            plain_start = index;
-        } else {
-            index += 1;
         }
+        segments.push(Segment {
+            text: display_chars[index..index + length].iter().collect(),
+            hit: true,
+        });
+        resume_at = index + length;
+        plain_start = resume_at;
     }
     if plain_start < end {
         segments.push(Segment {

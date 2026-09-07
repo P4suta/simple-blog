@@ -133,3 +133,58 @@ pub fn install_panic_hook() {
         );
     }));
 }
+
+/// Collects what a piece of work told the operator, so a test can assert on
+/// the events themselves rather than on a return value that carries none.
+#[cfg(test)]
+pub(crate) mod capture {
+    use std::{
+        io::Write,
+        sync::{Arc, Mutex, PoisonError},
+    };
+
+    #[derive(Clone, Default)]
+    pub struct Traces(Arc<Mutex<Vec<u8>>>);
+
+    impl Traces {
+        pub fn text(&self) -> String {
+            let bytes = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+            String::from_utf8_lossy(&bytes).into_owned()
+        }
+    }
+
+    impl Write for Traces {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'writer> tracing_subscriber::fmt::MakeWriter<'writer> for Traces {
+        type Writer = Self;
+
+        fn make_writer(&'writer self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// Captures every event on this thread until the guard is dropped.
+    pub fn traces() -> (Traces, tracing::subscriber::DefaultGuard) {
+        let traces = Traces::default();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_target(false)
+            .with_writer(traces.clone())
+            .finish();
+        let guard = tracing::subscriber::set_default(subscriber);
+        (traces, guard)
+    }
+}

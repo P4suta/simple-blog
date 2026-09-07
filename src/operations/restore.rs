@@ -557,3 +557,104 @@ mod archive_extraction_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod staging_retention_tests {
+    use super::*;
+
+    use crate::{
+        config::{Config, ConfigSources, Overrides},
+        infrastructure::sqlite::SqliteRepository,
+        operations::backup::BackupService,
+    };
+
+    fn config(data_dir: &Path) -> Config {
+        Config::resolve(ConfigSources {
+            cli: Overrides {
+                data_dir: Some(data_dir.to_path_buf()),
+                public_url: Some("http://localhost:8080".into()),
+                ..Overrides::default()
+            },
+            ..ConfigSources::default()
+        })
+        .unwrap()
+    }
+
+    async fn archive(directory: &Path) -> PathBuf {
+        let config = config(directory);
+        std::fs::create_dir_all(config.backup_dir()).unwrap();
+        let repository = SqliteRepository::connect(&config.database_path())
+            .await
+            .unwrap();
+        let archive = BackupService::create(&config, &repository, None, chrono::Utc::now())
+            .await
+            .unwrap();
+        repository.close().await;
+        archive
+    }
+
+    fn staging_directories(parent: &Path) -> Vec<PathBuf> {
+        std::fs::read_dir(parent)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.ends_with(".staging"))
+            })
+            .collect()
+    }
+
+    /// A restore that cannot finish because the installation is mid-activation
+    /// must leave every input an operator would recover from. The extracted
+    /// staging directory is one of them, and it is only disposable once the
+    /// absence of an activation record is confirmed.
+    #[tokio::test]
+    async fn a_restore_onto_an_interrupted_activation_keeps_what_recovery_needs() {
+        let source = tempfile::tempdir().unwrap();
+        let archive = archive(source.path()).await;
+
+        let temp = tempfile::tempdir().unwrap();
+        let destination = temp.path().join("site");
+        std::fs::write(
+            super::super::activation::sibling_path(&destination, "activation.json").unwrap(),
+            b"{}",
+        )
+        .unwrap();
+
+        let error = RestoreService::restore(&archive, &destination, false)
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("recover pending activation"),
+            "a mid-activation installation must be named as the reason: {error}"
+        );
+        assert_eq!(
+            staging_directories(temp.path()).len(),
+            1,
+            "the extracted copy has to survive a refusal it cannot explain away"
+        );
+    }
+
+    /// With no activation record in the way, the same refusal owns its
+    /// staging directory and cleans it up.
+    #[tokio::test]
+    async fn a_restore_refused_before_any_activation_leaves_nothing_behind() {
+        let source = tempfile::tempdir().unwrap();
+        let archive = archive(source.path()).await;
+
+        let temp = tempfile::tempdir().unwrap();
+        let destination = temp.path().join("site");
+        // A file where the installation belongs cannot be replaced by one.
+        std::fs::write(&destination, b"not an installation").unwrap();
+
+        RestoreService::restore(&archive, &destination, false)
+            .await
+            .unwrap_err();
+        assert!(
+            staging_directories(temp.path()).is_empty(),
+            "a refusal with no activation record leaves no disposable copy"
+        );
+    }
+}
