@@ -1,3 +1,7 @@
+//! The read-only doctor: every check the software can make of its own
+//! installation and every safety limit in force, each reported under a stable
+//! name.
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::OpenOptions,
@@ -10,9 +14,20 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use crate::{
-    application::ports::MediaRepository,
+    application::{
+        auth::{AUTHENTICATION_ATTEMPTS_PER_MINUTE, LIKES_PER_MINUTE},
+        content::{MAX_MARKDOWN_BYTES, MAX_SUMMARY_CHARS, MAX_TITLE_CHARS},
+        ports::MediaRepository,
+    },
     config::Config,
-    infrastructure::sqlite::{MIGRATOR, SqliteRepository},
+    domain::{
+        search::{MAX_QUERY_CHARS, MAX_TERMS},
+        theme::{MAX_CUSTOM_CSS_BYTES, MAX_NAVIGATION_ITEMS},
+    },
+    infrastructure::{
+        media::{MAX_PIXELS, MAX_WEBP_SIDE},
+        sqlite::{AUTOSAVE_REVISIONS_KEPT, MIGRATOR, SETTINGS_REVISIONS_KEPT, SqliteRepository},
+    },
     operations::{OperationError, checksum_file},
     release::{FilesystemReleaseStore, ReleaseId, ReleaseReader, ReleaseStore},
 };
@@ -26,13 +41,72 @@ pub struct DoctorCheck {
     pub hint: &'static str,
 }
 
-#[derive(Debug, Default)]
+/// Every limit the software enforces to keep itself safe, in one place, so
+/// an operator can see them before anyone runs into one. None of them is a
+/// quota: there is no cap on pieces, on total bytes, or on traffic.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct SafetyLimits {
+    /// One upload, in bytes; `max_upload_bytes` in the configuration.
+    pub upload_bytes: usize,
+    pub markdown_bytes: usize,
+    pub title_chars: usize,
+    pub summary_chars: usize,
+    pub image_pixels: u64,
+    pub image_side_pixels: u32,
+    pub stylesheet_bytes: usize,
+    pub navigation_items: usize,
+    pub search_query_chars: usize,
+    pub search_terms: usize,
+    pub authentication_attempts_per_minute: usize,
+    pub likes_per_minute: usize,
+    pub autosave_revisions_kept: i64,
+    pub settings_revisions_kept: i64,
+    /// Scheduled backups kept; `backup_retention` in the configuration, where
+    /// zero switches the schedule off.
+    pub backup_generations: usize,
+}
+
+impl SafetyLimits {
+    #[must_use]
+    pub const fn for_config(config: &Config) -> Self {
+        Self {
+            upload_bytes: config.max_upload_bytes,
+            markdown_bytes: MAX_MARKDOWN_BYTES,
+            title_chars: MAX_TITLE_CHARS,
+            summary_chars: MAX_SUMMARY_CHARS,
+            image_pixels: MAX_PIXELS,
+            image_side_pixels: MAX_WEBP_SIDE,
+            stylesheet_bytes: MAX_CUSTOM_CSS_BYTES,
+            navigation_items: MAX_NAVIGATION_ITEMS,
+            search_query_chars: MAX_QUERY_CHARS,
+            search_terms: MAX_TERMS,
+            authentication_attempts_per_minute: AUTHENTICATION_ATTEMPTS_PER_MINUTE,
+            likes_per_minute: LIKES_PER_MINUTE,
+            autosave_revisions_kept: AUTOSAVE_REVISIONS_KEPT,
+            settings_revisions_kept: SETTINGS_REVISIONS_KEPT,
+            backup_generations: config.backup_retention,
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct DoctorReport {
     pub checks: Vec<DoctorCheck>,
     pub issues: Vec<String>,
+    /// The limits in force, so they can be seen without tripping over them.
+    pub limits: SafetyLimits,
 }
 
 impl DoctorReport {
+    #[must_use]
+    pub const fn new(limits: SafetyLimits) -> Self {
+        Self {
+            checks: Vec::new(),
+            issues: Vec::new(),
+            limits,
+        }
+    }
+
     #[must_use]
     pub const fn is_healthy(&self) -> bool {
         self.issues.is_empty()
@@ -61,13 +135,29 @@ impl DoctorReport {
     }
 }
 
+/// A report for one check on its own. The limits a real report carries come
+/// from the configuration the command was given, and a check that says
+/// nothing about them still has to have somewhere to put them.
+#[cfg(test)]
+fn report_for_a_check() -> DoctorReport {
+    DoctorReport::new(SafetyLimits::for_config(&Config {
+        data_dir: PathBuf::from("."),
+        bind: "127.0.0.1:8080".parse().expect("a literal socket address"),
+        public_url: "http://localhost:8080/".parse().expect("a literal URL"),
+        trusted_proxies: Vec::new(),
+        max_upload_bytes: 8 * 1024 * 1024,
+        backup_retention: 14,
+    }))
+}
+
 pub struct Doctor;
 
 impl Doctor {
     /// Opens its own non-migrating connection and continues independent checks
     /// when SQLite is absent, damaged or inaccessible.
     pub async fn inspect_installation(config: &Config, probe_writes: bool) -> DoctorReport {
-        let mut report = DoctorReport::default();
+        let mut report = DoctorReport::new(SafetyLimits::for_config(config));
+        check_limits(&mut report);
         match super::activation::pending(&config.data_dir) {
             Ok(false) => report.ok("installation.activation", "No interrupted activation record."),
             Ok(true) => report.fail("installation.activation", "A replacement was interrupted. Preserve sibling staging and previous directories. Stop the server, then run a normal command to recover; doctor does not recover."),
@@ -91,12 +181,79 @@ impl Doctor {
         config: &Config,
         repository: &SqliteRepository,
     ) -> Result<DoctorReport, OperationError> {
-        let mut report = DoctorReport::default();
+        let mut report = DoctorReport::new(SafetyLimits::for_config(config));
+        check_limits(&mut report);
         check_database(config, repository, &mut report).await;
         check_directories(config, false, &mut report);
         check_releases(config, &mut report).await;
         Ok(report)
     }
+}
+
+/// Every safety limit, spelled out as a passing check: the promise is that
+/// each one can be seen and explained, not only met head-on.
+fn check_limits(report: &mut DoctorReport) {
+    let limits = report.limits;
+    report.ok(
+        "limits.upload",
+        format!(
+            "{} byte(s) per upload (max_upload_bytes in config.toml)",
+            limits.upload_bytes
+        ),
+    );
+    report.ok(
+        "limits.text",
+        format!(
+            "{} byte(s) of Markdown, {} title and {} summary characters per piece",
+            limits.markdown_bytes, limits.title_chars, limits.summary_chars
+        ),
+    );
+    report.ok(
+        "limits.image",
+        format!(
+            "{} pixels and {} pixels per side per image",
+            limits.image_pixels, limits.image_side_pixels
+        ),
+    );
+    report.ok(
+        "limits.theme",
+        format!(
+            "{} byte(s) of stylesheet, {} navigation items",
+            limits.stylesheet_bytes, limits.navigation_items
+        ),
+    );
+    report.ok(
+        "limits.search",
+        format!(
+            "{} characters and {} terms per query",
+            limits.search_query_chars, limits.search_terms
+        ),
+    );
+    report.ok(
+        "limits.rate",
+        format!(
+            "{} authentication attempts and {} likes per minute per client",
+            limits.authentication_attempts_per_minute, limits.likes_per_minute
+        ),
+    );
+    report.ok(
+        "limits.history",
+        format!(
+            "{} autosave revisions per piece (explicit saves are never pruned), {} settings states",
+            limits.autosave_revisions_kept, limits.settings_revisions_kept
+        ),
+    );
+    report.ok(
+        "limits.backups",
+        if limits.backup_generations == 0 {
+            "scheduled backups are off (backup_retention = 0 in config.toml)".to_owned()
+        } else {
+            format!(
+                "{} scheduled backup(s) kept (backup_retention in config.toml)",
+                limits.backup_generations
+            )
+        },
+    );
 }
 
 async fn check_database(config: &Config, repository: &SqliteRepository, report: &mut DoctorReport) {
@@ -787,12 +944,12 @@ mod inspection_tests {
         std::fs::create_dir_all(root.join("objects")).unwrap();
         std::fs::write(root.join("objects/manifest.json"), b"{}").unwrap();
 
-        let mut clean = DoctorReport::default();
+        let mut clean = report_for_a_check();
         check_release_temporaries(&root, &mut clean);
         assert!(clean.is_healthy());
 
         std::fs::write(root.join("objects/.half-written.tmp"), b"").unwrap();
-        let mut interrupted = DoctorReport::default();
+        let mut interrupted = report_for_a_check();
         check_release_temporaries(&root, &mut interrupted);
         assert!(!interrupted.is_healthy());
 
@@ -800,12 +957,12 @@ mod inspection_tests {
         // even when it is named like one.
         let dotted = temp.path().join(".root.tmp");
         std::fs::create_dir_all(&dotted).unwrap();
-        let mut root_named_like_a_temporary = DoctorReport::default();
+        let mut root_named_like_a_temporary = report_for_a_check();
         check_release_temporaries(&dotted, &mut root_named_like_a_temporary);
         assert!(root_named_like_a_temporary.is_healthy());
 
         // A tree that is not there at all is not an interrupted write either.
-        let mut absent = DoctorReport::default();
+        let mut absent = report_for_a_check();
         check_release_temporaries(&temp.path().join("never-created"), &mut absent);
         assert!(absent.is_healthy());
     }
@@ -1005,7 +1162,7 @@ mod media_inspection_tests {
     fn a_directory_check_says_whether_it_tested_writing() {
         let temp = tempfile::tempdir().unwrap();
 
-        let mut read_only = DoctorReport::default();
+        let mut read_only = report_for_a_check();
         check_directory("filesystem.data", temp.path(), false, &mut read_only);
         assert!(read_only.is_healthy());
         assert!(
@@ -1016,7 +1173,7 @@ mod media_inspection_tests {
             read_only.checks[0].detail
         );
 
-        let mut probed = DoctorReport::default();
+        let mut probed = report_for_a_check();
         check_directory("filesystem.data", temp.path(), true, &mut probed);
         assert!(probed.is_healthy());
         assert!(
@@ -1031,11 +1188,11 @@ mod media_inspection_tests {
         );
 
         let absent = temp.path().join("never-created");
-        let mut unreadable = DoctorReport::default();
+        let mut unreadable = report_for_a_check();
         check_directory("filesystem.data", &absent, false, &mut unreadable);
         assert!(!unreadable.is_healthy());
 
-        let mut unwritable = DoctorReport::default();
+        let mut unwritable = report_for_a_check();
         check_directory("filesystem.data", &absent, true, &mut unwritable);
         assert!(!unwritable.is_healthy());
     }
@@ -1062,7 +1219,7 @@ mod orphan_media_tests {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("cover.png"), b"x").unwrap();
 
-        let mut report = DoctorReport::default();
+        let mut report = report_for_a_check();
         let expected = BTreeSet::from(["cover.png".to_owned()]);
         check_orphan_media(temp.path(), &expected, &mut report);
         assert!(report.is_healthy());
@@ -1086,7 +1243,7 @@ mod orphan_media_tests {
             std::fs::write(temp.path().join(name), b"x").unwrap();
         }
 
-        let mut report = DoctorReport::default();
+        let mut report = report_for_a_check();
         let expected = BTreeSet::from(["cover.png".to_owned()]);
         check_orphan_media(temp.path(), &expected, &mut report);
         assert!(!report.is_healthy());
@@ -1115,7 +1272,7 @@ mod orphan_media_tests {
     #[test]
     fn a_media_directory_that_cannot_be_read_is_reported_once() {
         let temp = tempfile::tempdir().unwrap();
-        let mut report = DoctorReport::default();
+        let mut report = report_for_a_check();
         check_orphan_media(&temp.path().join("absent"), &BTreeSet::new(), &mut report);
         assert_eq!(report.issues.len(), 1);
         assert!(!detail_of(&report, "media.orphans").is_empty());
@@ -1150,7 +1307,7 @@ mod database_check_tests {
         let temp = tempfile::tempdir().unwrap();
         let repository = repository(&temp).await;
 
-        let mut healthy = DoctorReport::default();
+        let mut healthy = report_for_a_check();
         check_runtime_pragmas(&repository, &mut healthy).await;
         assert!(healthy.is_healthy());
         let reported = detail_of(&healthy, "sqlite.runtime_pragmas");
@@ -1172,7 +1329,7 @@ mod database_check_tests {
         }
         drop(held);
 
-        let mut downgraded = DoctorReport::default();
+        let mut downgraded = report_for_a_check();
         check_runtime_pragmas(&repository, &mut downgraded).await;
         assert!(
             !downgraded.is_healthy(),
@@ -1192,7 +1349,7 @@ mod database_check_tests {
         let temp = tempfile::tempdir().unwrap();
         let repository = repository(&temp).await;
 
-        let mut report = DoctorReport::default();
+        let mut report = report_for_a_check();
         check_content_trash(&repository, &mut report).await;
         assert!(report.is_healthy());
         assert_eq!(
@@ -1209,7 +1366,7 @@ mod database_check_tests {
         let temp = tempfile::tempdir().unwrap();
         let repository = repository(&temp).await;
 
-        let mut healthy = DoctorReport::default();
+        let mut healthy = report_for_a_check();
         check_foreign_keys(&repository, &mut healthy).await;
         assert!(healthy.is_healthy());
         assert_eq!(detail_of(&healthy, "sqlite.foreign_keys"), "no violations");
@@ -1229,7 +1386,7 @@ mod database_check_tests {
             .unwrap();
         drop(connection);
 
-        let mut violated = DoctorReport::default();
+        let mut violated = report_for_a_check();
         check_foreign_keys(&repository, &mut violated).await;
         assert!(
             !violated.is_healthy(),
@@ -1267,7 +1424,7 @@ mod release_history_tests {
         let root = temp.path().join("releases");
         let store = FilesystemReleaseStore::new(root.clone());
 
-        let mut empty = DoctorReport::default();
+        let mut empty = report_for_a_check();
         check_release_history(&root, &store, &mut empty).await;
         assert!(empty.is_healthy());
         assert_eq!(
@@ -1288,7 +1445,7 @@ mod release_history_tests {
             store.put_manifest(&release).await.unwrap();
         }
 
-        let mut published = DoctorReport::default();
+        let mut published = report_for_a_check();
         check_release_history(&root, &store, &mut published).await;
         assert!(published.is_healthy());
         assert_eq!(
@@ -1326,7 +1483,7 @@ mod integrity_tests {
             .await
             .unwrap();
 
-        let mut healthy = DoctorReport::default();
+        let mut healthy = report_for_a_check();
         check_quick_check(&repository, &mut healthy).await;
         assert!(healthy.is_healthy());
         assert_eq!(detail_of(&healthy, "sqlite.quick_check"), "ok");
@@ -1346,7 +1503,7 @@ mod integrity_tests {
         std::fs::write(&path, &bytes).unwrap();
 
         let damaged = SqliteRepository::connect(&path).await.unwrap();
-        let mut report = DoctorReport::default();
+        let mut report = report_for_a_check();
         check_quick_check(&damaged, &mut report).await;
         assert!(
             !report.is_healthy(),
@@ -1358,5 +1515,44 @@ mod integrity_tests {
             "the operator has to be told what SQLite found: {detail}"
         );
         damaged.close().await;
+    }
+}
+
+#[cfg(test)]
+mod limit_report_tests {
+    use super::*;
+
+    /// Every limit is reported as a passing check so an operator can read
+    /// them without running into one, and a schedule that is switched off
+    /// says so rather than reporting a count of zero.
+    #[test]
+    fn the_backup_limit_says_whether_the_schedule_is_on_at_all() {
+        let mut kept = report_for_a_check();
+        let mut limits = kept.limits;
+        limits.backup_generations = 3;
+        kept = DoctorReport::new(limits);
+        check_limits(&mut kept);
+        let detail = |report: &DoctorReport| {
+            report
+                .checks
+                .iter()
+                .find(|check| check.name == "limits.backups")
+                .expect("the backup limit is reported")
+                .detail
+                .clone()
+        };
+        assert_eq!(
+            detail(&kept),
+            "3 scheduled backup(s) kept (backup_retention in config.toml)"
+        );
+
+        limits.backup_generations = 0;
+        let mut off = DoctorReport::new(limits);
+        check_limits(&mut off);
+        assert_eq!(
+            detail(&off),
+            "scheduled backups are off (backup_retention = 0 in config.toml)"
+        );
+        assert!(off.is_healthy(), "a limit is not a fault");
     }
 }

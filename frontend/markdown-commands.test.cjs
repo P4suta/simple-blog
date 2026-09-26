@@ -1,6 +1,34 @@
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
-const { insertFence, togglePrefix, toggleWrap } = require("./markdown-commands.ts");
+const fs = require("node:fs");
+const path = require("node:path");
+const {
+  EDITOR_SHORTCUTS,
+  describeShortcut,
+  insertFence,
+  togglePrefix,
+  toggleWrap,
+} = require("./markdown-commands.ts");
+
+test("every shortcut has a unique key and a description in every language", () => {
+  const keys = EDITOR_SHORTCUTS.map((shortcut) => shortcut.key);
+  assert.equal(new Set(keys).size, keys.length, "two commands share a key");
+  for (const locale of ["en", "ja", "zh"]) {
+    const catalog = JSON.parse(
+      fs.readFileSync(path.join(__dirname, "..", "locales", `${locale}.json`), "utf8"),
+    );
+    for (const shortcut of EDITOR_SHORTCUTS) {
+      assert.equal(typeof catalog[shortcut.labelKey], "string", `${locale} lacks ${shortcut.labelKey}`);
+    }
+  }
+});
+
+test("shortcuts read the way a keyboard shows them", () => {
+  assert.equal(describeShortcut("Mod-b", "Ctrl"), "Ctrl+B");
+  assert.equal(describeShortcut("Mod-Shift-p", "⌘"), "⌘+Shift+P");
+  assert.equal(describeShortcut("Mod-Alt-1", "Ctrl"), "Ctrl+Alt+1");
+  assert.equal(describeShortcut("Mod-`", "Ctrl"), "Ctrl+`");
+});
 
 const apply = (doc, edit) => doc.slice(0, edit.from) + edit.insert + doc.slice(edit.to);
 

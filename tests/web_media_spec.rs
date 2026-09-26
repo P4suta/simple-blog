@@ -596,12 +596,18 @@ async fn trashed_content_keeps_its_media_until_it_is_deleted_permanently() {
         .media_dir()
         .join(&harness.asset.original_filename);
 
-    // Only the piece references the asset from now on.
+    // Only the piece references the asset from now on. The settings history
+    // would keep the former logo alive (see below); this test is about the
+    // piece alone, so the history is emptied.
     let site = SiteService::new(repository.clone());
     let mut settings = repository.site_settings().await.unwrap();
     settings.logo_media_id = None;
     settings.favicon_media_id = None;
     site.update(settings, Vec::new(), Utc::now()).await.unwrap();
+    sqlx::query("DELETE FROM site_settings_revisions")
+        .execute(repository.pool())
+        .await
+        .unwrap();
 
     let auth = AuthService::new(repository.clone(), Arc::new(SystemEntropy));
     let session = auth.create_session(Utc::now()).await.unwrap();
@@ -661,6 +667,92 @@ async fn trashed_content_keeps_its_media_until_it_is_deleted_permanently() {
         "permanent deletion releases the cover"
     );
     assert!(!media_path.exists());
+}
+
+#[tokio::test]
+async fn a_former_logo_survives_while_a_kept_settings_state_names_it() {
+    let harness = cover_harness().await;
+    let repository = harness.repository.clone();
+    // Drop the piece so the asset's only uses are the logo and favicon.
+    let content = repository
+        .list_all_content()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|content| content.slug.as_str() == "with-cover")
+        .expect("cover content");
+    repository
+        .move_to_trash(content.id, content.version, Utc::now())
+        .await
+        .unwrap();
+    repository.delete_permanently(content.id).await.unwrap();
+
+    let auth = AuthService::new(repository.clone(), Arc::new(SystemEntropy));
+    let session = auth.create_session(Utc::now()).await.unwrap();
+    let cookie = format!(
+        "sb_session={}; sb_csrf={}",
+        session.session.expose(),
+        session.csrf.expose()
+    );
+    let save_without_logo = || {
+        let state = harness.state.clone();
+        let cookie = cookie.clone();
+        let body = serde_urlencoded::to_string([
+            ("csrf", session.csrf.expose()),
+            ("site_title", "No logo"),
+            ("site_description", ""),
+            ("locale", "en"),
+            ("logo_media_id", ""),
+            ("favicon_media_id", ""),
+            ("custom_css", ""),
+            ("navigation", ""),
+            ("timezone", "UTC"),
+            ("author_name", ""),
+        ])
+        .unwrap();
+        async move {
+            router(state)
+                .oneshot(
+                    Request::builder()
+                        .method(Method::POST)
+                        .uri("/admin/settings/")
+                        .header(header::HOST, "localhost:8080")
+                        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                        .header(header::COOKIE, cookie)
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+        }
+    };
+
+    // Removing the logo runs the collector, but the state that had the logo
+    // is kept, and restoring it must not bring back a broken image.
+    assert_eq!(save_without_logo().await.status(), StatusCode::SEE_OTHER);
+    assert!(
+        repository
+            .find_media(&harness.asset.id)
+            .await
+            .unwrap()
+            .is_some(),
+        "a kept settings state still names the former logo"
+    );
+
+    // Once no kept state names it, the next collection releases it.
+    sqlx::query("DELETE FROM site_settings_revisions")
+        .execute(repository.pool())
+        .await
+        .unwrap();
+    assert_eq!(save_without_logo().await.status(), StatusCode::SEE_OTHER);
+    assert!(
+        repository
+            .find_media(&harness.asset.id)
+            .await
+            .unwrap()
+            .is_none(),
+        "nothing names the asset any more"
+    );
 }
 #[tokio::test]
 async fn cover_alt_text_can_be_edited_and_reaches_the_released_page() {

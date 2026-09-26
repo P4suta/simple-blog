@@ -1,8 +1,13 @@
-//! Deterministic, host-neutral public release contracts.
+//! Deterministic public release contracts, and the native store for them.
 //!
 //! A release is immutable. Adapters first persist every referenced object and
 //! the manifest, then replace one active pointer. A failed build or store write
 //! therefore cannot expose a partially generated site.
+//!
+//! The model (identifiers, manifests, the builder, the publisher, and the
+//! resolver) is host-neutral and shared with every adapter through
+//! `contracts/release-resolution-v1.json`; `FilesystemReleaseStore` at the end
+//! of this module is the native adapter's implementation of the store port.
 
 use std::{
     collections::{BTreeMap, HashSet},
@@ -17,6 +22,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::{io::AsyncWriteExt, sync::Mutex};
 use url::Url;
+
+use crate::observability::codes;
 
 pub const RELEASE_FORMAT_VERSION: u16 = 1;
 
@@ -666,10 +673,13 @@ impl<S: ReleaseStore + ?Sized> ReleasePublisher<S> {
         );
         for (id, bytes) in &release.objects {
             if let Err(error) = self.store.put_object(id, bytes).await {
+                // The identity is the object's own checksum: it names which
+                // object failed without carrying anything the store said.
                 tracing::error!(
                     event = "release.publish.failed",
-                    error_code = "release_object_store_failed",
-                    phase = "object"
+                    error_code = codes::RELEASE_OBJECT_STORE_FAILED,
+                    phase = "object",
+                    object_id = %id
                 );
                 return Err(error);
             }
@@ -678,7 +688,7 @@ impl<S: ReleaseStore + ?Sized> ReleasePublisher<S> {
         if let Err(error) = self.store.put_manifest(release).await {
             tracing::error!(
                 event = "release.publish.failed",
-                error_code = "release_manifest_store_failed",
+                error_code = codes::RELEASE_MANIFEST_STORE_FAILED,
                 phase = "manifest"
             );
             return Err(error);
@@ -687,7 +697,7 @@ impl<S: ReleaseStore + ?Sized> ReleasePublisher<S> {
         if let Err(error) = self.store.activate(expected, &release.id).await {
             tracing::error!(
                 event = "release.publish.failed",
-                error_code = "release_activation_failed",
+                error_code = codes::RELEASE_ACTIVATION_FAILED,
                 phase = "activation"
             );
             return Err(error);

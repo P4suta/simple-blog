@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import type {
@@ -128,6 +129,36 @@ test("doctor exhausts independent checks and returns only stable diagnostic code
     "CF_CORE_UNHEALTHY",
   ]);
   assert.equal(JSON.stringify(report).includes("secret"), false);
+});
+
+test("doctor emits exactly the components and codes the diagnostics contract lists", async () => {
+  const contract = JSON.parse(
+    readFileSync(new URL("../../../contracts/diagnostics-v1.json", import.meta.url), "utf8"),
+  ) as {
+    error_codes: { cloudflare: Array<{ code: string; component: string }> };
+    doctor_checks: { cloudflare: string[] };
+  };
+  // Every dependency fails, and the configuration check with them (an empty
+  // zone id is invalid), so each component must show its own code.
+  const everything = new Set(contract.doctor_checks.cloudflare);
+  const broken: WorkerEnv = { ...environment(everything), CF_ZONE_ID: "" };
+  const response = await handleDoctorRequest(request(), broken, () => 29);
+  const report = await response.json() as {
+    checks: Array<{ component: string; diagnostic_code: string | null }>;
+  };
+
+  assert.deepEqual(
+    report.checks.map((check) => check.component).sort(),
+    [...contract.doctor_checks.cloudflare].sort(),
+  );
+  assert.deepEqual(
+    report.checks.map((check) => check.diagnostic_code).sort(),
+    contract.error_codes.cloudflare.map((entry) => entry.code).sort(),
+  );
+  for (const entry of contract.error_codes.cloudflare) {
+    const check = report.checks.find((candidate) => candidate.component === entry.component);
+    assert.equal(check?.diagnostic_code, entry.code, `${entry.component} names another code`);
+  }
 });
 
 test("doctor rejects missing or incorrect operator capabilities", async () => {

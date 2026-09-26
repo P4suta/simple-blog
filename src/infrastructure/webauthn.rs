@@ -1,3 +1,7 @@
+//! The passkey ceremony on webauthn-rs: registration and authentication
+//! bound to the site's origin, with challenges in flight kept in memory for a
+//! short while.
+
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use dashmap::DashMap;
 use thiserror::Error;

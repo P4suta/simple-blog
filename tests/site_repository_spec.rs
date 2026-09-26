@@ -3,7 +3,7 @@ use std::{borrow::Cow, path::Path, sync::Arc};
 use chrono::{Duration, SecondsFormat, Utc};
 use simple_blog::{
     application::{
-        ports::{ContentRepository, SiteRepository},
+        ports::{ContentRepository, RepositoryError, SiteRepository},
         site::SiteService,
     },
     domain::{
@@ -62,6 +62,131 @@ fn settings(title: &str) -> SiteSettings {
         author_name: String::new(),
         custom_css_backup: None,
     }
+}
+
+#[tokio::test]
+async fn every_configuration_save_is_kept_and_the_first_keeps_what_it_replaced() {
+    let temp = tempfile::tempdir().unwrap();
+    let repository = Arc::new(
+        SqliteRepository::connect(&temp.path().join("history.sqlite3"))
+            .await
+            .unwrap(),
+    );
+    let service = SiteService::new(repository.clone());
+    let now = Utc::now();
+    let original = repository.site_settings().await.unwrap();
+    assert!(
+        repository
+            .list_settings_revisions()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    service
+        .update(settings("First"), Vec::new(), now)
+        .await
+        .unwrap();
+    let history = repository.list_settings_revisions().await.unwrap();
+    assert_eq!(
+        history.len(),
+        2,
+        "the first save keeps the state it replaced"
+    );
+    assert_eq!(history[0].settings.site_title, "First");
+    assert_eq!(history[1].settings, original);
+    assert_eq!(history[0].created_at, now);
+
+    // A save that changes nothing adds nothing.
+    service
+        .update(settings("First"), Vec::new(), now + Duration::seconds(1))
+        .await
+        .unwrap();
+    assert_eq!(repository.list_settings_revisions().await.unwrap().len(), 2);
+
+    // Only the newest fifty states are kept, newest first.
+    for index in 0..60_i64 {
+        service
+            .update(
+                settings(&format!("Title {index}")),
+                Vec::new(),
+                now + Duration::seconds(2 + index),
+            )
+            .await
+            .unwrap();
+    }
+    let history = repository.list_settings_revisions().await.unwrap();
+    assert_eq!(history.len(), 50);
+    assert_eq!(history[0].settings.site_title, "Title 59");
+    assert_eq!(history[49].settings.site_title, "Title 10");
+    assert!(history.windows(2).all(|pair| pair[0].id > pair[1].id));
+    assert!(
+        repository
+            .find_settings_revision(history[49].id - 1)
+            .await
+            .unwrap()
+            .is_none(),
+        "pruned states are gone"
+    );
+}
+
+#[tokio::test]
+async fn restoring_settings_is_itself_a_save_that_keeps_what_it_replaced() {
+    let temp = tempfile::tempdir().unwrap();
+    let repository = Arc::new(
+        SqliteRepository::connect(&temp.path().join("restore.sqlite3"))
+            .await
+            .unwrap(),
+    );
+    let service = SiteService::new(repository.clone());
+    let now = Utc::now();
+    let archive_link = NavigationItem {
+        id: 0,
+        label: "Archive".into(),
+        destination: "/archive/".into(),
+        is_external: false,
+        position: 0,
+    };
+    service
+        .update(settings("Before"), vec![archive_link.clone()], now)
+        .await
+        .unwrap();
+    service
+        .update(settings("After"), Vec::new(), now + Duration::seconds(1))
+        .await
+        .unwrap();
+    let before = repository
+        .list_settings_revisions()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|revision| revision.settings.site_title == "Before")
+        .unwrap();
+    assert_eq!(before.navigation.len(), 1);
+
+    service
+        .restore_settings(before.id, now + Duration::seconds(2))
+        .await
+        .unwrap();
+    assert_eq!(
+        repository.site_settings().await.unwrap().site_title,
+        "Before"
+    );
+    let navigation = repository.navigation().await.unwrap();
+    assert_eq!(navigation.len(), 1);
+    assert_eq!(navigation[0].label, archive_link.label);
+    let titles = repository
+        .list_settings_revisions()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|revision| revision.settings.site_title)
+        .collect::<Vec<_>>();
+    assert_eq!(titles[..3], ["Before", "After", "Before"]);
+    assert!(matches!(
+        service.restore_settings(424_242, now).await,
+        Err(RepositoryError::NotFound)
+    ));
 }
 
 #[tokio::test]

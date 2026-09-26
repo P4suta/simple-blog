@@ -46,17 +46,19 @@ impl Exporter {
     ) -> Result<(), OperationError> {
         std::fs::create_dir(staging.join("posts"))?;
         std::fs::create_dir(staging.join("pages"))?;
+        std::fs::create_dir(staging.join("trash"))?;
         std::fs::create_dir(staging.join("media"))?;
         for content in repository
             .list_all_content()
             .await
             .map_err(|error| OperationError::Database(error.to_string()))?
-            .into_iter()
-            .filter(|content| !content.is_trashed())
         {
-            let directory = match content.kind {
-                ContentKind::Post => "posts",
-                ContentKind::Page => "pages",
+            // Nothing written is lost: the trash travels too, in its own
+            // folder, so an import puts it back where it was.
+            let directory = match (content.is_trashed(), content.kind) {
+                (true, _) => "trash",
+                (false, ContentKind::Post) => "posts",
+                (false, ContentKind::Page) => "pages",
             };
             std::fs::write(
                 staging.join(directory).join(format!("{}.md", content.slug)),

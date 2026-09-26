@@ -6,8 +6,33 @@ const {
   failureKey,
   formatLocalTime,
   isoToLocalDateTime,
+  isoToZonedDateTime,
   localDateTimeToIso,
+  zonedDateTimeToIso,
 } = require("./editor-helpers.ts");
+
+test("scheduling reads and writes the clock of the site's zone", () => {
+  assert.equal(isoToZonedDateTime("2026-09-03T12:01:00Z", "Asia/Tokyo"), "2026-09-03T21:01");
+  assert.equal(zonedDateTimeToIso("2026-09-03T21:01", "Asia/Tokyo"), "2026-09-03T12:01:00Z");
+  assert.equal(isoToZonedDateTime("2026-01-15T00:30:00Z", "America/New_York"), "2026-01-14T19:30");
+  assert.equal(zonedDateTimeToIso("2026-01-14T19:30", "America/New_York"), "2026-01-15T00:30:00Z");
+  // Just after the clocks jump forward, the offset is the new one, even
+  // though the same digits read as UTC fall before the jump.
+  assert.equal(zonedDateTimeToIso("2026-03-08T03:30", "America/New_York"), "2026-03-08T07:30:00Z");
+  assert.equal(zonedDateTimeToIso("2026-03-08T01:30", "America/New_York"), "2026-03-08T06:30:00Z");
+  // Summer time is honoured, and midnight is 00, never 24.
+  assert.equal(zonedDateTimeToIso("2026-07-01T09:00", "Europe/Berlin"), "2026-07-01T07:00:00Z");
+  assert.equal(isoToZonedDateTime("2026-07-01T22:00:00Z", "Europe/Berlin"), "2026-07-02T00:00");
+  // An unknown or empty zone falls back to the device's own clock.
+  assert.equal(
+    isoToZonedDateTime("2026-09-03T12:01:00Z", "Mars/Olympus"),
+    isoToLocalDateTime("2026-09-03T12:01:00Z"),
+  );
+  assert.equal(zonedDateTimeToIso("2026-09-03T21:01", ""), localDateTimeToIso("2026-09-03T21:01"));
+  assert.equal(zonedDateTimeToIso("", "Asia/Tokyo"), null);
+  assert.equal(zonedDateTimeToIso("garbage", "Asia/Tokyo"), null);
+  assert.equal(isoToZonedDateTime("garbage", "Asia/Tokyo"), "");
+});
 
 test("datetime-local values round-trip through RFC 3339 in the local zone", () => {
   const local = "2026-09-03T12:01";

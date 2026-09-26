@@ -32,7 +32,15 @@ required_public_files=(
   .github/rulesets/main.json
   .github/rulesets/release-tags.json
   .github/workflows/codeql.yml
+  docs/README.md
   docs/repository-governance.md
+  docs/vision.md
+  docs/diagnostics.md
+  docs/adr/README.md
+  contracts/README.md
+  contracts/diagnostics-v1.json
+  contracts/domain-registration-v1.json
+  contracts/release-resolution-v1.json
   AGENTS.md
   docs/verification-review.md
   .github/actions/verification/action.yml
@@ -342,6 +350,48 @@ if ! awk '
   fail 'expect attributes require an explicit reason'
 fi
 
+# Every decision record is in the index, and every relative link in the
+# documentation leads somewhere: the vision, the records, the catalogue, and
+# the contracts refer to one another, and a reader must never hit a dead end.
+for record in docs/adr/[0-9]*.md; do
+  name="$(basename "$record")"
+  grep -Fq -- "](${name})" docs/adr/README.md \
+    || fail "docs/adr/README.md does not list $name"
+done
+while IFS= read -r document; do
+  while IFS= read -r target; do
+    path="${target%%#*}"
+    [[ -n "$path" ]] || continue
+    [[ -e "$(dirname "$document")/$path" ]] \
+      || fail "$document links to a missing file: $target"
+  done < <(grep -oE '\]\([^)[:space:]]+\)' "$document" \
+    | sed -E 's/^\]\((.*)\)$/\1/' \
+    | grep -Ev '^(https?:|mailto:|#)' || true)
+done < <(find . -name '*.md' \
+  -not -path './node_modules/*' -not -path './target/*' -not -path './.claude/*' \
+  -not -path '*/node_modules/*' -print)
+
+# Diagnostic codes are a compatibility contract: emitted only through the
+# named constants, listed in the contract, and explained in the catalogue.
+if grep -rEn 'error_code = "' src; then
+  fail 'error codes are named constants in src/observability.rs, not literals'
+fi
+diagnostics_contract=contracts/diagnostics-v1.json
+while IFS= read -r identifier; do
+  grep -Fq -- "\`$identifier\`" docs/diagnostics.md \
+    || fail "docs/diagnostics.md does not explain $identifier"
+done < <(jq -r '
+  .error_codes.native[].code,
+  .error_codes.cloudflare[].code,
+  .doctor_checks.native[],
+  .doctor_checks.cloudflare[],
+  .cloudflare_internal_api_errors[]
+' "$diagnostics_contract")
+while IFS= read -r code; do
+  grep -Fq -- "\"$code\"" adapters/cloudflare/src/doctor.ts \
+    || fail "the Cloudflare adapter does not emit $code"
+done < <(jq -r '.error_codes.cloudflare[].code' "$diagnostics_contract")
+
 # The terminal is the first thing an operator meets. A subcommand or an
 # argument without a doc comment is a blank column in `--help`.
 [[ -s src/cli.rs ]] \
@@ -530,23 +580,51 @@ done < <(awk '
   /^- Supersedes: ADR [0-9][0-9][0-9][0-9]/ { print substr($4, 1, 4) }
 ' docs/adr/[0-9][0-9][0-9][0-9]-*.md | sort -u)
 
-# Portability is proven by two implementations reading the same fixture. A
-# fixture only one language consumes proves nothing, and a directory that has
-# gone missing must not read as nothing to check.
+# Portability is proven by more than one implementation reading the same
+# fixture, and contracts/README.md is where that pairing is declared. A
+# consumer that has stopped reading its fixture, or a fixture no row
+# describes, drops a side of the contract without saying so. Not every
+# fixture is dual-language today — contracts/README.md records which are not
+# and why — so the declaration, not a blanket rule, is what is enforced.
 [[ -d contracts ]] || fail 'contracts is missing; the cross-adapter fixtures cannot be checked'
+[[ -s contracts/README.md ]] \
+  || fail 'contracts/README.md is missing or empty; the fixture consumers are undeclared'
+
+inspected_fixtures=0
 for fixture in contracts/*.json; do
   [[ -f "$fixture" ]] || fail 'contracts holds no versioned fixture'
   fixture_name="$(basename "$fixture")"
+  row="$(grep -F "](${fixture_name})" contracts/README.md)" \
+    || fail "contracts/README.md does not describe $fixture_name"
+
+  declared_consumers=0
+  while IFS= read -r consumer; do
+    [[ -n "$consumer" ]] || continue
+    [[ -f "$consumer" ]] \
+      || fail "contracts/README.md names $consumer as a consumer of $fixture_name; no such file"
+    grep -Fq -- "$fixture_name" "$consumer" \
+      || fail "$consumer is named as a consumer of $fixture_name and does not read it"
+    declared_consumers=$((declared_consumers + 1))
+  done < <(printf '%s' "$row" \
+    | grep -oE '`[A-Za-z0-9_./-]+\.(rs|ts|sh)`' \
+    | tr -d '`' \
+    | sort -u)
+
+  [[ "$declared_consumers" -gt 0 ]] \
+    || fail "contracts/README.md names no consumer of $fixture_name"
   grep -Rqs -F "$fixture_name" --include='*.rs' tests \
     || fail "no Rust test consumes contracts/$fixture_name"
-  grep -Rqs -F "$fixture_name" --include='*.test.ts' adapters \
-    || fail "no adapter test consumes contracts/$fixture_name"
+  inspected_fixtures=$((inspected_fixtures + 1))
 done
 
+[[ "$inspected_fixtures" -ge 2 ]] \
+  || fail "the fixture scan inspected only $inspected_fixtures contracts; contracts has changed shape"
+
 # A mutant the adversarial gate cannot answer is excluded by name, and only
-# ever for one of two reasons: the mutated program is the same program, or it
-# can fail no way except by hanging. Both are properties of the operator, not
-# of the tests, so each exclusion carries the sentence that says which. An
+# ever for a reason that is a property of the mutation operator rather than of
+# the tests: the mutated program is the same program, it can fail no way
+# except by hanging, or it differs only for an input no machine running these
+# tests can build. Each exclusion carries the sentence that says which. An
 # exclusion added because a test would merely be tedious to write is a hole,
 # and keeping the list short is what makes one visible.
 mutants_config=.cargo/mutants.toml
@@ -580,7 +658,7 @@ if ! awk '
   fail 'every mutation exclusion must open with Equivalent., Timeout only. or Out of reach. and say why'
 fi
 
-excluded_mutants="$(exclusion_lines | grep -c .)"
+excluded_mutants="$(exclusion_lines | grep -c . || true)"
 [[ "$excluded_mutants" -ge 1 ]] \
   || fail 'the mutation exclusion scan found nothing; .cargo/mutants.toml has changed shape'
 [[ "$excluded_mutants" -le 8 ]] \

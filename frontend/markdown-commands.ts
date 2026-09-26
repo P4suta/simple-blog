@@ -98,6 +98,37 @@ export function togglePrefix(doc: string, from: number, to: number, prefix: stri
 }
 
 /** Wraps the selection in a fenced code block, or opens an empty fence at the cursor. */
+/**
+ * Every key binding of the editor, in the order the help lists them. `key`
+ * is CodeMirror's notation; `labelKey` names the localized description. The
+ * keymap and the help are both built from this table, so neither can fall
+ * behind the other. Save is bound on the document (it works from every
+ * field) but belongs in the list.
+ */
+export const EDITOR_SHORTCUTS: readonly { key: string; labelKey: string }[] = [
+  { key: "Mod-s", labelKey: "editor.shortcut_save" },
+  { key: "Mod-b", labelKey: "editor.shortcut_bold" },
+  { key: "Mod-i", labelKey: "editor.shortcut_italic" },
+  { key: "Mod-`", labelKey: "editor.shortcut_code" },
+  { key: "Mod-k", labelKey: "editor.shortcut_link" },
+  { key: "Mod-Alt-1", labelKey: "editor.shortcut_heading1" },
+  { key: "Mod-Alt-2", labelKey: "editor.shortcut_heading2" },
+  { key: "Mod-Alt-3", labelKey: "editor.shortcut_heading3" },
+  { key: "Mod-Shift-q", labelKey: "editor.shortcut_quote" },
+  { key: "Mod-Shift-l", labelKey: "editor.shortcut_list" },
+  { key: "Mod-Alt-c", labelKey: "editor.shortcut_fence" },
+  { key: "Mod-Shift-p", labelKey: "editor.shortcut_preview" },
+  { key: "Mod-Shift-f", labelKey: "editor.shortcut_focus" },
+];
+
+/** A binding the way a keyboard shows it: `Mod-Shift-p` with `⌘` → `⌘+Shift+P`. */
+export function describeShortcut(key: string, mod: string): string {
+  return key
+    .split("-")
+    .map((part) => (part === "Mod" ? mod : part.length === 1 ? part.toUpperCase() : part))
+    .join("+");
+}
+
 export function insertFence(doc: string, from: number, to: number): Edit {
   const selected = doc.slice(from, to);
   const before = from > 0 && doc[from - 1] !== "\n" ? "\n" : "";

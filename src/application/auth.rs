@@ -1,3 +1,9 @@
+//! The authentication use cases behind passkey-only ownership.
+//!
+//! Sessions, setup tokens, recovery codes, and rate limits. Secrets are made
+//! here and stored only as hashes; the passkey ceremony itself lives in
+//! `infrastructure::webauthn`.
+
 use std::{
     collections::{HashMap, VecDeque},
     sync::{Arc, Mutex},
@@ -25,6 +31,9 @@ const SESSION_TTL_DAYS: i64 = 7;
 /// means the writer has been away for at least a day since the last renewal.
 const SESSION_RENEWAL_THRESHOLD_DAYS: i64 = 6;
 const RECOVERY_CODE_COUNT: usize = 10;
+/// The two rate limits readers and writers can run into; `doctor` reports them.
+pub const AUTHENTICATION_ATTEMPTS_PER_MINUTE: usize = 10;
+pub const LIKES_PER_MINUTE: usize = 30;
 
 #[derive(Clone)]
 pub struct AuthRateLimiter {
@@ -54,9 +63,16 @@ impl AuthRateLimiter {
         }
     }
 
+    /// Passkey and recovery-code attempts per client and minute.
     #[must_use]
     pub fn authentication_default() -> Self {
-        Self::new(10, Duration::minutes(1))
+        Self::new(AUTHENTICATION_ATTEMPTS_PER_MINUTE, Duration::minutes(1))
+    }
+
+    /// Like toggles per client and minute.
+    #[must_use]
+    pub fn likes_default() -> Self {
+        Self::new(LIKES_PER_MINUTE, Duration::minutes(1))
     }
 
     #[must_use]

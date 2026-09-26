@@ -8,6 +8,7 @@ use walkdir::WalkDir;
 use crate::{
     config::Config,
     infrastructure::{sqlite::SqliteRepository, sqlite_maintenance::SqliteMaintenance},
+    observability::codes,
     operations::{OperationError, backup::archive_files},
 };
 
@@ -52,7 +53,7 @@ impl MigrationCoordinator {
                     safety_backup = safety_backup
                         .as_ref()
                         .map(|path| path.display().to_string()),
-                    error_code = "database.migration.failed",
+                    error_code = codes::DATABASE_MIGRATION_FAILED,
                 );
                 return match safety_backup {
                     Some(backup) => Err(OperationError::Migration {
