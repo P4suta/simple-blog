@@ -282,3 +282,19 @@ the surviving empty-journal boundary case. Run `2026-09-06T02-55-21-154Z-bf28ba4
 then passed format, lint and every Rust target/feature with unchanged inputs.
 The actual partition audit enumerated 935 mutants, distributed as seven shards
 of 117 and one of 116, without duplicates or omissions.
+
+## Dependency automation migration
+
+User and requirements pass: current repository governance described Dependabot even though the organization-wide update path is Mend-hosted Renovate.
+The documentation now names the shared P4suta Renovate policy so contributors have one accurate source of dependency-update behavior.
+
+Failure, privacy, security and compatibility pass: running `bash tests/repository_policy.sh` reproduced the stale requirement for `.github/dependabot.yml` after the migration removed that file.
+The correction removes only duplicate update scheduling, retains GitHub's automated security fixes, and leaves Renovate manifest discovery unrestricted so nested and future manifests remain covered.
+
+Verification-blind-spot pass: the previous policy test could prove only that a Cargo-specific Dependabot entry existed and could not detect a missing, narrowed or private Renovate configuration.
+The policy now rejects a surviving Dependabot configuration, parses `renovate.json`, requires the exact shared preset, and rejects `enabledManagers`, `includePaths` and `ignorePaths` narrowing.
+
+First no-finding review: the complete change was inspected against the user-facing governance text and the repository-policy failure, then the corrected policy, frontend checks, dependency policy and 32 browser scenarios passed without an actionable finding.
+
+Second no-finding review: an independent Linux run passed formatting, lint, every Rust and frontend gate, coverage, workflow and secret checks, all browser scenarios, recovery, and performance without an actionable finding.
+Its repository-policy step reported only that `AGENTS.md` was absent from the remote transfer, while the same policy passed against the complete local checkout.

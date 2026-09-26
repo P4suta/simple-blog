@@ -1,5 +1,4 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended"],
-  "description": "Dependabot is the primary updater; Renovate must never pin a dependency below what Cargo.toml already declares."
+  "extends": ["github>P4suta/renovate-config"]
 }
