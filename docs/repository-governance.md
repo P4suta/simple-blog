@@ -48,7 +48,7 @@ Release. Releases are a separate, explicit maintainer action.
 - Actions receive read-only repository contents by default. Workflow actions
   are pinned to full commit SHAs, and third-party Actions must also appear in
   the selected-actions allowlist.
-- Dependabot covers Cargo, Bun, and GitHub Actions manifests.
+- Mend-hosted Renovate inherits the shared P4suta policy and discovers Cargo, Bun, and GitHub Actions manifests without a repository-specific path allowlist.
 - Stable Rust tests run on Linux, macOS, and Windows; all three named jobs are
   protected checks. Checkout credentials are disabled before repository code
   or build scripts execute. Windows vendors WebAuthn's OpenSSL dependency so

@@ -23,7 +23,6 @@ required_public_files=(
   LICENSE-APACHE
   LICENSE-MIT
   .github/CODEOWNERS
-  .github/dependabot.yml
   .github/pull_request_template.md
   .github/repository-settings.json
   .github/ISSUE_TEMPLATE/bug.yml
@@ -36,18 +35,24 @@ required_public_files=(
   AGENTS.md
   docs/verification-review.md
   .github/actions/verification/action.yml
+  renovate.json
 )
 
 for path in "${required_public_files[@]}"; do
   [[ -s "$path" ]] || fail "$path is missing or empty"
 done
 
-for ecosystem in cargo bun github-actions; do
-  grep -Eq \
-    "package-ecosystem:[[:space:]]*[\"']?${ecosystem}[\"']?" \
-    .github/dependabot.yml \
-    || fail "Dependabot does not cover $ecosystem"
-done
+[[ ! -e .github/dependabot.yml ]] \
+  || fail 'Dependabot configuration must stay absent after the Renovate migration'
+
+jq -e '
+  .["$schema"] == "https://docs.renovatebot.com/renovate-schema.json"
+  and (.extends | index("github>P4suta/renovate-config") != null)
+  and (has("enabledManagers") | not)
+  and (has("includePaths") | not)
+  and (has("ignorePaths") | not)
+' renovate.json >/dev/null \
+  || fail 'Renovate must inherit the shared policy without narrowing manifest discovery'
 
 cargo_metadata="$(cargo metadata --locked --no-deps --format-version 1)" \
   || fail 'Cargo metadata could not be evaluated'
@@ -66,12 +71,6 @@ jq -e '
   | length == 1
 ' <<<"$cargo_metadata" >/dev/null \
   || fail 'Windows builds must vendor OpenSSL instead of depending on runner-global libraries'
-
-if grep -Eq \
-  "package-ecosystem:[[:space:]]*(npm|\"npm\"|'npm')" \
-  .github/dependabot.yml; then
-  fail 'Dependabot must update bun.lock through the native bun ecosystem'
-fi
 
 jq -e 'type == "object"' .github/rulesets/main.json >/dev/null \
   || fail 'main ruleset is not valid JSON'
