@@ -4,6 +4,7 @@ const node = (...args) => ({ command: process.execPath, args });
 export const checks = {
   format: cargo('fmt', '--all', '--', '--check'),
   lint: cargo('clippy', '--locked', '--all-targets', '--all-features', '--', '-D', 'warnings'),
+  doc: { ...cargo('doc', '--no-deps', '--locked', '--all-features'), env: { RUSTDOCFLAGS: '-D warnings' } },
   rust: { ...cargo('test', '--locked', '--all-targets', '--all-features'), env: { PROPTEST_CASES: '1024' } },
   'rust-verification': { ...cargo('test', '--locked', '--profile', 'verification', '--all-targets', '--all-features'), env: { PROPTEST_CASES: '1024' } },
   frontend: node('--test', 'frontend/*.test.cjs'),
@@ -32,7 +33,7 @@ export const checks = {
   symbols: node('scripts/symbols.mjs'),
 };
 export const profiles = {
-  all: ['format', 'lint', 'rust', 'frontend', 'cloudflare', 'tools', 'types', 'cloudflare-types', 'asset-fresh',
+  all: ['format', 'lint', 'doc', 'rust', 'frontend', 'cloudflare', 'tools', 'types', 'cloudflare-types', 'asset-fresh',
     'dependencies', 'frontend-audit', 'coverage', 'policy', 'workflows', 'secrets', 'browser-build', 'browser', 'recovery', 'performance'],
   frontend: ['types', 'cloudflare-types', 'frontend', 'cloudflare', 'tools', 'asset-fresh', 'frontend-audit'],
   browser: ['browser-build', 'browser', 'recovery'],

@@ -121,7 +121,10 @@ test('details dialog supports keyboard focus and timezone round trips', async ({
   await toggle.focus();
   await toggle.press('Enter');
   await expect(page.locator('[data-drawer]')).toBeVisible();
-  await expect(page.locator('[data-publish-at-hint]')).toContainText('Asia/Tokyo');
+  // Scheduling is on the site's clock, and the device's zone is named beside
+  // it rather than silently standing in for it.
+  await expect(page.locator('[data-publish-at-hint]')).toContainText('UTC');
+  await expect(page.locator('[data-device-zone-hint]')).toContainText('Asia/Tokyo');
   await page.locator('[data-publish-at]').fill('2099-01-01T09:30');
   const saved = page.waitForResponse(response => response.request().method() === 'POST' && response.url().includes('/admin/content/1/'));
   await page.keyboard.press('ControlOrMeta+s');
@@ -132,14 +135,17 @@ test('details dialog supports keyboard focus and timezone round trips', async ({
   await page.reload();
   await page.locator('[data-drawer-toggle]').click();
   await expect(page.locator('[data-publish-at]')).toHaveValue('2099-01-01T09:30');
-  await expect(page.locator('[data-status-time]')).toHaveAttribute('datetime', /^2099-01-01T00:30:00/);
+  await expect(page.locator('[data-status-time]')).toHaveAttribute('datetime', /^2099-01-01T09:30:00/);
+  // The same schedule read from another zone is the same wall time, because
+  // it belongs to the site rather than to whoever is looking at it.
   const otherZone = await browser.newContext({ timezoneId: 'America/New_York' });
   try {
     const otherPage = await otherZone.newPage();
     await site.login(otherPage);
     await otherPage.goto(`${site.origin}/admin/content/1/edit/`);
     await otherPage.locator('[data-drawer-toggle]').click();
-    await expect(otherPage.locator('[data-publish-at]')).toHaveValue('2098-12-31T19:30');
+    await expect(otherPage.locator('[data-publish-at]')).toHaveValue('2099-01-01T09:30');
+    await expect(otherPage.locator('[data-device-zone-hint]')).toContainText('America/New_York');
   } finally { await otherZone.close(); }
 });
 

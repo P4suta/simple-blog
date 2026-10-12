@@ -39,7 +39,7 @@
 <body>
   <a class="skip-link" href="#main">{{ t["public.skip"] }}</a>
   <header class="site-header">
-    <a class="brand" href="/">{% if assets.logo_url %}<img class="site-logo" src="{{ assets.logo_url }}" alt=""><span>{{ site.site_title }}</span>{% else %}{{ site.site_title }}{% endif %}</a>
+    <a class="brand" href="/">{% if assets.logo %}<img class="site-logo" src="{{ assets.logo.url }}" width="{{ assets.logo.width }}" height="{{ assets.logo.height }}" alt=""><span>{{ site.site_title }}</span>{% else %}{{ site.site_title }}{% endif %}</a>
     {% if navigation %}
     <nav aria-label="{{ t["public.primary_nav"] }}"><ul>{% for item in navigation %}<li><a href="{{ item.destination }}"{% if item.is_external %} rel="noopener noreferrer"{% endif %}>{{ item.label }}</a></li>{% endfor %}</ul></nav>
     {% endif %}

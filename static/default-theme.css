@@ -351,6 +351,7 @@ thead th {
 
 .site-logo {
   height: 1.2em;
+  width: auto;
   vertical-align: -0.2em;
   margin-inline-end: 0.4em;
 }
@@ -693,6 +694,19 @@ pre,
 :focus-visible {
   outline: 2px solid;
   outline-offset: 2px;
+}
+
+/* Motion is the reader's to refuse. The default theme has none; this keeps
+   any a writer adds from moving for readers who asked it not to. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 /* ---- Print ------------------------------------------------------------ */

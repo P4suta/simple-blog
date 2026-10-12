@@ -191,8 +191,23 @@ async fn native_adapter_preserves_release_status_headers_body_and_conditionals()
     assert_eq!(not_modified.headers()[header::ETAG], etag);
     assert!(body(not_modified).await.is_empty());
 
-    let totals = harness.repository.engagement_totals().await.unwrap();
-    assert_eq!(totals[&content_id].views, 2);
+    // The view counter is written after the response, on its own task; the
+    // reader never waits for it, so the test does.
+    let mut views = 0;
+    for _ in 0..500 {
+        views = harness
+            .repository
+            .engagement_totals()
+            .await
+            .unwrap()
+            .get(&content_id)
+            .map_or(0, |totals| totals.views);
+        if views >= 2 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+    assert_eq!(views, 2);
 }
 
 #[tokio::test]

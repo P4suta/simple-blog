@@ -592,6 +592,7 @@ async fn doctor(overrides: Overrides, json: bool, probe_writes: bool) -> Result<
                 "application_version": env!("CARGO_PKG_VERSION"),
                 "healthy": healthy,
                 "inspection_scope": if probe_writes { "write_probes" } else { "read_only" },
+                "limits": report.limits,
                 "checks": report.checks,
                 "issues": report.issues,
             }))?

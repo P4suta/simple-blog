@@ -1,5 +1,10 @@
+//! The site's settings and its public theme contract: language, time zone,
+//! navigation, the writer's stylesheet, the typed context templates receive,
+//! and the kept states a writer can return to.
+
 use std::str::FromStr;
 
+use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -7,8 +12,9 @@ use url::Url;
 
 use crate::domain::media::MediaId;
 
-const MAX_NAVIGATION_ITEMS: usize = 16;
-const MAX_CUSTOM_CSS_BYTES: usize = 64 * 1024;
+/// Safety limits on the theme, reported by `doctor`.
+pub const MAX_NAVIGATION_ITEMS: usize = 16;
+pub const MAX_CUSTOM_CSS_BYTES: usize = 64 * 1024;
 const MAX_AUTHOR_NAME_CHARS: usize = 120;
 /// Regions offered in the time zone picker; legacy aliases such as `US/*`
 /// or `Japan` still parse but are not suggested.
@@ -162,6 +168,19 @@ impl SiteSettings {
     }
 }
 
+/// One kept state of the site's settings and navigation.
+///
+/// Exactly what a save wrote, so a later mistake is undone by restoring it.
+/// Restoring is itself a save, so the state it replaces joins the history.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SettingsRevision {
+    pub id: i64,
+    pub settings: SiteSettings,
+    pub navigation: Vec<NavigationItem>,
+    pub created_at: DateTime<Utc>,
+}
+
 /// One `<optgroup>` of the time zone picker.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct TimezoneGroup {
@@ -285,9 +304,19 @@ pub struct AlternateFeed {
     pub title: String,
 }
 
+/// A theme image with the intrinsic dimensions the markup reserves for it, so
+/// nothing on the page moves when the file arrives.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ThemeImage {
+    pub url: String,
+    pub width: u32,
+    pub height: u32,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ThemeAssets {
-    pub logo_url: Option<String>,
+    /// The header logo, sized, because the header is on every page.
+    pub logo: Option<ThemeImage>,
     pub favicon_url: Option<String>,
     /// The stylesheet URL: a fingerprinted release asset on the public site,
     /// the live stylesheet in an owner preview.

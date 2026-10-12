@@ -946,6 +946,49 @@ fn evening_post() -> Content {
 }
 
 #[test]
+fn the_header_logo_reserves_its_box_on_every_page() {
+    let now = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
+    let id = MediaId::parse("b".repeat(64)).unwrap();
+    let mut site = snapshot(vec![published_post(1, "Post", "post", 5)]);
+    site.settings.logo_media_id = Some(id.to_string());
+    site.media = vec![MediaAsset {
+        id: id.clone(),
+        original_name: "logo.png".into(),
+        original_filename: format!("{id}.webp"),
+        mime_type: "image/webp".into(),
+        extension: "webp".into(),
+        width: 300,
+        height: 120,
+        byte_size: 999,
+        alt_text: String::new(),
+        caption: String::new(),
+        animated: false,
+        variants: Vec::new(),
+        created_at: now,
+    }];
+    let release = compile_snapshot(&site);
+    let src = format!("/media/{id}.webp");
+    for path in ["/", "/post/", "/archive/", "/404/"] {
+        let page = Html::parse_document(body(&release, path));
+        assert_eq!(
+            attribute(&page, "img.site-logo", "src"),
+            [src.as_str()],
+            "{path}"
+        );
+        assert_eq!(
+            attribute(&page, "img.site-logo", "width"),
+            ["300"],
+            "{path}"
+        );
+        assert_eq!(
+            attribute(&page, "img.site-logo", "height"),
+            ["120"],
+            "{path}"
+        );
+    }
+}
+
+#[test]
 fn public_dates_render_in_the_site_zone_with_locale_patterns() {
     let ja = compile_snapshot(&snapshot_in(Locale::Ja, "Asia/Tokyo", vec![evening_post()]));
     let page = Html::parse_document(body(&ja, "/evening/"));
@@ -984,6 +1027,24 @@ fn public_dates_render_in_the_site_zone_with_locale_patterns() {
     let archive = Html::parse_document(body(&en, "/archive/"));
     assert_eq!(texts(&archive, ".archive-year h2"), ["2026"]);
     assert_eq!(texts(&archive, ".archive-list time"), ["Sep 3"]);
+
+    // Both feeds write the instant the way the pages do, with the site's
+    // offset; a reader comparing them never sees two spellings of one moment.
+    let atom = body(&en, "/feed.xml");
+    assert!(
+        atom.contains("<published>2026-09-03T08:30:00+09:00</published>"),
+        "{atom}"
+    );
+    assert!(atom.contains("<updated>2026-09-03T08:30:00+09:00</updated>"));
+    assert!(
+        !atom.contains("Z</"),
+        "no UTC spelling remains in the Atom feed"
+    );
+    let json: serde_json::Value = serde_json::from_str(body(&en, "/feed.json")).unwrap();
+    assert_eq!(
+        json["items"][0]["date_published"],
+        "2026-09-03T08:30:00+09:00"
+    );
 
     // A UTC site keeps its old dates and the `Z` suffix.
     let utc = compile_snapshot(&snapshot_in(Locale::En, "UTC", vec![evening_post()]));

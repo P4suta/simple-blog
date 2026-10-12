@@ -14,7 +14,7 @@ use simple_blog::{
     },
     portable::{
         PortableArchive, PortableArchiveError, PortableContent, PortableEngagement,
-        PortablePackage, PortablePublicationState, PortableSiteV1,
+        PortablePackage, PortablePublicationState, PortableSettingsRevision, PortableSiteV1,
     },
 };
 
@@ -67,9 +67,76 @@ fn package() -> PortablePackage {
                 public_revision: 12,
                 next_publish_at: None,
             },
+            settings_revisions: Vec::new(),
         },
         media_files: BTreeMap::new(),
     }
+}
+
+#[test]
+fn the_portable_site_contract_reads_writes_and_travels_unchanged() {
+    // A CRLF checkout must not change what the test proves.
+    let fixture = include_str!("../contracts/portable-site-v1.json").replace("\r\n", "\n");
+    let site: PortableSiteV1 = serde_json::from_str(&fixture).unwrap();
+    site.validate().unwrap();
+
+    // Field order and omissions are part of the contract: a second
+    // implementation must produce these bytes from this site.
+    let written = serde_json::to_string_pretty(&site).unwrap() + "\n";
+    assert_eq!(written, fixture);
+
+    // Through an archive and back, the site is the same site.
+    let temp = tempfile::tempdir().unwrap();
+    let archive = temp.path().join("contract.simple-blog");
+    let package = PortablePackage {
+        site: site.clone(),
+        media_files: BTreeMap::new(),
+    };
+    PortableArchive::write(&package, &archive).unwrap();
+    assert_eq!(PortableArchive::read(&archive).unwrap().site, site);
+}
+
+#[test]
+fn settings_history_travels_and_an_empty_one_leaves_older_archives_untouched() {
+    let without = serde_json::to_string(&package().site).unwrap();
+    assert!(
+        !without.contains("settings_revisions"),
+        "an empty history must not change the bytes of an archive"
+    );
+
+    let mut site = package().site;
+    let earlier = PortableSettingsRevision {
+        settings: SiteSettings {
+            site_title: "Before the rename".into(),
+            ..site.settings.clone()
+        },
+        navigation: Vec::new(),
+        created_at: site.exported_at - chrono::Duration::hours(1),
+    };
+    let current = PortableSettingsRevision {
+        settings: site.settings.clone(),
+        navigation: Vec::new(),
+        created_at: site.exported_at,
+    };
+    site.settings_revisions = vec![earlier.clone(), current.clone()];
+    site.validate().unwrap();
+    let json = serde_json::to_string(&site).unwrap();
+    assert_eq!(serde_json::from_str::<PortableSiteV1>(&json).unwrap(), site);
+
+    // A history a conforming host could not have written is refused: out of
+    // time order, or settings it would have normalized on save.
+    let mut disordered = site.clone();
+    disordered.settings_revisions = vec![current, earlier];
+    assert!(disordered.validate().is_err());
+    let mut unnormalized = site.clone();
+    unnormalized.settings_revisions[0].settings.site_title = "  padded  ".into();
+    assert!(unnormalized.validate().is_err());
+    // A kept state that names a logo the archive does not carry is refused,
+    // exactly as the current settings would be.
+    let mut forgotten_logo = site;
+    forgotten_logo.settings_revisions[0].settings.logo_media_id = Some("e".repeat(64));
+    let error = forgotten_logo.validate().unwrap_err().to_string();
+    assert!(error.contains("missing referenced media"), "{error}");
 }
 
 #[test]

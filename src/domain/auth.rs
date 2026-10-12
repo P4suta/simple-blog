@@ -1,3 +1,7 @@
+//! Secrets and identities of the owner: tokens that redact themselves in
+//! traces, hashes that never reveal what they hash, sessions, setup purposes,
+//! and stored passkeys.
+
 use std::fmt;
 
 use chrono::{DateTime, Duration, Utc};
