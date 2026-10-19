@@ -298,3 +298,31 @@ First no-finding review: the complete change was inspected against the user-faci
 
 Second no-finding review: an independent Linux run passed formatting, lint, every Rust and frontend gate, coverage, workflow and secret checks, all browser scenarios, recovery, and performance without an actionable finding.
 Its repository-policy step reported only that `AGENTS.md` was absent from the remote transfer, while the same policy passed against the complete local checkout.
+
+## Hosted campaign removal
+
+Users and requirements pass: `ci.yml` started eight six-hour adversarial shards on every pull request and main update, while `deep-verification.yml` repeated eight shards daily and weekly.
+Even an empty parser selection required eight nightly toolchain and campaign-tool setups.
+Remove both hosted paths instead of changing their schedule.
+
+Faults, privacy, and compatibility pass: the remaining native, corpus, property, browser, recovery, coverage, dependency, and release checks keep their commands and thresholds.
+The required job drops only the deleted campaign jobs from its dependencies.
+Local campaign commands, outcome classification, parser targets, and corpus files stay unchanged.
+
+Verification blind-spot pass: removing the scheduled workflow first reproduced an `ENOENT` failure in the deadline-contract test.
+Update its workflow inventory and expected count to cover all nine remaining evidence-producing jobs.
+Its checks still require matching deadlines, bounded setup, and evidence collection for each job.
+
+The repository-policy run also rejected the deleted campaign status in the recorded ruleset.
+Remove that status from the recorded contract and its exact-list check.
+The live ruleset already requires the `required` aggregate alone; this change makes no remote protection edit.
+
+The nine deadline and campaign-tool tests pass after the workflow inventory update.
+The common `node scripts/verify.mjs tools workflows policy` entry passes all three selected checks with stable source inputs after the frozen dependency install.
+The tooling suite reports one Unix-only skip on Windows; this result makes no claim about that boundary.
+
+First final review: compare the complete diff with the remaining job commands, coverage floors, required dependencies, and protected release workflow.
+Only campaign jobs and their recorded status disappear; no additional finding.
+
+Second final review: search every remaining workflow for campaign commands and compare the deadline and policy results with their source-bound report.
+No hosted fuzz or mutation command remains, and all selected checks pass without another finding.

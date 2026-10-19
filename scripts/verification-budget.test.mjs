@@ -49,7 +49,7 @@ test('the common entry records an exhausted job budget as not run and exits unsu
 
 test('every evidence-producing CI job starts a deadline matching its job limit', () => {
   let checked = 0;
-  for (const file of ['ci.yml', 'deep-verification.yml']) {
+  for (const file of ['ci.yml']) {
     const yaml = readFileSync(new URL(`../.github/workflows/${file}`, import.meta.url), 'utf8').replaceAll('\r\n', '\n').split('\njobs:\n')[1];
     assert.ok(yaml);
     for (const job of yaml.split(/^  [\w-]+:\r?$/m)) {
@@ -65,7 +65,7 @@ test('every evidence-producing CI job starts a deadline matching its job limit',
       checked++;
     }
   }
-  assert.equal(checked, 11, 'new jobs must explicitly adopt the evidence deadline');
+  assert.equal(checked, 9, 'new jobs must explicitly adopt the evidence deadline');
   const composite = readFileSync(new URL('../.github/actions/verification/action.yml', import.meta.url), 'utf8');
   assert.doesNotMatch(composite, /timeout-minutes:/, 'GitHub rejects step timeouts inside composite metadata');
 });

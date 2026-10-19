@@ -76,11 +76,10 @@ are retained under `target/verification`; `node scripts/collect-evidence.mjs`
 exports the vetted subset to `target/shareable`. CI retains this evidence for
 30 days even when checks fail. Do not share raw browser reports or test databases.
 
-`node scripts/deep-checks.mjs pr` runs applicable parser fuzzing (60 seconds per
-target) and mutation checks; set `VERIFY_BASE` to the actual comparison revision.
-An unavailable comparison selects every scope. Daily fuzzing lasts 10 minutes
-per target, and weekly mutation testing covers important decisions. Timeouts
-and unexecuted checks never count as successful detections.
+For a local parser or test-quality investigation, `node scripts/deep-checks.mjs pr` selects fuzz and mutation checks using `VERIFY_BASE`.
+An unavailable comparison selects every scope.
+Hosted workflows use the ordinary corpus and behavioral checks without campaign jobs.
+Timeouts and unexecuted checks never count as successful detections.
 
 ```sh
 cargo fmt --all -- --check

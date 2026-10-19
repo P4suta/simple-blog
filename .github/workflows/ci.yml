@@ -261,59 +261,13 @@ jobs:
         with:
           checks: browser performance
 
-  adversarial-shards:
-    name: Parser and critical decision shard (${{ matrix.shard }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 360
-    env:
-      VERIFY_JOB_TIMEOUT_MINUTES: "360"
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7]
-    steps:
-      - name: Start the verification deadline
-        shell: bash
-        run: echo "VERIFY_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-      - run: rustup toolchain install stable nightly --profile minimal --component rust-src
-      - run: cargo +stable install cargo-fuzz --version 0.13.2 --locked
-      - run: cargo +stable install cargo-mutants --version 27.1.0 --locked
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        timeout-minutes: 2
-        with:
-          node-version: 24
-      - uses: ./.github/actions/verification
-        env:
-          VERIFY_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
-          VERIFY_SHARD_INDEX: ${{ matrix.shard }}
-          VERIFY_SHARD_COUNT: 8
-        with:
-          checks: deep-pr
-          artifact-suffix: shard-${{ matrix.shard }}
-
-  adversarial:
-    name: Parser and critical decision evidence
-    if: always()
-    needs: adversarial-shards
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Require every shard to succeed
-        env:
-          SHARD_RESULT: ${{ needs.adversarial-shards.result }}
-        run: test "$SHARD_RESULT" = success
-
   # The one status check branch protection requires,
   # named the same in every P4suta repository.
   # It passes only when every job it needs succeeded or was skipped.
   required:
     name: required
     if: always()
-    needs: [repository-policy, msrv, stable, frontend, supply-chain, coverage, release-smoke, windows-symbols, browser-recovery, adversarial-shards, adversarial]
+    needs: [repository-policy, msrv, stable, frontend, supply-chain, coverage, release-smoke, windows-symbols, browser-recovery]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}

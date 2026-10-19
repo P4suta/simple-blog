@@ -45,13 +45,11 @@ revision, dirty state, tool versions, seed, duration and result under
 `node scripts/collect-evidence.mjs`; raw browser reports and disposable data must
 not be uploaded. CI retains these exports for 30 days, including failed runs.
 
-Parser changes require 60 seconds per selected fuzz target and important
-decision changes require scoped mutation testing (`node scripts/deep-checks.mjs
-pr`, with `VERIFY_BASE` set to the actual comparison revision). Missing comparison
-data selects all scopes. Daily CI runs each target for 10 minutes; weekly CI
-mutates the critical decision modules. Promote new fuzz counterexamples to
-`tests/corpus` so normal tests replay them. Do not treat mutation timeouts or
-unviable builds as caught defects.
+Use `node scripts/deep-checks.mjs pr` for a local parser or test-quality investigation, with `VERIFY_BASE` set to the actual comparison revision.
+Missing comparison data selects all scopes.
+Hosted workflows run the ordinary corpus, property, browser, recovery, and platform checks without fuzz or mutation campaigns.
+Promote new fuzz counterexamples to `tests/corpus` so normal tests replay them.
+Mutation timeouts and unviable builds never count as caught defects.
 
 Run the commands documented in the [README](README.md#verify). Also run:
 
