@@ -326,3 +326,51 @@ Only campaign jobs and their recorded status disappear; no additional finding.
 
 Second final review: search every remaining workflow for campaign commands and compare the deadline and policy results with their source-bound report.
 No hosted fuzz or mutation command remains, and all selected checks pass without another finding.
+
+## Dependency policy during campaign cleanup
+
+Users and requirements pass: the retained dependency job rejects Ammonia 4.1.4 for three public advisories.
+Update the direct minimum and both lockfiles to the compatible 4.2.4 release.
+Its Rust 1.85 minimum stays below the project's Rust 1.96 contract.
+
+Faults, privacy, and compatibility pass: the renderer starts with Ammonia's default builder and enables neither inline-style filtering nor SVG animation tags.
+The update keeps the renderer, corpus tests, coverage floors, and empty advisory-ignore list unchanged.
+The exact hosted cargo-deny 0.19.7 binary passes advisory, license, source, and dependency-ban checks with a fresh private database cache.
+The existing shared database has staged changes, which this verification preserves.
+
+Verification blind-spot pass: the first native Rust test build failed because native Perl was absent.
+A checksum-verified portable Perl supplies the existing project runner's native build path.
+The native lint pass then built the locked OpenSSL 3.6.3 dependency and passed with warnings as errors.
+The first combined run stopped during the duplicate OpenSSL build for tests and supplies format and lint evidence only.
+The test continuation reuses that freshly built native library through the runner's explicit prebuilt-library mode.
+The common entry passes every Rust target and feature, tooling tests, workflow checks, and repository policy with unchanged inputs.
+Its `opensslSource` records `explicit_prebuilt`; this evidence supplies no claim about a fresh vendored test build or another operating system.
+
+First final review: inspect the direct requirement and both lockfiles against the three advisory ranges and the exact cargo-deny result.
+The update changes Ammonia and its required dependencies without adding an advisory exception; no additional finding.
+
+Second final review: compare the Markdown renderer and corpus tests with the native test report and inspect the report's input stability and OpenSSL provenance.
+All selected checks pass with the stated environment limits, and no renderer or coverage contract changes; no additional finding.
+
+## Concise repository overview
+
+Users and requirements pass: keep the purpose, development status, working native setup, and documentation links in the README.
+Move operational commands and recovery limits into `docs/operations.md`, and move verification evidence into the contribution guide.
+
+Faults, privacy, and compatibility pass: compare the moved commands with the built CLI help and preserve the backup, import, lease, recovery, and diagnostic limits.
+Keep the existing license files and license statement unchanged.
+
+Verification blind-spot pass: the first prerequisite draft claimed that `package.json` pinned both Node.js and Bun, while it pins only Bun.
+Correct the prerequisite text before validation and check each new relative link against its destination.
+The documentation change adds no new executable behavior or test-only implementation.
+
+The final common format, workflow, and policy checks pass with unchanged inputs.
+One tooling run failed when Windows denied renaming a new private evidence directory with `EPERM`.
+The six focused evidence-publication tests and a fresh complete tooling run pass without a source change.
+This observation establishes no correction for the intermittent filesystem denial.
+
+First final review: compare every moved operational paragraph with the previous README and each command with the built CLI help.
+The new overview keeps the development status and installation example, and no recovery or privacy limit disappears; no additional finding.
+
+Second final review: resolve every local documentation link and compare the final format, workflow, policy, and tooling reports with the source diff.
+All local link targets exist, the selected checks pass, and the earlier filesystem denial remains recorded as a failed run; no additional finding.
