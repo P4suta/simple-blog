@@ -374,3 +374,25 @@ The new overview keeps the development status and installation example, and no r
 
 Second final review: resolve every local documentation link and compare the final format, workflow, policy, and tooling reports with the source diff.
 All local link targets exist, the selected checks pass, and the earlier filesystem denial remains recorded as a failed run; no additional finding.
+
+## Explicit checksum buffer capacity
+
+Users and requirements pass: the native completion gate refuses a PR that closes no existing verification gap.
+The existing checksum buffer contains two unnamed factors that the same catalog flags.
+Name its 64 KiB capacity beside the helper without changing the expression or heap allocation.
+
+Faults, privacy, and compatibility pass: the constant has the same `usize` type and `64 * 1024` value as the original allocation length.
+The read loop, checksum algorithm, error handling, and backup formats stay unchanged.
+
+Verification blind-spot pass: scan the entire helper file with the installed catalog, rather than checking only the replaced line.
+The scan now reports no finding in that file.
+The common format and lint checks pass, and all 13 operations tests and two native portable-import tests pass with the same explicit OpenSSL library.
+The earlier complete native Rust run predates this constant extraction.
+
+First final review: compare the complete source diff with the original allocation and the catalog findings.
+The two numeric sites move into one typed constant, with no change to runtime values or control flow.
+No additional finding.
+
+Second final review: compare the backup, restore, migration, and rollback test results with the unchanged operational contract.
+All 15 focused tests pass, and no test assertion or verification floor changes.
+No additional finding.
