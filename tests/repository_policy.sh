@@ -140,7 +140,6 @@ actual_checks="$({
 ci_checks=(
   'Windows release symbols'
   'Browser and recovery evidence'
-  'Parser and critical decision evidence'
   'Coverage floor'
   'Dependency policy'
   'Embedded frontend is reproducible'

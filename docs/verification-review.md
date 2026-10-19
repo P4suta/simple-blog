@@ -298,3 +298,101 @@ First no-finding review: the complete change was inspected against the user-faci
 
 Second no-finding review: an independent Linux run passed formatting, lint, every Rust and frontend gate, coverage, workflow and secret checks, all browser scenarios, recovery, and performance without an actionable finding.
 Its repository-policy step reported only that `AGENTS.md` was absent from the remote transfer, while the same policy passed against the complete local checkout.
+
+## Hosted campaign removal
+
+Users and requirements pass: `ci.yml` started eight six-hour adversarial shards on every pull request and main update, while `deep-verification.yml` repeated eight shards daily and weekly.
+Even an empty parser selection required eight nightly toolchain and campaign-tool setups.
+Remove both hosted paths instead of changing their schedule.
+
+Faults, privacy, and compatibility pass: the remaining native, corpus, property, browser, recovery, coverage, dependency, and release checks keep their commands and thresholds.
+The required job drops only the deleted campaign jobs from its dependencies.
+Local campaign commands, outcome classification, parser targets, and corpus files stay unchanged.
+
+Verification blind-spot pass: removing the scheduled workflow first reproduced an `ENOENT` failure in the deadline-contract test.
+Update its workflow inventory and expected count to cover all nine remaining evidence-producing jobs.
+Its checks still require matching deadlines, bounded setup, and evidence collection for each job.
+
+The repository-policy run also rejected the deleted campaign status in the recorded ruleset.
+Remove that status from the recorded contract and its exact-list check.
+The live ruleset already requires the `required` aggregate alone; this change makes no remote protection edit.
+
+The nine deadline and campaign-tool tests pass after the workflow inventory update.
+The common `node scripts/verify.mjs tools workflows policy` entry passes all three selected checks with stable source inputs after the frozen dependency install.
+The tooling suite reports one Unix-only skip on Windows; this result makes no claim about that boundary.
+
+First final review: compare the complete diff with the remaining job commands, coverage floors, required dependencies, and protected release workflow.
+Only campaign jobs and their recorded status disappear; no additional finding.
+
+Second final review: search every remaining workflow for campaign commands and compare the deadline and policy results with their source-bound report.
+No hosted fuzz or mutation command remains, and all selected checks pass without another finding.
+
+## Dependency policy during campaign cleanup
+
+Users and requirements pass: the retained dependency job rejects Ammonia 4.1.4 for three public advisories.
+Update the direct minimum and both lockfiles to the compatible 4.2.4 release.
+Its Rust 1.85 minimum stays below the project's Rust 1.96 contract.
+
+Faults, privacy, and compatibility pass: the renderer starts with Ammonia's default builder and enables neither inline-style filtering nor SVG animation tags.
+The update keeps the renderer, corpus tests, coverage floors, and empty advisory-ignore list unchanged.
+The exact hosted cargo-deny 0.19.7 binary passes advisory, license, source, and dependency-ban checks with a fresh private database cache.
+The existing shared database has staged changes, which this verification preserves.
+
+Verification blind-spot pass: the first native Rust test build failed because native Perl was absent.
+A checksum-verified portable Perl supplies the existing project runner's native build path.
+The native lint pass then built the locked OpenSSL 3.6.3 dependency and passed with warnings as errors.
+The first combined run stopped during the duplicate OpenSSL build for tests and supplies format and lint evidence only.
+The test continuation reuses that freshly built native library through the runner's explicit prebuilt-library mode.
+The common entry passes every Rust target and feature, tooling tests, workflow checks, and repository policy with unchanged inputs.
+Its `opensslSource` records `explicit_prebuilt`; this evidence supplies no claim about a fresh vendored test build or another operating system.
+
+First final review: inspect the direct requirement and both lockfiles against the three advisory ranges and the exact cargo-deny result.
+The update changes Ammonia and its required dependencies without adding an advisory exception; no additional finding.
+
+Second final review: compare the Markdown renderer and corpus tests with the native test report and inspect the report's input stability and OpenSSL provenance.
+All selected checks pass with the stated environment limits, and no renderer or coverage contract changes; no additional finding.
+
+## Concise repository overview
+
+Users and requirements pass: keep the purpose, development status, working native setup, and documentation links in the README.
+Move operational commands and recovery limits into `docs/operations.md`, and move verification evidence into the contribution guide.
+
+Faults, privacy, and compatibility pass: compare the moved commands with the built CLI help and preserve the backup, import, lease, recovery, and diagnostic limits.
+Keep the existing license files and license statement unchanged.
+
+Verification blind-spot pass: the first prerequisite draft claimed that `package.json` pinned both Node.js and Bun, while it pins only Bun.
+Correct the prerequisite text before validation and check each new relative link against its destination.
+The documentation change adds no new executable behavior or test-only implementation.
+
+The final common format, workflow, and policy checks pass with unchanged inputs.
+One tooling run failed when Windows denied renaming a new private evidence directory with `EPERM`.
+The six focused evidence-publication tests and a fresh complete tooling run pass without a source change.
+This observation establishes no correction for the intermittent filesystem denial.
+
+First final review: compare every moved operational paragraph with the previous README and each command with the built CLI help.
+The new overview keeps the development status and installation example, and no recovery or privacy limit disappears; no additional finding.
+
+Second final review: resolve every local documentation link and compare the final format, workflow, policy, and tooling reports with the source diff.
+All local link targets exist, the selected checks pass, and the earlier filesystem denial remains recorded as a failed run; no additional finding.
+
+## Explicit checksum buffer capacity
+
+Users and requirements pass: the native completion gate refuses a PR that closes no existing verification gap.
+The existing checksum buffer contains two unnamed factors that the same catalog flags.
+Name its 64 KiB capacity beside the helper without changing the expression or heap allocation.
+
+Faults, privacy, and compatibility pass: the constant has the same `usize` type and `64 * 1024` value as the original allocation length.
+The read loop, checksum algorithm, error handling, and backup formats stay unchanged.
+
+Verification blind-spot pass: scan the entire helper file with the installed catalog, rather than checking only the replaced line.
+The scan now reports no finding in that file.
+The common format and lint checks pass, and all 13 operations tests and two native portable-import tests pass with the same explicit OpenSSL library.
+The earlier complete native Rust run predates this constant extraction.
+
+First final review: compare the complete source diff with the original allocation and the catalog findings.
+The two numeric sites move into one typed constant, with no change to runtime values or control flow.
+No additional finding.
+
+Second final review: compare the backup, restore, migration, and rollback test results with the unchanged operational contract.
+All 15 focused tests pass, and no test assertion or verification floor changes.
+No additional finding.

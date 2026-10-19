@@ -68,10 +68,12 @@ struct BackupManifest {
     entries: BTreeMap<String, String>,
 }
 
+const CHECKSUM_BUFFER_BYTES: usize = 64 * 1024;
+
 fn checksum_file(path: &Path) -> Result<String, OperationError> {
     let mut file = File::open(path)?;
     let mut hasher = blake3::Hasher::new();
-    let mut buffer = vec![0_u8; 64 * 1024];
+    let mut buffer = vec![0_u8; CHECKSUM_BUFFER_BYTES];
     loop {
         let read = file.read(&mut buffer)?;
         if read == 0 {

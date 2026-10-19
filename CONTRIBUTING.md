@@ -3,6 +3,14 @@
 Thank you for helping make simple-blog dependable. This project values
 diagnostic evidence and recoverability over development speed.
 
+## Build prerequisites
+
+Use the Rust toolchain in `rust-toolchain.toml`.
+Native builds need a C/C++ toolchain.
+Unix builds also need OpenSSL development files.
+Windows builds use vendored OpenSSL and need Microsoft C++ build tools and native Strawberry Perl on `PATH`.
+Browser asset and Cloudflare development need Node.js and the Bun version pinned in `package.json`; the native server needs neither at runtime.
+
 ## Before opening a change
 
 - Read [the vision](docs/vision.md). A change that breaks one of its promises must
@@ -45,18 +53,16 @@ revision, dirty state, tool versions, seed, duration and result under
 `node scripts/collect-evidence.mjs`; raw browser reports and disposable data must
 not be uploaded. CI retains these exports for 30 days, including failed runs.
 
-Parser changes require 60 seconds per selected fuzz target and important
-decision changes require scoped mutation testing (`node scripts/deep-checks.mjs
-pr`, with `VERIFY_BASE` set to the actual comparison revision). Missing comparison
-data selects all scopes. Daily CI runs each target for 10 minutes; weekly CI
-mutates the critical decision modules. Promote new fuzz counterexamples to
-`tests/corpus` so normal tests replay them. Do not treat mutation timeouts or
-unviable builds as caught defects.
+Use `node scripts/deep-checks.mjs pr` for a local parser or test-quality investigation, with `VERIFY_BASE` set to the actual comparison revision.
+Missing comparison data selects all scopes.
+Hosted workflows run the ordinary corpus, property, browser, recovery, and platform checks without fuzz or mutation campaigns.
+Promote new fuzz counterexamples to `tests/corpus` so normal tests replay them.
+Mutation timeouts and unviable builds never count as caught defects.
 
-Run the commands documented in the [README](README.md#verify). Also run:
+Use the common entry for the relevant named checks and the final diff check.
 
 ```sh
-bash tests/repository_policy.sh
+node scripts/verify.mjs format lint rust tools workflows policy
 git diff --check
 ```
 
@@ -64,6 +70,24 @@ CI repeats the test suite on the minimum supported Rust version and current
 stable Rust, checks deterministic browser assets, enforces coverage floors,
 audits dependencies and licenses, scans for secrets, and exercises the release
 binary without development-time Node.js.
+
+## Verification evidence
+
+Release verification pairs Windows binaries and debug symbols by compiler GUID and age.
+Linux exports separate debug information with a debug link.
+Artifact manifests include SHA-256 hashes of both files.
+Keep the matching set in `target/verification/symbols-release` when diagnosing that build.
+
+`node scripts/verify.mjs performance` builds the disposable fixture and records three samples against a fixed 100-article dataset.
+Set `PERFORMANCE_BASELINE` to `docs/performance-baseline.json` for an environment comparison.
+Different platforms or toolchains produce incomparable results.
+The recorded debug baseline supplies measurements rather than a production service guarantee.
+
+Verification keeps private source snapshots and rejects input changes during a run.
+Raw snapshots stay outside shared exports.
+CI starts the job deadline before setup and reserves five minutes for evidence.
+Exhausted work records `not_run` with `verification.budget_exhausted`; timed-out children keep `timeout`.
+Forced runner termination or an unavailable artifact service can prevent an upload.
 
 ## Pull requests
 
