@@ -46,7 +46,7 @@ httpdate = "1.0"
 image = { version = "0.25.6", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 infer = "0.22"
 kamadak-exif = "0.6"
-minijinja = { version = "2.11", features = ["builtins", "json", "loader"] }
+minijinja = { version = "3.0", features = ["builtins", "json", "loader"] }
 rand = "0.10"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
