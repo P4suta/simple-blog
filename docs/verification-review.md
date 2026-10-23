@@ -396,3 +396,27 @@ No additional finding.
 Second final review: compare the backup, restore, migration, and rollback test results with the unchanged operational contract.
 All 15 focused tests pass, and no test assertion or verification floor changes.
 No additional finding.
+
+## Comrak option compatibility
+
+Users and requirements pass: Comrak 0.56 removes the deprecated `tagfilter` extension option.
+The existing compiler checks fail with `E0609` before the repair.
+Remove that obsolete assignment so the current dependency graph compiles.
+
+Faults, privacy, and compatibility pass: the renderer still sets `unsafe` to `false` and runs Ammonia sanitization.
+Keep the heading, footnote, task list, ruby, code highlighting, raw HTML, and dangerous URL checks.
+The change adds no data format or parsing decision.
+
+Verification blind-spot pass: the first complete native run used the environment's Rust 1.99.0 override.
+Explicitly select the pinned Rust 1.99.1 and repeat formatting, strict lint, all Rust targets and features, and dependency policy checks.
+All selected checks pass, with stable source inputs and the existing property-test seed and case count.
+The pinned run links the exact static OpenSSL 3.6.3 libraries built by the preceding native vendored run.
+The common frontend, tooling, workflow, repository policy, and secret checks also pass.
+
+First final review: compare the removed assignment with the upstream Comrak API and the unchanged raw HTML and sanitizer settings.
+The repair restores compiler compatibility without adding an unsafe rendering path.
+No additional finding.
+
+Second final review: compare the native compiler, corpus, rendering, dependency, and tooling results with the source diff.
+The existing checks pass without a changed assertion, lint exception, coverage floor, or advisory ignore.
+No additional finding.

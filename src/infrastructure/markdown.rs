@@ -19,7 +19,6 @@ impl Default for ComrakMarkdownRenderer {
         options.extension.footnotes = true;
         options.extension.strikethrough = true;
         options.extension.table = true;
-        options.extension.tagfilter = true;
         options.extension.tasklist = true;
         // Prefix keeps user-authored ids from clobbering page DOM; in_href keeps
         // the generated anchors self-consistent with the prefixed ids.
