@@ -420,3 +420,35 @@ No additional finding.
 Second final review: compare the native compiler, corpus, rendering, dependency, and tooling results with the source diff.
 The existing checks pass without a changed assertion, lint exception, coverage floor, or advisory ignore.
 No additional finding.
+
+## Build contract stall diagnostics
+
+Users and requirements pass: the Windows stable run on dependency PR 26 reaches 14 completed CLI cases, then times out with the build materialization case still running.
+The exported log identifies no completed subprocess phase, while the same test passes locally.
+The cause of the hosted stall remains unknown.
+
+Faults, privacy, and compatibility pass: add fixed phase labels around initialization, the first build, the overwrite refusal, and fixture cleanup.
+Write directly to the test process's stderr so ordinary test output capture cannot defer the labels until completion.
+Keep child output, setup capabilities, arguments, and filesystem paths out of these labels.
+Keep every existing command, assertion, concurrency setting, and deadline.
+
+Verification blind-spot pass: the earlier local successes cannot establish a repair for the hosted stall.
+This change improves the next failure's evidence without claiming to fix its cause.
+The first common lint and Rust run passes, but the effective `stable` override selects Rust 1.99.0 instead of the project's pinned 1.99.1.
+Set the override after Mise initializes the child environment and confirm the compiler before repeating those checks.
+Strict lint and all 492 Rust tests pass with 1.99.1, two Cargo jobs, and the existing static OpenSSL 3.6.3 libraries.
+One existing test remains ignored.
+All eight phase labels appear on stderr under default Rust test capture, and the build contract case passes with every original assertion intact.
+The diagnostic boundary depends on libtest and the operating system's stderr implementation, with no new decision core or production behavior.
+Native captured-stream evidence checks this boundary without claiming all possible process schedules terminate.
+Revisit this evidence if another platform captures direct stderr writes differently.
+
+First final review: compare all subprocess arguments, assertions, diagnostic labels, and lock lifetimes with the original test.
+The stderr lock covers one fixed message at a time and never spans a subprocess wait.
+Explicit fixture cleanup occupies the same end-of-test boundary and adds no assertion exception.
+No additional finding.
+
+Second final review: compare the common runner's recorded compiler, test outcomes, input stability, and captured streams with the source diff.
+The pinned checks pass with unchanged inputs, and successful test capture retains only the eight fixed phase labels.
+The hosted stall still needs a new hosted observation, and no local result establishes its cause.
+No additional finding.
