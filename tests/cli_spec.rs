@@ -9,6 +9,16 @@ fn binary() -> Command {
     Command::new(env!("CARGO_BIN_EXE_simple-blog"))
 }
 
+fn build_materialization_phase(phase: &'static str) {
+    use std::io::Write as _;
+
+    writeln!(
+        std::io::stderr().lock(),
+        "cli_spec.build_materialization phase={phase}"
+    )
+    .expect("write build materialization phase");
+}
+
 #[test]
 fn help_exposes_the_v01_operational_surface() {
     let output = binary().arg("--help").output().unwrap();
@@ -237,6 +247,7 @@ fn build_activates_a_verified_release_and_can_materialize_it_without_overwrite()
     let temp = tempfile::tempdir().unwrap();
     let data = temp.path().join("data");
     let output = temp.path().join("public");
+    build_materialization_phase("init.start");
     assert!(
         binary()
             .args(["--data-dir", data.to_str().unwrap(), "init"])
@@ -245,7 +256,9 @@ fn build_activates_a_verified_release_and_can_materialize_it_without_overwrite()
             .status
             .success()
     );
+    build_materialization_phase("init.complete");
 
+    build_materialization_phase("build.start");
     let built = binary()
         .args([
             "--data-dir",
@@ -256,6 +269,7 @@ fn build_activates_a_verified_release_and_can_materialize_it_without_overwrite()
         ])
         .output()
         .unwrap();
+    build_materialization_phase("build.complete");
     assert!(
         built.status.success(),
         "{}",
@@ -269,6 +283,7 @@ fn build_activates_a_verified_release_and_can_materialize_it_without_overwrite()
     assert!(output.join("index.html").is_file());
     assert!(output.join(".simple-blog-release.json").is_file());
 
+    build_materialization_phase("overwrite_refusal.start");
     let refused = binary()
         .args([
             "--data-dir",
@@ -279,8 +294,12 @@ fn build_activates_a_verified_release_and_can_materialize_it_without_overwrite()
         ])
         .output()
         .unwrap();
+    build_materialization_phase("overwrite_refusal.complete");
     assert!(!refused.status.success());
     assert!(String::from_utf8_lossy(&refused.stderr).contains("already exists"));
+    build_materialization_phase("cleanup.start");
+    drop(temp);
+    build_materialization_phase("cleanup.complete");
 }
 
 #[test]

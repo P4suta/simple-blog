@@ -1,6 +1,6 @@
 {
   "private": true,
-  "packageManager": "bun@1.4.0",
+  "packageManager": "bun@1.4.3",
   "scripts": {
     "build:admin": "bun build frontend/admin.ts --format=iife --minify --target=browser --outfile=static/admin.js",
     "check:admin": "tsc --noEmit && node --check static/admin.js",
@@ -13,10 +13,10 @@
     "verify:deep": "node scripts/deep-checks.mjs"
   },
   "devDependencies": {
-    "@axe-core/playwright": "4.13.0",
+    "@axe-core/playwright": "4.14.0",
     "@codemirror/lang-css": "^6.3.1",
     "@codemirror/lang-markdown": "^6.3.4",
-    "@playwright/test": "1.63.0",
+    "@playwright/test": "1.64.1",
     "codemirror": "^6.0.2",
     "fflate": "0.8.3",
     "typescript": "^7.0.2"

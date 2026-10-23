@@ -41,7 +41,7 @@ jobs:
           GOBIN="$RUNNER_TEMP/repository-tools" go install github.com/zricethezav/gitleaks/v8@v8.30.1
       - name: Make repository tools available
         run: echo "$RUNNER_TEMP/repository-tools" >> "$GITHUB_PATH"
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         timeout-minutes: 2
         with:
           node-version: 24
@@ -66,7 +66,7 @@ jobs:
         run: rustup toolchain install 1.96.0 --profile minimal --component clippy,rustfmt
       - name: Record toolchain
         run: rustc +1.96.0 --version --verbose
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         timeout-minutes: 2
         with:
           node-version: 24
@@ -94,7 +94,7 @@ jobs:
           persist-credentials: false
       - name: Install current stable Rust
         run: rustup toolchain install stable --profile minimal --component clippy
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         timeout-minutes: 2
         with:
           node-version: 24
@@ -115,13 +115,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         timeout-minutes: 2
         with:
           node-version: 24
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: 1.4.0
+          bun-version: 1.4.3
       - run: bun install --frozen-lockfile
       - uses: ./.github/actions/verification
         with:
@@ -144,7 +144,7 @@ jobs:
         run: rustup toolchain install stable --profile minimal
       - name: Install cargo-deny
         run: cargo +stable install cargo-deny --version 0.19.7 --locked
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         timeout-minutes: 2
         with:
           node-version: 24
@@ -169,7 +169,7 @@ jobs:
         run: rustup toolchain install stable --profile minimal --component llvm-tools-preview
       - name: Install cargo-llvm-cov
         run: cargo +stable install cargo-llvm-cov --version 0.9.0 --locked
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         timeout-minutes: 2
         with:
           node-version: 24
@@ -198,7 +198,7 @@ jobs:
         run: |
           mkdir -p target/verification
           cargo +1.96.0 build --release --locked >target/verification/release-build.log 2>&1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         timeout-minutes: 2
         if: always()
         with:
@@ -223,7 +223,7 @@ jobs:
         with:
           persist-credentials: false
       - run: rustup toolchain install stable --profile minimal
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         timeout-minutes: 2
         with:
           node-version: 24
@@ -244,13 +244,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         timeout-minutes: 2
         with:
           node-version: 24
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: 1.4.0
+          bun-version: 1.4.3
       - run: rustup toolchain install stable --profile minimal
       - run: bun install --frozen-lockfile
       - name: Install the three pinned browser engines
