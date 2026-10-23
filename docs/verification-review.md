@@ -452,3 +452,38 @@ Second final review: compare the common runner's recorded compiler, test outcome
 The pinned checks pass with unchanged inputs, and successful test capture retains only the eight fixed phase labels.
 The hosted stall still needs a new hosted observation, and no local result establishes its cause.
 No additional finding.
+
+## MiniJinja 3 context conversion
+
+Users and requirements pass: the existing major dependency proposal keeps the removed `loader` feature and the implicit Serde rendering API.
+The common lint entry first rejects dependency resolution for that feature.
+Replace it with `serde` and update both lockfiles to MiniJinja 3.0.3.
+The next lint run reproduces the missing `Into<Value>` implementation at the template adapter.
+Use the upstream `Serde` wrapper at that boundary while keeping the public `Serialize` input contract.
+
+Faults, privacy, and compatibility pass: keep embedded template names, HTML and XML escaping, fallible lookup, and render-error classification.
+Add regression tests for nested serializable feed data, escaped markup, a missing template, and a failing serializer.
+The complete native Rust suite passes 495 tests with the existing subprocess entry point ignored.
+That helper remains exercised by its crash-recovery parent test.
+The run uses Rust 1.99.1, two Cargo jobs, and the existing static OpenSSL 3.6.3 libraries.
+It supplies no fresh vendored build or other-platform result.
+
+Verification blind-spot pass: the first combined run passes lint and Rust tests but rejects one test's formatting.
+Apply Rustfmt and rerun the common format, lint, tooling, workflow, repository-policy, and dependency checks.
+All six checks pass with unchanged inputs and the existing lint, coverage, and advisory policies.
+The dependency's declared Rust 1.70 minimum stays below the project's Rust 1.96 contract.
+Cargo manifest formatting changes no other dependency requirement.
+
+The changed production boundary delegates Serde conversion and template execution to MiniJinja.
+It adds no project decision core or arithmetic.
+The regression and existing web tests provide native integration evidence, rather than a proof for every possible serializable context or template.
+Revisit this evidence if the escape policy, template inputs, or error classification changes.
+
+First final review: compare the upstream migration guide, adapter, embedded templates, and both resolved lockfiles.
+Only the explicit context conversion changes runtime code, and the template sources and escape callback stay unchanged.
+No additional finding.
+
+Second final review: compare the complete compiler, feed, public-page, administrator, recovery, and dependency results with the final diff.
+The common checks pass within the stated native environment, and no assertion, timeout, or security exception changes.
+Required hosted platform, browser, coverage, and MSRV results remain pending until the updated head runs.
+No additional finding.
