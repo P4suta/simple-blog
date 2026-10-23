@@ -2,7 +2,7 @@
 
 use std::{path::Path, sync::Arc};
 
-use minijinja::{AutoEscape, Environment};
+use minijinja::{AutoEscape, Environment, value::Serde};
 use serde::Serialize;
 use thiserror::Error;
 
@@ -131,7 +131,72 @@ impl Templates {
     pub fn render(&self, name: &str, context: impl Serialize) -> Result<String, TemplateError> {
         self.environment
             .get_template(name)
-            .and_then(|template| template.render(context))
+            .and_then(|template| template.render(Serde(context)))
             .map_err(|error| TemplateError::Render(error.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde::{Serialize, Serializer, ser::Error as _};
+
+    use super::{TemplateError, Templates};
+
+    #[derive(Serialize)]
+    struct Feed<'a> {
+        title: &'a str,
+        entries: [Entry<'a>; 1],
+    }
+
+    #[derive(Serialize)]
+    struct Entry<'a> {
+        title: &'a str,
+        content_html: &'a str,
+    }
+
+    struct BrokenContext;
+
+    impl Serialize for BrokenContext {
+        fn serialize<S: Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+            Err(S::Error::custom("template fixture serialization failed"))
+        }
+    }
+
+    #[test]
+    fn embedded_feed_escapes_nested_serializable_contexts() {
+        let templates = Templates::embedded().expect("embedded templates compile");
+        let context = Feed {
+            title: "<unsafe>&",
+            entries: [Entry {
+                title: "Nested entry",
+                content_html: "<script>&",
+            }],
+        };
+        let output = templates
+            .render("feed.xml", &context)
+            .expect("serializable feed renders");
+        assert!(output.contains("<title>&lt;unsafe&gt;&amp;</title>"));
+        assert!(output.contains("<title>Nested entry</title>"));
+        assert!(output.contains("&lt;script&gt;&amp;"));
+        assert!(!output.contains("<script>"));
+    }
+
+    #[test]
+    fn missing_templates_are_render_errors() {
+        let templates = Templates::embedded().expect("embedded templates compile");
+        assert!(matches!(
+            templates.render("missing.html", ()),
+            Err(TemplateError::Render(_))
+        ));
+    }
+
+    #[test]
+    fn context_serialization_failures_are_render_errors() {
+        let templates = Templates::embedded().expect("embedded templates compile");
+        let Err(TemplateError::Render(message)) = templates.render("feed.xml", BrokenContext)
+        else {
+            panic!("serialization failure must produce a render error");
+        };
+        assert!(message.contains("template fixture serialization failed"));
     }
 }
