@@ -28,6 +28,7 @@ The first Windows tool run lacked the Git metadata required by the existing budg
 A fresh snapshot with the actual public base restored as Git metadata passed the tool checks.
 The Windows suite passed 52 tests and skipped the Unix-only case, which passed on macOS.
 Hosted platform gates remain pending.
+Full fuzz and mutation campaigns remain unrun for the recovery draft and supply no verification claim.
 
 Scope: ADR 0017, Rust Core, native and Cloudflare diagnostics, replacement recovery, browser workflows, evidence, adversarial checks and release symbols.
 Review began 2026-09-05 and continued 2026-09-06, starting from `7cd494a`.
