@@ -1,8 +1,11 @@
 # Architecture Decision Records
 
-Accepted decisions are immutable. A changed decision gets a new ADR that supersedes the old one.
+Accepted decisions are immutable.
+A changed decision gets a new ADR that supersedes the old one.
 
 Each ADR uses: `Status`, `Context`, `Decision`, and `Consequences`.
+
+[Pin SQLx to the patched SQLite dependency range](pin-sqlx-to-patched-sqlite.md) proposes the temporary upstream revision.
 
 | ADR | Decision | Status |
 | --- | --- | --- |

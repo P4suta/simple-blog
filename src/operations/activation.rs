@@ -1,5 +1,5 @@
-//! A durable intent record bridges the two directory renames. Previous data is
-//! never deleted here, including when recovery or synchronization fails.
+//! A durable intent record bridges the two directory renames.
+//! Previous data is never deleted here, including when recovery or synchronization fails.
 use std::{
     fs::{File, OpenOptions},
     io::{self, Read, Write},
@@ -21,8 +21,8 @@ struct Intent {
     had_previous: bool,
 }
 
-/// An OS lock is released on process death. Its persistent, empty lock file
-/// deliberately lives beside the installation, so renames cannot replace it.
+/// An OS lock is released on process death.
+/// Its persistent, empty lock file deliberately lives beside the installation, so renames cannot replace it.
 pub struct InstallationLease {
     _file: File,
 }
@@ -47,14 +47,22 @@ impl InstallationLease {
     }
 }
 
+impl Drop for InstallationLease {
+    fn drop(&mut self) {
+        if let Err(error) = self._file.unlock() {
+            tracing::error!(event = "installation.lease.unlock_failed", %error, "installation lease could not be unlocked");
+        }
+    }
+}
+
 pub fn pending(destination: &Path) -> io::Result<bool> {
     sibling_path(destination, "activation.json")?.try_exists()
 }
 
 /// Call while holding the installation lease, before loading its configuration.
 ///
-/// An interrupted replacement rolls back; an already installed replacement is
-/// kept. Every branch is idempotent and retains the previous installation.
+/// An interrupted replacement rolls back; an already installed replacement is kept.
+/// Every branch is idempotent and retains the previous installation.
 pub fn recover(destination: &Path) -> io::Result<()> {
     let journal = sibling_path(destination, "activation.json")?;
     if !journal.try_exists()? {
@@ -83,7 +91,8 @@ pub fn recover(destination: &Path) -> io::Result<()> {
     } else if exists && !staged && (retained == intent.had_previous) {
         tracing::info!(event = "installation.recovery.completed");
     } else if staged && !retained && (exists == intent.had_previous) {
-        // No rename happened. Leave the complete staged copy for inspection.
+        // No rename happened.
+        // Leave the complete staged copy for inspection.
         tracing::info!(event = "installation.recovery.not_activated");
     } else {
         return Err(invalid(
@@ -221,8 +230,8 @@ fn name(path: &Path) -> io::Result<String> {
 }
 
 pub(super) fn sibling_path(destination: &Path, suffix: &str) -> io::Result<PathBuf> {
-    // Existing aliases must coordinate on the actual installation. Before a
-    // directory exists, Windows spelling variants still name the same lock.
+    // Existing aliases must coordinate on the actual installation.
+    // Before a directory exists, Windows spelling variants still name the same lock.
     let canonical = destination.canonicalize().ok();
     let location = canonical.as_deref().unwrap_or(destination);
     let filename = location
@@ -407,6 +416,23 @@ mod tests {
         InstallationLease::acquire(&destination).unwrap();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn inherited_handle_cannot_extend_the_installation_lease() {
+        let temp = tempfile::tempdir().unwrap();
+        let destination = temp.path().join("site");
+        let first = InstallationLease::acquire(&destination).unwrap();
+        let inherited = first._file.try_clone().unwrap();
+        assert!(InstallationLease::acquire(&destination).is_err());
+        drop(first);
+        let replacement = InstallationLease::acquire(&destination);
+        drop(inherited);
+        let replacement = replacement.expect("lease ownership outlived its guard");
+        assert!(InstallationLease::acquire(&destination).is_err());
+        drop(replacement);
+        InstallationLease::acquire(&destination).unwrap();
+    }
+
     #[cfg(windows)]
     #[test]
     fn case_variants_cannot_bypass_the_installation_lease() {
@@ -576,8 +602,7 @@ mod activation_record_tests {
         validate_intent(&intent(), &destination()).unwrap();
     }
 
-    /// Each case breaks exactly one clause of the guard, so no clause can be
-    /// dropped without a record the recovery path must refuse being accepted.
+    /// Each case breaks exactly one clause of the guard, so no clause can be dropped without a record the recovery path must refuse being accepted.
     #[test]
     fn every_malformed_activation_record_is_refused() {
         let cases: Cases = vec![
@@ -620,9 +645,7 @@ mod activation_record_tests {
         }
     }
 
-    /// A staging or retained directory named exactly like the destination is
-    /// refused for that reason alone, and reaching that clause means giving
-    /// the destination a name the earlier clauses already accept.
+    /// A staging or retained directory named exactly like the destination is refused for that reason alone, and reaching that clause means giving the destination a name the earlier clauses already accept.
     #[test]
     fn a_record_whose_staging_or_retained_copy_is_the_destination_is_refused() {
         let staging_named = PathBuf::from("/data/.simple-blog-abcd.staging");
@@ -661,8 +684,7 @@ mod activation_record_tests {
         copy_tree(&source.join("config.toml"), &one_file).unwrap();
         assert_eq!(std::fs::read(&one_file).unwrap(), b"[site]");
 
-        // Copying over something that is already there is a failure, not a
-        // silent overwrite.
+        // Copying over something that is already there is a failure, not a silent overwrite.
         assert!(copy_tree(&source, &destination).is_err());
         assert!(copy_tree(&temp.path().join("absent"), &temp.path().join("out")).is_err());
     }
@@ -771,8 +793,7 @@ mod recovery_state_tests {
         }
     }
 
-    /// The three states an interruption can leave behind, and what recovery
-    /// owes each of them.
+    /// The three states an interruption can leave behind, and what recovery owes each of them.
     #[test]
     fn every_state_an_interrupted_replacement_can_leave_is_resolved() {
         // Renamed away and not yet renamed back: roll the retained copy in.
@@ -790,7 +811,8 @@ mod recovery_state_tests {
         assert!(completed.destination.join("config.toml").is_file());
         assert!(!completed.record_remains());
 
-        // Never renamed. The complete staged copy is left for inspection.
+        // Never renamed.
+        // The complete staged copy is left for inspection.
         let not_activated = Installation::with_record(false);
         Installation::create(&not_activated.staging);
         not_activated.recover().unwrap();
@@ -798,9 +820,8 @@ mod recovery_state_tests {
         assert!(!not_activated.record_remains());
     }
 
-    /// A layout that matches none of those three is not guessed at. Each case
-    /// satisfies part of one branch and not the rest of it, so no condition
-    /// can be loosened without recovery inventing a state it never saw.
+    /// A layout that matches none of those three is not guessed at.
+    /// Each case satisfies part of one branch and not the rest of it, so no condition can be loosened without recovery inventing a state it never saw.
     #[test]
     fn a_state_that_matches_no_branch_is_refused_and_changes_nothing() {
         // Nothing is there at all, and the record says nothing was replaced.
@@ -815,8 +836,7 @@ mod recovery_state_tests {
             "an ambiguous state must keep the record that explains it"
         );
 
-        // The destination is there, but the record says something was
-        // replaced and nothing was retained.
+        // The destination is there, but the record says something was replaced and nothing was retained.
         let unaccounted = Installation::with_record(true);
         Installation::create(&unaccounted.destination);
         let error = unaccounted.recover().unwrap_err();
@@ -828,8 +848,7 @@ mod recovery_state_tests {
         assert!(unaccounted.record_remains());
     }
 
-    /// Durability is the whole point of the step, so a tree it could not
-    /// reach is reported rather than assumed to be on disk.
+    /// Durability is the whole point of the step, so a tree it could not reach is reported rather than assumed to be on disk.
     #[test]
     fn a_tree_that_cannot_be_synced_is_reported_rather_than_assumed() {
         let temp = tempfile::tempdir().unwrap();
@@ -849,8 +868,7 @@ mod recovery_state_tests {
         );
     }
 
-    /// Replacing an installation that still holds data is the one thing that
-    /// has to be asked for explicitly.
+    /// Replacing an installation that still holds data is the one thing that has to be asked for explicitly.
     #[test]
     fn a_destination_that_still_holds_data_is_not_replaced_unless_it_was_asked_for() {
         let (_temp, staging, destination) = replacement("refused");
@@ -866,8 +884,7 @@ mod recovery_state_tests {
         );
     }
 
-    /// Asked for, it happens, and what stood there is retained rather than
-    /// deleted.
+    /// Asked for, it happens, and what stood there is retained rather than deleted.
     #[test]
     fn a_destination_that_was_asked_to_be_replaced_keeps_what_stood_there() {
         let (_temp, staging, destination) = replacement("asked");
@@ -881,8 +898,7 @@ mod recovery_state_tests {
     }
 
     /// Lays out an installation beside the staged copy that would replace it.
-    /// Each caller gets its own name, because the lease that guards a
-    /// replacement is named after the installation.
+    /// Each caller gets its own name, because the lease that guards a replacement is named after the installation.
     fn replacement(name: &str) -> (tempfile::TempDir, PathBuf, PathBuf) {
         let temp = tempfile::tempdir().unwrap();
         let staging = temp.path().join(".simple-blog-abcd.staging");

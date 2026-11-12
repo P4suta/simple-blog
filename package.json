@@ -1,24 +1,29 @@
 {
-  "private": true,
-  "packageManager": "bun@1.4.4",
-  "scripts": {
-    "build:admin": "bun build frontend/admin.ts --format=iife --minify --target=browser --outfile=static/admin.js",
-    "check:admin": "tsc --noEmit && node --check static/admin.js",
-    "check:cloudflare": "tsc -p adapters/cloudflare/tsconfig.json",
-    "test:frontend": "node --test frontend/*.test.cjs",
-    "test:cloudflare": "node --test adapters/cloudflare/test/*.test.ts",
-    "verify": "node scripts/verify.mjs",
-    "test:tools": "node --test scripts/*.test.mjs",
-    "test:browser": "playwright test",
-    "verify:deep": "node scripts/deep-checks.mjs"
-  },
-  "devDependencies": {
-    "@axe-core/playwright": "4.14.0",
-    "@codemirror/lang-css": "^6.3.1",
-    "@codemirror/lang-markdown": "^6.3.4",
-    "@playwright/test": "1.64.1",
-    "codemirror": "^6.0.2",
-    "fflate": "0.8.3",
-    "typescript": "^7.0.2"
-  }
+	"private": true,
+	"packageManager": "bun@1.4.4",
+	"scripts": {
+		"build:admin": "bun build frontend/admin.ts --format=iife --minify --target=browser --outfile=static/admin.js",
+		"check:admin": "tsc --noEmit && node --check static/admin.js",
+		"check:cloudflare": "tsc -p adapters/cloudflare/tsconfig.json",
+		"test:frontend": "node --test frontend/*.test.cjs",
+		"test:cloudflare": "node --test adapters/cloudflare/test/*.test.ts",
+		"verify": "node scripts/verify.mjs",
+		"test:tools": "node --test scripts/*.test.mjs",
+		"check:tools": "tsc -p tsconfig.tools.json && eslint --config scripts/eslint.tools.mjs --max-warnings 0 scripts",
+		"verify:tools": "bun run check:tools && bun run test:tools",
+		"test:browser": "playwright test",
+		"verify:deep": "node scripts/deep-checks.mjs"
+	},
+	"devDependencies": {
+		"@axe-core/playwright": "4.14.0",
+		"@codemirror/lang-css": "^6.3.1",
+		"@codemirror/lang-markdown": "^6.3.4",
+		"@playwright/test": "1.65.0",
+		"@types/node": "24.19.2",
+		"codemirror": "^6.0.2",
+		"eslint": "10.14.0",
+		"eslint-plugin-jsdoc": "65.4.5",
+		"fflate": "0.8.3",
+		"typescript": "^7.0.2"
+	}
 }

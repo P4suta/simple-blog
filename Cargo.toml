@@ -8,8 +8,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/P4suta/simple-blog"
 readme = "README.md"
 documentation = "https://docs.rs/simple-blog"
-# The Cloudflare adapter is TypeScript for a different runtime; it belongs in
-# the repository, not in a Rust package a consumer unpacks.
+# The Cloudflare adapter is TypeScript for a different runtime; it belongs in the repository, not in a Rust package a consumer unpacks.
 exclude = ["/adapters"]
 keywords = ["axum", "blog", "cms", "markdown", "sqlite"]
 categories = ["command-line-utilities", "web-programming::http-server"]
@@ -23,8 +22,7 @@ path = "src/lib.rs"
 name = "simple-blog"
 path = "src/main.rs"
 
-# One target only: a Windows build would activate the vendored OpenSSL, which
-# needs a C toolchain and perl that docs.rs does not offer.
+# One target only: a Windows build would activate the vendored OpenSSL, which needs a C toolchain and perl that docs.rs does not offer.
 [package.metadata.docs.rs]
 targets = ["x86_64-unknown-linux-gnu"]
 
@@ -110,13 +108,12 @@ webpkit = { version = "0.1.0", features = ["image"] }
 zstd = "0.14"
 
 [target.'cfg(unix)'.dependencies]
-# Nonblocking, no-follow diagnostic opens prevent a concurrently replaced FIFO
-# or symlink from turning observational diagnosis into blocking or external I/O.
+# Nonblocking, no-follow diagnostic opens prevent a concurrently replaced FIFO or symlink from turning observational diagnosis into blocking or external I/O.
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies.openssl]
-# webauthn-rs uses OpenSSL. A vendored Windows build keeps the binary contract
-# independent of machine-global OpenSSL or vcpkg installations.
+# webauthn-rs uses OpenSSL.
+# A vendored Windows build keeps the binary contract independent of machine-global OpenSSL or vcpkg installations.
 version = "0.10"
 features = ["vendored"]
 
@@ -131,6 +128,9 @@ proptest = "1.7"
 scraper = "0.29"
 serde_urlencoded = "0.7"
 tower = { version = "0.5", features = ["util"] }
+
+[patch.crates-io]
+sqlx = { git = "https://github.com/launchbadge/sqlx", rev = "10462fa4414c6c7f1ed1d39bb31678e3b726878c" }
 
 [profile.release]
 codegen-units = 1

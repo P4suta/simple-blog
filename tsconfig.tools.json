@@ -1,0 +1,24 @@
+{
+	"compilerOptions": {
+		"allowJs": true,
+		"checkJs": true,
+		"strict": true,
+		"noEmit": true,
+		"noUncheckedIndexedAccess": true,
+		"exactOptionalPropertyTypes": true,
+		"module": "NodeNext",
+		"target": "ES2023",
+		"types": ["node"]
+	},
+	"files": [
+		"scripts/collect-evidence.mjs",
+		"scripts/collect-evidence.test.mjs",
+		"scripts/browser-evidence.mjs",
+		"scripts/evidence-security.mjs",
+		"scripts/evidence-shape.mjs",
+		"scripts/publish-evidence.mjs",
+		"scripts/write-json.mjs",
+		"scripts/tool-contracts.test.mjs",
+		"scripts/verification.config.mjs"
+	]
+}
