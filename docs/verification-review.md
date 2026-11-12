@@ -35,6 +35,11 @@ A Renovate regex manager tracks the patch's Git digest while the Cargo manager c
 The required parallel Rust check exposed an installation lease that could outlive its guard through a duplicated file handle.
 A regression holding a duplicated handle failed before the fix.
 The guard now unlocks before closing its own handle, so a child's inherited descriptor cannot extend ownership.
+The ownership review checked that only successful acquisition constructs a guard and that competing acquisition remains rejected.
+The fault review checked duplicated handles, replacement ownership, and the unlock-failure diagnostic.
+The verification review added a check that closing the inherited handle cannot release a replacement lease.
+Final review C found no further issue in the export and lease lifetimes.
+Final review D found no further issue in failure preservation or the completed common checks.
 
 Scope: ADR 0017, Rust Core, native and Cloudflare diagnostics, replacement recovery, browser workflows, evidence, adversarial checks and release symbols.
 Review began 2026-09-05 and continued 2026-09-06, starting from `7cd494a`.

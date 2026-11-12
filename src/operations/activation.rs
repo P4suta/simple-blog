@@ -427,7 +427,10 @@ mod tests {
         drop(first);
         let replacement = InstallationLease::acquire(&destination);
         drop(inherited);
-        assert!(replacement.is_ok(), "lease ownership outlived its guard");
+        let replacement = replacement.expect("lease ownership outlived its guard");
+        assert!(InstallationLease::acquire(&destination).is_err());
+        drop(replacement);
+        InstallationLease::acquire(&destination).unwrap();
     }
 
     #[cfg(windows)]
