@@ -32,6 +32,9 @@ Full fuzz and mutation campaigns remain unrun for the recovery draft and supply 
 The push lookup rejected a combined registry version and Git revision because Renovate interpreted the version as a Git reference.
 The registry dependency and revision-pinned Cargo patch preserve the resolved SQLx source.
 A Renovate regex manager tracks the patch's Git digest while the Cargo manager checks the registry version.
+The required parallel Rust check exposed an installation lease that could outlive its guard through a duplicated file handle.
+A regression holding a duplicated handle failed before the fix.
+The guard now unlocks before closing its own handle, so a child's inherited descriptor cannot extend ownership.
 
 Scope: ADR 0017, Rust Core, native and Cloudflare diagnostics, replacement recovery, browser workflows, evidence, adversarial checks and release symbols.
 Review began 2026-09-05 and continued 2026-09-06, starting from `7cd494a`.
