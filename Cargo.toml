@@ -63,7 +63,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.11"
 slug = "0.1"
-sqlx = { version = "0.9.0", git = "https://github.com/launchbadge/sqlx", rev = "10462fa4414c6c7f1ed1d39bb31678e3b726878c", default-features = false, features = [
+sqlx = { version = "0.9.0", default-features = false, features = [
   "chrono",
   "json",
   "macros",
@@ -128,6 +128,9 @@ proptest = "1.7"
 scraper = "0.29"
 serde_urlencoded = "0.7"
 tower = { version = "0.5", features = ["util"] }
+
+[patch.crates-io]
+sqlx = { git = "https://github.com/launchbadge/sqlx", rev = "10462fa4414c6c7f1ed1d39bb31678e3b726878c" }
 
 [profile.release]
 codegen-units = 1

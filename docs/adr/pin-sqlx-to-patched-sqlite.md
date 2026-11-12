@@ -14,7 +14,8 @@ Upstream [PR 4502](https://github.com/launchbadge/sqlx/pull/4502) widens the ran
 ## Decision
 
 Pin SQLx to merge commit `10462fa4414c6c7f1ed1d39bb31678e3b726878c` and select libsqlite3-sys 0.39.1 in Cargo.lock.
-Keep the configured features and Rust 1.96.
+Use Cargo's [registry patch](https://doc.rust-lang.org/cargo/reference/overriding-dependencies.html) for independent registry version and Git digest lookups.
+Keep the features and Rust 1.96.
 
 ## Alternatives
 

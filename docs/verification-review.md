@@ -29,6 +29,9 @@ A fresh snapshot with the actual public base restored as Git metadata passed the
 The Windows suite passed 52 tests and skipped the Unix-only case, which passed on macOS.
 Hosted platform gates remain pending.
 Full fuzz and mutation campaigns remain unrun for the recovery draft and supply no verification claim.
+The push lookup rejected a combined registry version and Git revision because Renovate interpreted the version as a Git reference.
+The registry dependency and revision-pinned Cargo patch preserve the resolved SQLx source.
+A Renovate regex manager tracks the patch's Git digest while the Cargo manager checks the registry version.
 
 Scope: ADR 0017, Rust Core, native and Cloudflare diagnostics, replacement recovery, browser workflows, evidence, adversarial checks and release symbols.
 Review began 2026-09-05 and continued 2026-09-06, starting from `7cd494a`.

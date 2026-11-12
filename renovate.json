@@ -1,4 +1,15 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["github>P4suta/renovate-config"]
+  "extends": ["github>P4suta/renovate-config"],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^Cargo\\.toml$/"],
+      "matchStrings": ["\\[patch\\.crates-io\\]\\s+sqlx\\s*=\\s*\\{\\s*git\\s*=\\s*\"https://github.com/launchbadge/sqlx\",\\s*rev\\s*=\\s*\"(?<currentDigest>[0-9a-f]{40})\"\\s*\\}"],
+      "currentValueTemplate": "HEAD",
+      "depNameTemplate": "sqlx",
+      "packageNameTemplate": "https://github.com/launchbadge/sqlx",
+      "datasourceTemplate": "git-refs"
+    }
+  ]
 }
