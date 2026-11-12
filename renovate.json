@@ -6,7 +6,7 @@
       "customType": "regex",
       "managerFilePatterns": ["/^Cargo\\.toml$/"],
       "matchStrings": ["\\[patch\\.crates-io\\]\\s+sqlx\\s*=\\s*\\{\\s*git\\s*=\\s*\"https://github.com/launchbadge/sqlx\",\\s*rev\\s*=\\s*\"(?<currentDigest>[0-9a-f]{40})\"\\s*\\}"],
-      "currentValueTemplate": "HEAD",
+      "currentValueTemplate": "main",
       "depNameTemplate": "sqlx",
       "packageNameTemplate": "https://github.com/launchbadge/sqlx",
       "datasourceTemplate": "git-refs"
