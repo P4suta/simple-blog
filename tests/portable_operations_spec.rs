@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use chrono::{TimeZone, Utc};
+use simple_blog::timestamp::Timestamp;
 use simple_blog::{
     application::{
         content::{ContentService, SaveIntent},
@@ -55,7 +55,7 @@ async fn source(temp: &tempfile::TempDir) -> (Config, Arc<SqliteRepository>, Str
         repository.clone(),
         Arc::new(ComrakMarkdownRenderer::default()),
     );
-    let now = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
+    let now = Timestamp::from_utc_components(2026, 9, 2, 12, 0, 0).unwrap();
     content
         .create(
             ContentDraft {
@@ -69,7 +69,7 @@ async fn source(temp: &tempfile::TempDir) -> (Config, Arc<SqliteRepository>, Str
                 seo_title: None,
                 seo_description: None,
                 publication: Publication::Public {
-                    publish_at: now + chrono::Duration::minutes(15),
+                    publish_at: now + time::SignedDuration::minutes(15),
                 },
             },
             SaveIntent::Explicit,
@@ -90,9 +90,14 @@ async fn portable_import_cleans_disposable_staging_when_activation_fails_before_
     let temp = tempfile::tempdir().unwrap();
     let (source_config, repository, _) = source(&temp).await;
     let archive = temp.path().join("site.simple-blog");
-    PortableMigrationService::export(&source_config, repository.as_ref(), &archive, Utc::now())
-        .await
-        .unwrap();
+    PortableMigrationService::export(
+        &source_config,
+        repository.as_ref(),
+        &archive,
+        Timestamp::now(),
+    )
+    .await
+    .unwrap();
     let destination = temp.path().join("destination");
     let destination_config = config(&destination, "https://writing.example");
     let hash = blake3::hash(b"destination").to_hex();
@@ -123,7 +128,7 @@ async fn portable_export_and_fresh_import_verify_media_database_and_public_relea
     let temp = tempfile::tempdir().unwrap();
     let (source_config, source_repository, media_filename) = source(&temp).await;
     let archive = temp.path().join("site.simple-blog");
-    let now = Utc.with_ymd_and_hms(2026, 9, 2, 12, 30, 0).unwrap();
+    let now = Timestamp::from_utc_components(2026, 9, 2, 12, 30, 0).unwrap();
 
     let exported =
         PortableMigrationService::export(&source_config, source_repository.as_ref(), &archive, now)
@@ -172,7 +177,7 @@ async fn forced_import_retains_the_previous_installation_as_a_recoverable_direct
         &source_config,
         source_repository.as_ref(),
         &archive,
-        Utc.with_ymd_and_hms(2026, 9, 2, 12, 30, 0).unwrap(),
+        Timestamp::from_utc_components(2026, 9, 2, 12, 30, 0).unwrap(),
     )
     .await
     .unwrap();
@@ -210,7 +215,7 @@ async fn origin_mismatch_is_rejected_before_the_destination_is_touched() {
         &source_config,
         source_repository.as_ref(),
         &archive,
-        Utc.with_ymd_and_hms(2026, 9, 2, 12, 30, 0).unwrap(),
+        Timestamp::from_utc_components(2026, 9, 2, 12, 30, 0).unwrap(),
     )
     .await
     .unwrap();

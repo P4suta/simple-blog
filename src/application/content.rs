@@ -1,6 +1,6 @@
 use std::{collections::HashSet, fmt::Write as _, sync::Arc};
 
-use chrono::{DateTime, Utc};
+use crate::timestamp::Timestamp;
 
 use crate::{
     application::ports::{
@@ -37,7 +37,7 @@ impl ContentService {
         &self,
         draft: ContentDraft,
         intent: DomainSaveIntent,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Content, RepositoryError> {
         let content = self.prepare(draft)?;
         self.repository.create(content, intent, now).await
@@ -49,7 +49,7 @@ impl ContentService {
         expected_version: i64,
         draft: ContentDraft,
         intent: DomainSaveIntent,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Content, RepositoryError> {
         let content = self.prepare(draft)?;
         self.repository
@@ -68,7 +68,7 @@ impl ContentService {
         id: ContentId,
         revision_id: i64,
         expected_version: i64,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Content, RepositoryError> {
         let revision = self
             .repository
@@ -90,7 +90,7 @@ impl ContentService {
         &self,
         id: ContentId,
         expected_version: i64,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Content, RepositoryError> {
         self.repository
             .move_to_trash(id, expected_version, now)
@@ -101,7 +101,7 @@ impl ContentService {
     pub async fn restore_from_trash(
         &self,
         id: ContentId,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Content, RepositoryError> {
         self.repository.restore_from_trash(id, now).await
     }

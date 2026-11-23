@@ -1,8 +1,9 @@
-use chrono::{Duration, TimeZone, Utc};
 use simple_blog::domain::hosting::{
     DomainName, DomainObservation, DomainRegistration, DomainRegistrationError,
     DomainRegistrationState, ProvisioningStatus,
 };
+use simple_blog::timestamp::Timestamp;
+use time::SignedDuration as Duration;
 use uuid::Uuid;
 
 #[derive(serde::Deserialize)]
@@ -21,12 +22,12 @@ struct ContractCase {
     expected: DomainRegistrationState,
 }
 
-fn at(minute: u32) -> chrono::DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 9, 2, 12, minute, 0).unwrap()
+fn at(minute: u8) -> Timestamp {
+    Timestamp::from_utc_components(2026, 9, 2, 12, minute, 0).unwrap()
 }
 
 const fn observation(
-    checked_at: chrono::DateTime<Utc>,
+    checked_at: simple_blog::timestamp::Timestamp,
     hostname: ProvisioningStatus,
     certificate: ProvisioningStatus,
     dns_routed: bool,

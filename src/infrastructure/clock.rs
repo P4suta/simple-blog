@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use crate::timestamp::Timestamp;
 
 use crate::application::ports::Clock;
 
@@ -6,7 +6,7 @@ use crate::application::ports::Clock;
 pub struct SystemClock;
 
 impl Clock for SystemClock {
-    fn now(&self) -> DateTime<Utc> {
-        Utc::now()
+    fn now(&self) -> Timestamp {
+        Timestamp::now()
     }
 }

@@ -15,7 +15,7 @@ list `tests/repository_policy.sh` checks.
 
 **Supported.** An interface this project maintains for callers.
 `application` (its `ports` are the capability traits a host implements),
-`config`, `domain`, `infrastructure`, `portable`, `release`, and `web`.
+`config`, `domain`, `infrastructure`, `portable`, `release`, `timestamp`, and `web`.
 
 **Reachable.** Public only because a supported signature names it, and
 carrying no promise: `i18n` (`AppBuildError::Translation` names its error),

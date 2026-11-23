@@ -4,9 +4,9 @@ use axum::{
     body::Body,
     http::{Method, Request, StatusCode, header},
 };
-use chrono::Utc;
 use http_body_util::BodyExt;
 use image::{DynamicImage, ImageBuffer, ImageFormat, Rgb};
+use simple_blog::timestamp::Timestamp;
 use simple_blog::{
     application::{
         auth::AuthService,
@@ -91,14 +91,16 @@ async fn cover_harness() -> CoverHarness {
         config.max_upload_bytes,
     );
     let asset = media
-        .store("cover.png", png(), "Blue & calm", "", Utc::now())
+        .store("cover.png", png(), "Blue & calm", "", Timestamp::now())
         .await
         .unwrap();
     let site = SiteService::new(repository.clone());
     let mut settings = repository.site_settings().await.unwrap();
     settings.logo_media_id = Some(asset.id.to_string());
     settings.favicon_media_id = Some(asset.id.to_string());
-    site.update(settings, Vec::new(), Utc::now()).await.unwrap();
+    site.update(settings, Vec::new(), Timestamp::now())
+        .await
+        .unwrap();
     ContentService::new(
         repository.clone(),
         Arc::new(ComrakMarkdownRenderer::default()),
@@ -115,11 +117,11 @@ async fn cover_harness() -> CoverHarness {
             seo_title: None,
             seo_description: None,
             publication: Publication::Public {
-                publish_at: Utc::now(),
+                publish_at: Timestamp::now(),
             },
         },
         SaveIntent::Explicit,
-        Utc::now(),
+        Timestamp::now(),
     )
     .await
     .unwrap();
@@ -201,7 +203,7 @@ async fn multipart_upload_requires_session_and_csrf_then_returns_media_json() {
             .unwrap(),
     );
     let auth = AuthService::new(repository.clone(), Arc::new(SystemEntropy));
-    let session = auth.create_session(Utc::now()).await.unwrap();
+    let session = auth.create_session(Timestamp::now()).await.unwrap();
     let cookie = format!(
         "sb_session={}; sb_csrf={}",
         session.session.expose(),
@@ -342,20 +344,28 @@ async fn gc_harness() -> (
         config.max_upload_bytes,
     );
     let body_asset = media
-        .store("inline.png", png(), "Inline", "", Utc::now())
+        .store("inline.png", png(), "Inline", "", Timestamp::now())
         .await
         .unwrap();
     let logo_image = DynamicImage::ImageRgb8(ImageBuffer::from_pixel(320, 180, Rgb([200, 40, 40])));
     let mut cursor = Cursor::new(Vec::new());
     logo_image.write_to(&mut cursor, ImageFormat::Png).unwrap();
     let logo_asset = media
-        .store("logo.png", cursor.into_inner(), "Logo", "", Utc::now())
+        .store(
+            "logo.png",
+            cursor.into_inner(),
+            "Logo",
+            "",
+            Timestamp::now(),
+        )
         .await
         .unwrap();
     let site = SiteService::new(repository.clone());
     let mut settings = repository.site_settings().await.unwrap();
     settings.logo_media_id = Some(logo_asset.id.to_string());
-    site.update(settings, Vec::new(), Utc::now()).await.unwrap();
+    site.update(settings, Vec::new(), Timestamp::now())
+        .await
+        .unwrap();
     let content = ContentService::new(
         repository.clone(),
         Arc::new(ComrakMarkdownRenderer::default()),
@@ -374,12 +384,12 @@ async fn gc_harness() -> (
             publication: Publication::Draft,
         },
         SaveIntent::Explicit,
-        Utc::now(),
+        Timestamp::now(),
     )
     .await
     .unwrap();
     let auth = AuthService::new(repository.clone(), Arc::new(SystemEntropy));
-    let session = auth.create_session(Utc::now()).await.unwrap();
+    let session = auth.create_session(Timestamp::now()).await.unwrap();
     let cookie = format!(
         "sb_session={}; sb_csrf={}",
         session.session.expose(),
@@ -521,7 +531,13 @@ async fn autosaves_do_not_run_media_garbage_collection() {
         .unwrap();
     let orphan = harness
         .media
-        .store("orphan.png", cursor.into_inner(), "Orphan", "", Utc::now())
+        .store(
+            "orphan.png",
+            cursor.into_inner(),
+            "Orphan",
+            "",
+            Timestamp::now(),
+        )
         .await
         .unwrap();
 
@@ -601,10 +617,12 @@ async fn trashed_content_keeps_its_media_until_it_is_deleted_permanently() {
     let mut settings = repository.site_settings().await.unwrap();
     settings.logo_media_id = None;
     settings.favicon_media_id = None;
-    site.update(settings, Vec::new(), Utc::now()).await.unwrap();
+    site.update(settings, Vec::new(), Timestamp::now())
+        .await
+        .unwrap();
 
     let auth = AuthService::new(repository.clone(), Arc::new(SystemEntropy));
-    let session = auth.create_session(Utc::now()).await.unwrap();
+    let session = auth.create_session(Timestamp::now()).await.unwrap();
     let cookie = format!(
         "sb_session={}; sb_csrf={}",
         session.session.expose(),
@@ -668,7 +686,7 @@ async fn cover_alt_text_can_be_edited_and_reaches_the_released_page() {
 
     let harness = cover_harness().await;
     let auth = AuthService::new(harness.repository.clone(), Arc::new(SystemEntropy));
-    let session = auth.create_session(Utc::now()).await.unwrap();
+    let session = auth.create_session(Timestamp::now()).await.unwrap();
     let cookie = format!(
         "sb_session={}; sb_csrf={}",
         session.session.expose(),
@@ -767,7 +785,7 @@ async fn cover_alt_text_edit_answers_pending_when_publication_fails() {
     std::fs::create_dir_all(&releases).unwrap();
     std::fs::write(releases.join("objects"), b"not a directory").unwrap();
     let auth = AuthService::new(harness.repository.clone(), Arc::new(SystemEntropy));
-    let session = auth.create_session(Utc::now()).await.unwrap();
+    let session = auth.create_session(Timestamp::now()).await.unwrap();
     let cookie = format!(
         "sb_session={}; sb_csrf={}",
         session.session.expose(),

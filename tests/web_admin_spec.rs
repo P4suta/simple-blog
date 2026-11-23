@@ -5,8 +5,8 @@ use axum::{
     http::{Method, Request, StatusCode, header},
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use chrono::{DateTime, Duration, TimeZone, Utc};
 use http_body_util::BodyExt;
+use simple_blog::timestamp::Timestamp;
 use simple_blog::{
     application::{
         auth::AuthService,
@@ -25,6 +25,7 @@ use simple_blog::{
     },
     web::{AppState, router},
 };
+use time::SignedDuration as Duration;
 use tower::ServiceExt;
 
 struct Harness {
@@ -37,20 +38,20 @@ struct Harness {
 }
 
 #[derive(Clone)]
-struct TestClock(Arc<Mutex<DateTime<Utc>>>);
+struct TestClock(Arc<Mutex<Timestamp>>);
 
 impl TestClock {
-    fn new(now: DateTime<Utc>) -> Self {
+    fn new(now: Timestamp) -> Self {
         Self(Arc::new(Mutex::new(now)))
     }
 
-    fn set(&self, now: DateTime<Utc>) {
+    fn set(&self, now: Timestamp) {
         *self.0.lock().unwrap() = now;
     }
 }
 
 impl Clock for TestClock {
-    fn now(&self) -> DateTime<Utc> {
+    fn now(&self) -> Timestamp {
         *self.0.lock().unwrap()
     }
 }
@@ -126,7 +127,7 @@ impl Harness {
     }
 
     async fn session_cookie(&self) -> (String, String) {
-        let session = self.auth.create_session(Utc::now()).await.unwrap();
+        let session = self.auth.create_session(Timestamp::now()).await.unwrap();
         (
             format!(
                 "sb_session={}; sb_csrf={}",
@@ -140,7 +141,7 @@ impl Harness {
 
 impl Harness {
     async fn registered_owner(&self) -> (String, String) {
-        let now = Utc::now();
+        let now = Timestamp::now();
         let token = self
             .auth
             .issue_setup_token(SetupPurpose::Initial, now)
@@ -290,7 +291,7 @@ async fn normal_html_form_can_create_content_but_csrf_is_mandatory() {
 #[tokio::test]
 async fn stale_autosave_returns_409_with_both_versions_recoverable() {
     let harness = Harness::new().await;
-    let now = Utc::now();
+    let now = Timestamp::now();
     let created = harness
         .contents
         .create(draft("conflict"), SaveIntent::Explicit, now)
@@ -343,7 +344,7 @@ async fn setup_start_returns_public_options_without_echoing_the_capability() {
     let harness = Harness::new().await;
     let token = harness
         .auth
-        .issue_setup_token(SetupPurpose::Initial, Utc::now())
+        .issue_setup_token(SetupPurpose::Initial, Timestamp::now())
         .await
         .unwrap();
     let payload = serde_json::json!({ "token": token.expose() }).to_string();
@@ -441,12 +442,12 @@ async fn settings_and_ordered_navigation_work_without_javascript_and_require_csr
         .create(
             ContentDraft {
                 publication: Publication::Public {
-                    publish_at: Utc::now(),
+                    publish_at: Timestamp::now(),
                 },
                 ..draft("uses-site-title")
             },
             SaveIntent::Explicit,
-            Utc::now(),
+            Timestamp::now(),
         )
         .await
         .unwrap();
@@ -471,7 +472,7 @@ async fn security_page_can_start_passkey_add_and_rotate_recovery_codes_after_rec
                 name: "Second key".into(),
                 passkey_json: "{}".into(),
             },
-            Utc::now(),
+            Timestamp::now(),
         )
         .await
         .unwrap();
@@ -521,7 +522,7 @@ async fn security_page_can_start_passkey_add_and_rotate_recovery_codes_after_rec
 
     let stale = harness
         .auth
-        .create_session(Utc::now() - Duration::minutes(10))
+        .create_session(Timestamp::now() - Duration::minutes(10))
         .await
         .unwrap();
     let stale_cookie = format!(
@@ -553,7 +554,7 @@ async fn owner_can_remove_a_passkey_but_not_the_last_credential() {
                 name: "Second key".into(),
                 passkey_json: "{}".into(),
             },
-            Utc::now(),
+            Timestamp::now(),
         )
         .await
         .unwrap();
@@ -594,7 +595,7 @@ async fn a_recovery_code_is_one_time_and_returns_a_fresh_authenticated_session()
     let harness = Harness::new().await;
     let code = harness
         .auth
-        .replace_recovery_codes(Utc::now())
+        .replace_recovery_codes(Timestamp::now())
         .await
         .unwrap()
         .remove(0);
@@ -634,7 +635,7 @@ async fn a_recovery_code_is_one_time_and_returns_a_fresh_authenticated_session()
 #[tokio::test]
 async fn revision_history_can_be_inspected_and_restored_without_overwriting_newer_work() {
     let harness = Harness::new().await;
-    let now = Utc::now();
+    let now = Timestamp::now();
     let original = harness
         .contents
         .create(draft("revision-rescue"), SaveIntent::Explicit, now)
@@ -740,7 +741,7 @@ async fn cover_media_can_be_selected_through_the_normal_editor_form() {
     let media_id = "a".repeat(64);
     sqlx::query("INSERT INTO media (id, original_name, mime_type, extension, width, height, byte_size, created_at) VALUES (?, 'cover.png', 'image/png', 'png', 1, 1, 1, ?)")
         .bind(&media_id)
-        .bind(Utc::now())
+        .bind(Timestamp::now())
         .execute(harness.repository.pool())
         .await
         .unwrap();
@@ -1250,7 +1251,7 @@ async fn dashboard_lists_pieces_as_real_links_inside_a_list() {
 
     harness
         .contents
-        .create(draft("listed"), SaveIntent::Explicit, Utc::now())
+        .create(draft("listed"), SaveIntent::Explicit, Timestamp::now())
         .await
         .unwrap();
     let listed = harness
@@ -1267,7 +1268,7 @@ async fn dashboard_lists_pieces_as_real_links_inside_a_list() {
 #[tokio::test]
 async fn taken_slug_conflict_is_plain_text_while_version_conflict_is_the_html_page() {
     let harness = Harness::new().await;
-    let now = Utc::now();
+    let now = Timestamp::now();
     harness
         .contents
         .create(draft("taken"), SaveIntent::Explicit, now)
@@ -1351,7 +1352,7 @@ fn scheduled_form(
 #[expect(clippy::too_many_lines, reason = "one trash lifecycle, end to end")]
 async fn trash_restore_and_permanent_delete_are_owner_actions_with_csrf() {
     let harness = Harness::new().await;
-    let now = Utc::now();
+    let now = Timestamp::now();
     let created = harness
         .contents
         .create(
@@ -1484,7 +1485,7 @@ async fn trash_restore_and_permanent_delete_are_owner_actions_with_csrf() {
 
 #[tokio::test]
 async fn scheduling_through_the_editor_form_flips_visibility_exactly_at_the_boundary() {
-    let clock = TestClock::new(Utc.with_ymd_and_hms(2026, 9, 3, 12, 0, 0).unwrap());
+    let clock = TestClock::new(Timestamp::from_utc_components(2026, 9, 3, 12, 0, 0).unwrap());
     let harness = Harness::new_with_clock(Arc::new(clock.clone())).await;
     let (cookie, csrf) = harness.session_cookie().await;
 
@@ -1510,14 +1511,14 @@ async fn scheduling_through_the_editor_form_flips_visibility_exactly_at_the_boun
         .await;
     assert_eq!(hidden.status(), StatusCode::NOT_FOUND);
 
-    clock.set(Utc.with_ymd_and_hms(2026, 9, 3, 12, 0, 59).unwrap());
+    clock.set(Timestamp::from_utc_components(2026, 9, 3, 12, 0, 59).unwrap());
     harness.state.publish_now().await.unwrap();
     let still_hidden = harness
         .send(Method::GET, "/later/", None, Body::empty(), None)
         .await;
     assert_eq!(still_hidden.status(), StatusCode::NOT_FOUND);
 
-    clock.set(Utc.with_ymd_and_hms(2026, 9, 3, 12, 1, 0).unwrap());
+    clock.set(Timestamp::from_utc_components(2026, 9, 3, 12, 1, 0).unwrap());
     harness.state.publish_now().await.unwrap();
     let visible = harness
         .send(Method::GET, "/later/", None, Body::empty(), None)
@@ -1534,7 +1535,7 @@ async fn scheduling_through_the_editor_form_flips_visibility_exactly_at_the_boun
 
 #[tokio::test]
 async fn publish_dates_accept_naive_utc_input_and_reject_garbage() {
-    let clock = TestClock::new(Utc.with_ymd_and_hms(2026, 9, 3, 12, 0, 0).unwrap());
+    let clock = TestClock::new(Timestamp::from_utc_components(2026, 9, 3, 12, 0, 0).unwrap());
     let harness = Harness::new_with_clock(Arc::new(clock.clone())).await;
     let (cookie, csrf) = harness.session_cookie().await;
 
@@ -1552,7 +1553,7 @@ async fn publish_dates_accept_naive_utc_input_and_reject_garbage() {
         .repository
         .find_public_by_slug(
             &Slug::parse("naive").unwrap(),
-            Utc.with_ymd_and_hms(2026, 9, 3, 12, 1, 0).unwrap(),
+            Timestamp::from_utc_components(2026, 9, 3, 12, 1, 0).unwrap(),
         )
         .await
         .unwrap()
@@ -1560,7 +1561,7 @@ async fn publish_dates_accept_naive_utc_input_and_reject_garbage() {
     assert_eq!(
         stored.publication,
         Publication::Public {
-            publish_at: Utc.with_ymd_and_hms(2026, 9, 3, 12, 1, 0).unwrap()
+            publish_at: Timestamp::from_utc_components(2026, 9, 3, 12, 1, 0).unwrap()
         }
     );
 
@@ -1583,10 +1584,10 @@ async fn publish_dates_accept_naive_utc_input_and_reject_garbage() {
     reason = "same-minute, moved, and draft cases in one scenario"
 )]
 async fn editing_the_publish_date_moves_a_post_but_same_minute_values_keep_it() {
-    let clock = TestClock::new(Utc.with_ymd_and_hms(2026, 9, 3, 12, 0, 37).unwrap());
+    let clock = TestClock::new(Timestamp::from_utc_components(2026, 9, 3, 12, 0, 37).unwrap());
     let harness = Harness::new_with_clock(Arc::new(clock.clone())).await;
     let (cookie, csrf) = harness.session_cookie().await;
-    let published_at = Utc.with_ymd_and_hms(2026, 9, 3, 12, 0, 37).unwrap();
+    let published_at = Timestamp::from_utc_components(2026, 9, 3, 12, 0, 37).unwrap();
     let created = harness
         .contents
         .create(
@@ -1668,7 +1669,7 @@ async fn editing_the_publish_date_moves_a_post_but_same_minute_values_keep_it() 
     assert_eq!(
         current.publication,
         Publication::Public {
-            publish_at: Utc.with_ymd_and_hms(2026, 9, 2, 9, 30, 0).unwrap()
+            publish_at: Timestamp::from_utc_components(2026, 9, 2, 9, 30, 0).unwrap()
         }
     );
 
@@ -1843,7 +1844,7 @@ async fn expected_failures_render_a_page_for_browsers_and_text_for_scripts() {
     let (cookie, csrf) = harness.session_cookie().await;
     harness
         .contents
-        .create(draft("held"), SaveIntent::Explicit, Utc::now())
+        .create(draft("held"), SaveIntent::Explicit, Timestamp::now())
         .await
         .unwrap();
     let body = form(&csrf, "Clash", "held", None, "explicit");
@@ -1917,12 +1918,12 @@ async fn editor_exposes_counters_shortcut_hints_confirmations_and_error_labels()
         .create(
             ContentDraft {
                 publication: Publication::Public {
-                    publish_at: Utc::now(),
+                    publish_at: Timestamp::now(),
                 },
                 ..draft("polished")
             },
             SaveIntent::Explicit,
-            Utc::now(),
+            Timestamp::now(),
         )
         .await
         .unwrap();
@@ -1966,7 +1967,7 @@ async fn editor_exposes_counters_shortcut_hints_confirmations_and_error_labels()
     reason = "every dashboard filter in one scenario"
 )]
 async fn dashboard_filters_by_status_and_text_and_shows_dates() {
-    let clock = TestClock::new(Utc.with_ymd_and_hms(2026, 9, 3, 12, 0, 0).unwrap());
+    let clock = TestClock::new(Timestamp::from_utc_components(2026, 9, 3, 12, 0, 0).unwrap());
     let now = clock.now();
     let harness = Harness::new_with_clock(Arc::new(clock)).await;
     let (cookie, _csrf) = harness.session_cookie().await;
@@ -2102,7 +2103,7 @@ async fn dashboard_filters_by_status_and_text_and_shows_dates() {
 )]
 async fn revision_page_shows_a_line_diff_and_restoring_the_default_theme_needs_csrf() {
     let harness = Harness::new().await;
-    let now = Utc::now();
+    let now = Timestamp::now();
     let created = harness
         .contents
         .create(
@@ -2363,12 +2364,12 @@ async fn other_committed_admin_actions_never_fail_when_publication_fails() {
         .create(
             ContentDraft {
                 publication: Publication::Public {
-                    publish_at: Utc::now(),
+                    publish_at: Timestamp::now(),
                 },
                 ..draft("resilient")
             },
             SaveIntent::Explicit,
-            Utc::now(),
+            Timestamp::now(),
         )
         .await
         .unwrap();
@@ -2548,7 +2549,7 @@ async fn admin_assets_are_fingerprinted_and_immutable() {
 
 #[tokio::test]
 async fn sessions_extend_on_use_without_changing_csrf() {
-    let start = Utc::now();
+    let start = Timestamp::now();
     let clock = TestClock::new(start);
     let harness = Harness::new_with_clock(Arc::new(clock.clone())).await;
     let (cookie, csrf) = harness.session_cookie().await;
@@ -2668,12 +2669,12 @@ async fn settings_form_round_trips_timezone_and_author_and_rejects_unknown_zones
         .create(
             ContentDraft {
                 publication: Publication::Public {
-                    publish_at: Utc::now(),
+                    publish_at: Timestamp::now(),
                 },
                 ..draft("tokyo-time")
             },
             SaveIntent::Explicit,
-            Utc::now(),
+            Timestamp::now(),
         )
         .await
         .unwrap();
@@ -2816,7 +2817,7 @@ async fn owner_preview_renders_the_current_draft_through_the_public_theme() {
                 ..draft("previewed")
             },
             SaveIntent::Explicit,
-            Utc::now(),
+            Timestamp::now(),
         )
         .await
         .unwrap();
@@ -2885,7 +2886,7 @@ async fn owner_preview_renders_the_current_draft_through_the_public_theme() {
                 ..draft("previewed")
             },
             SaveIntent::Autosave,
-            Utc::now(),
+            Timestamp::now(),
         )
         .await
         .unwrap();
@@ -2931,7 +2932,7 @@ async fn owner_preview_renders_the_current_draft_through_the_public_theme() {
 }
 
 /// A session issued at a chosen instant, for scenarios driven by the test clock.
-async fn session_at(harness: &Harness, at: DateTime<Utc>) -> (String, String) {
+async fn session_at(harness: &Harness, at: Timestamp) -> (String, String) {
     let session = harness.auth.create_session(at).await.unwrap();
     (
         format!(
@@ -2949,7 +2950,7 @@ async fn session_at(harness: &Harness, at: DateTime<Utc>) -> (String, String) {
     reason = "the whole life of a preview link in one scenario"
 )]
 async fn share_links_are_hashed_capabilities_with_a_seven_day_ttl() {
-    let start = Utc::now();
+    let start = Timestamp::now();
     let clock = TestClock::new(start);
     let harness = Harness::new_with_clock(Arc::new(clock.clone())).await;
     let (cookie, csrf) = session_at(&harness, start).await;
@@ -2988,7 +2989,7 @@ async fn share_links_are_hashed_capabilities_with_a_seven_day_ttl() {
     assert_eq!(token.len(), 43, "{url}");
     assert_eq!(
         link["expires_at"].as_str().unwrap(),
-        (start + Duration::days(7)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        (start + Duration::days(7)).rfc3339_seconds()
     );
 
     // Anyone holding the link reads the draft; no session, no index.
@@ -3098,7 +3099,7 @@ async fn editor_exposes_the_preview_frame_and_share_controls() {
     let (cookie, _csrf) = harness.session_cookie().await;
     let piece = harness
         .contents
-        .create(draft("framed"), SaveIntent::Explicit, Utc::now())
+        .create(draft("framed"), SaveIntent::Explicit, Timestamp::now())
         .await
         .unwrap();
     let editor = text(
@@ -3150,7 +3151,7 @@ async fn editor_exposes_local_draft_markers_and_the_server_timestamp() {
     let (cookie, _csrf) = harness.session_cookie().await;
     let piece = harness
         .contents
-        .create(draft("kept"), SaveIntent::Explicit, Utc::now())
+        .create(draft("kept"), SaveIntent::Explicit, Timestamp::now())
         .await
         .unwrap();
     let editor = text(
@@ -3165,9 +3166,7 @@ async fn editor_exposes_local_draft_markers_and_the_server_timestamp() {
             .await,
     )
     .await;
-    let stamp = piece
-        .updated_at
-        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let stamp = piece.updated_at.rfc3339_seconds();
     for marker in [
         format!("data-updated-at=\"{stamp}\""),
         format!("data-content-id=\"{}\"", piece.id),
@@ -3246,7 +3245,7 @@ async fn tags_endpoint_lists_existing_tags_by_usage() {
                     ..draft(slug)
                 },
                 SaveIntent::Explicit,
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .unwrap();
@@ -3281,12 +3280,10 @@ async fn editor_and_settings_expose_progressive_enhancement_markers() {
     let (cookie, _csrf) = harness.session_cookie().await;
     let piece = harness
         .contents
-        .create(draft("enhanced"), SaveIntent::Explicit, Utc::now())
+        .create(draft("enhanced"), SaveIntent::Explicit, Timestamp::now())
         .await
         .unwrap();
-    let stamp = piece
-        .updated_at
-        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let stamp = piece.updated_at.rfc3339_seconds();
     let editor = text(
         harness
             .send(
@@ -3325,7 +3322,7 @@ async fn editor_and_settings_expose_progressive_enhancement_markers() {
         settings.contains("data-passkey-add"),
         "a fresh login may add a key"
     );
-    let (stale_cookie, _) = session_at(&harness, Utc::now() - Duration::minutes(10)).await;
+    let (stale_cookie, _) = session_at(&harness, Timestamp::now() - Duration::minutes(10)).await;
     let settings = text(
         harness
             .send(
@@ -3360,7 +3357,7 @@ async fn dashboard_page(harness: &Harness, cookie: &str, path: &str) -> String {
 async fn dashboard_paginates_sorts_and_counts() {
     let harness = Harness::new().await;
     let (cookie, _csrf) = harness.session_cookie().await;
-    let now = Utc::now();
+    let now = Timestamp::now();
     for number in 1..=60 {
         harness
             .contents
@@ -3477,7 +3474,7 @@ async fn dashboard_paginates_sorts_and_counts() {
 async fn empty_trash_deletes_everything_in_the_trash_only() {
     let harness = Harness::new().await;
     let (cookie, csrf) = harness.session_cookie().await;
-    let now = Utc::now();
+    let now = Timestamp::now();
     for slug in ["gone-one", "gone-two"] {
         let piece = harness
             .contents
@@ -3574,12 +3571,12 @@ async fn redirects_can_be_listed_added_and_removed_and_reach_the_release() {
         .create(
             ContentDraft {
                 publication: Publication::Public {
-                    publish_at: Utc::now(),
+                    publish_at: Timestamp::now(),
                 },
                 ..draft("current-home")
             },
             SaveIntent::Explicit,
-            Utc::now(),
+            Timestamp::now(),
         )
         .await
         .unwrap();
@@ -3686,7 +3683,7 @@ async fn redirects_can_be_listed_added_and_removed_and_reach_the_release() {
     // The freed address may be taken by new writing again.
     harness
         .contents
-        .create(draft("moved-from"), SaveIntent::Explicit, Utc::now())
+        .create(draft("moved-from"), SaveIntent::Explicit, Timestamp::now())
         .await
         .unwrap();
 }
@@ -3699,12 +3696,12 @@ async fn expected_failures_render_localized_detail() {
     settings.locale = Locale::Ja;
     harness
         .repository
-        .save_configuration(&settings, &[], Utc::now())
+        .save_configuration(&settings, &[], Timestamp::now())
         .await
         .unwrap();
     harness
         .contents
-        .create(draft("held"), SaveIntent::Explicit, Utc::now())
+        .create(draft("held"), SaveIntent::Explicit, Timestamp::now())
         .await
         .unwrap();
 
@@ -3759,14 +3756,14 @@ async fn expected_failures_render_localized_detail() {
 
 #[tokio::test]
 async fn backup_download_requires_recent_reauth_and_returns_an_archive() {
-    let start = Utc::now();
+    let start = Timestamp::now();
     let clock = TestClock::new(start);
     let harness = Harness::new_with_clock(Arc::new(clock.clone())).await;
     let backups = harness._temp.path().join("backups");
     let form = "application/x-www-form-urlencoded";
 
     let (stale_cookie, stale_csrf) =
-        session_at(&harness, start - chrono::Duration::minutes(10)).await;
+        session_at(&harness, start - time::SignedDuration::minutes(10)).await;
     let refused = harness
         .send(
             Method::POST,

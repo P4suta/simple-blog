@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use chrono::{TimeZone, Utc};
 use simple_blog::release::{
     FilesystemReleaseStore, ReleaseBuilder, ReleaseError, ReleasePublisher, ReleaseResolver,
     ReleaseStore, ResolvedRoute,
 };
+use simple_blog::timestamp::Timestamp;
 
 async fn published_site() -> (
     tempfile::TempDir,
@@ -21,7 +21,7 @@ async fn published_site() -> (
             "text/html; charset=utf-8",
             Some(42),
             200,
-            Some(Utc.with_ymd_and_hms(2026, 9, 2, 1, 2, 3).unwrap()),
+            Some(Timestamp::from_utc_components(2026, 9, 2, 1, 2, 3).unwrap()),
         )
         .unwrap()
         .redirect("/essay", "/essay/", 308)
@@ -64,7 +64,7 @@ async fn resolver_returns_host_neutral_asset_metadata_and_bytes() {
     assert_eq!(asset.content_id, Some(42));
     assert_eq!(
         asset.last_modified,
-        Some(Utc.with_ymd_and_hms(2026, 9, 2, 1, 2, 3).unwrap())
+        Some(Timestamp::from_utc_components(2026, 9, 2, 1, 2, 3).unwrap())
     );
     assert_eq!(asset.body, b"essay");
     assert!(!asset.fallback);

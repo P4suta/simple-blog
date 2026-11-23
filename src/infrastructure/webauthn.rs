@@ -1,6 +1,7 @@
-use chrono::{DateTime, Duration as ChronoDuration, Utc};
+use crate::timestamp::Timestamp;
 use dashmap::DashMap;
 use thiserror::Error;
+use time::SignedDuration;
 use url::Url;
 use uuid::Uuid;
 use webauthn_rs::{Webauthn, WebauthnBuilder, prelude::*};
@@ -37,12 +38,12 @@ enum Challenge {
     Registration {
         user_handle: Uuid,
         state: PasskeyRegistration,
-        expires_at: DateTime<Utc>,
+        expires_at: Timestamp,
     },
     Authentication {
         state: PasskeyAuthentication,
         passkeys: Vec<Passkey>,
-        expires_at: DateTime<Utc>,
+        expires_at: Timestamp,
     },
 }
 
@@ -84,7 +85,7 @@ impl PasskeyCeremony {
         &self,
         user_handle: Uuid,
         excluded_credentials: &[Vec<u8>],
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<RegistrationStart, PasskeyError> {
         self.remove_expired(now);
         let excluded = (!excluded_credentials.is_empty()).then(|| {
@@ -103,7 +104,7 @@ impl PasskeyCeremony {
             Challenge::Registration {
                 user_handle,
                 state,
-                expires_at: now + ChronoDuration::minutes(CHALLENGE_TTL_MINUTES),
+                expires_at: now + SignedDuration::minutes(CHALLENGE_TTL_MINUTES),
             },
         );
         Ok(RegistrationStart { flow_id, public })
@@ -113,7 +114,7 @@ impl PasskeyCeremony {
         &self,
         flow_id: Uuid,
         credential: &RegisterPublicKeyCredential,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<RegisteredPasskey, PasskeyError> {
         let Some((_, challenge)) = self.challenges.remove(&flow_id) else {
             return Err(PasskeyError::InvalidChallenge);
@@ -146,7 +147,7 @@ impl PasskeyCeremony {
     pub fn start_authentication(
         &self,
         passkey_json: &[String],
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<AuthenticationStart, PasskeyError> {
         self.remove_expired(now);
         let passkeys: Vec<Passkey> = passkey_json
@@ -169,7 +170,7 @@ impl PasskeyCeremony {
             Challenge::Authentication {
                 state,
                 passkeys,
-                expires_at: now + ChronoDuration::minutes(CHALLENGE_TTL_MINUTES),
+                expires_at: now + SignedDuration::minutes(CHALLENGE_TTL_MINUTES),
             },
         );
         Ok(AuthenticationStart { flow_id, public })
@@ -179,7 +180,7 @@ impl PasskeyCeremony {
         &self,
         flow_id: Uuid,
         credential: &PublicKeyCredential,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<AuthenticatedPasskey, PasskeyError> {
         let Some((_, challenge)) = self.challenges.remove(&flow_id) else {
             return Err(PasskeyError::InvalidChallenge);
@@ -225,7 +226,7 @@ impl PasskeyCeremony {
         self.challenges.len()
     }
 
-    fn remove_expired(&self, now: DateTime<Utc>) {
+    fn remove_expired(&self, now: Timestamp) {
         self.challenges.retain(|_, challenge| match challenge {
             Challenge::Registration { expires_at, .. }
             | Challenge::Authentication { expires_at, .. } => *expires_at >= now,

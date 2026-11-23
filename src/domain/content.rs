@@ -1,6 +1,6 @@
 use std::{fmt, str::FromStr};
 
-use chrono::{DateTime, Utc};
+use crate::timestamp::Timestamp;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -59,14 +59,14 @@ impl Slug {
     ///
     /// Always digit-leading, so it can never collide with `RESERVED_SLUGS`.
     #[must_use]
-    pub fn timestamped(now: DateTime<Utc>) -> Self {
-        Self(now.format("%Y%m%d-%H%M").to_string())
+    pub fn timestamped(now: Timestamp) -> Self {
+        Self(now.compact_minute())
     }
 
     /// Second-resolution variant used to resolve same-minute collisions.
     #[must_use]
-    pub fn timestamped_precise(now: DateTime<Utc>) -> Self {
-        Self(now.format("%Y%m%d-%H%M%S").to_string())
+    pub fn timestamped_precise(now: Timestamp) -> Self {
+        Self(now.compact_second())
     }
 
     /// The address a title suggests: transliterated and hyphenated when the
@@ -75,7 +75,7 @@ impl Slug {
     /// would read 日本語 with Chinese readings and produce an address nobody
     /// recognises, and a date is at least honest.
     #[must_use]
-    pub fn from_title(title: &str, now: DateTime<Utc>) -> Self {
+    pub fn from_title(title: &str, now: Timestamp) -> Self {
         if title.chars().any(is_cjk) {
             return Self::timestamped(now);
         }
@@ -198,17 +198,17 @@ impl FromStr for ContentKind {
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum Publication {
     Draft,
-    Public { publish_at: DateTime<Utc> },
+    Public { publish_at: Timestamp },
 }
 
 impl Publication {
     #[must_use]
-    pub fn is_visible_at(&self, now: DateTime<Utc>) -> bool {
+    pub fn is_visible_at(&self, now: Timestamp) -> bool {
         matches!(self, Self::Public { publish_at } if *publish_at <= now)
     }
 
     #[must_use]
-    pub const fn publish_at(&self) -> Option<DateTime<Utc>> {
+    pub const fn publish_at(&self) -> Option<Timestamp> {
         match self {
             Self::Draft => None,
             Self::Public { publish_at } => Some(*publish_at),
@@ -217,7 +217,7 @@ impl Publication {
 
     /// Public, but not yet visible: the entry is waiting for its boundary.
     #[must_use]
-    pub fn is_scheduled_at(&self, now: DateTime<Utc>) -> bool {
+    pub fn is_scheduled_at(&self, now: Timestamp) -> bool {
         matches!(self, Self::Public { publish_at } if *publish_at > now)
     }
 }
@@ -312,13 +312,13 @@ pub struct Content {
     pub seo_description: Option<String>,
     pub publication: Publication,
     pub version: i64,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
     /// Set while the piece sits in the trash (ADR 0014). Omitted from the
     /// serialized form when empty, so revision snapshots and portable
     /// archives without trashed content stay byte-identical to older ones.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub deleted_at: Option<DateTime<Utc>>,
+    pub deleted_at: Option<Timestamp>,
 }
 
 impl Content {
@@ -351,5 +351,5 @@ pub struct ContentRevision {
     pub content_id: ContentId,
     pub intent: SaveIntent,
     pub snapshot: Content,
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
 }

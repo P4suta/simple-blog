@@ -11,8 +11,8 @@ use std::{
     sync::Arc,
 };
 
+use crate::timestamp::Timestamp;
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::{io::AsyncWriteExt, sync::Mutex};
@@ -103,7 +103,7 @@ pub enum ReleaseRoute {
         cache_control: String,
         status: u16,
         #[serde(skip_serializing_if = "Option::is_none")]
-        last_modified: Option<DateTime<Utc>>,
+        last_modified: Option<Timestamp>,
         #[serde(skip_serializing_if = "Option::is_none")]
         content_id: Option<i64>,
     },
@@ -155,7 +155,7 @@ impl ReleaseRoute {
     }
 
     #[must_use]
-    pub const fn last_modified(&self) -> Option<DateTime<Utc>> {
+    pub const fn last_modified(&self) -> Option<Timestamp> {
         match self {
             Self::Asset { last_modified, .. } => *last_modified,
             Self::Redirect { .. } => None,
@@ -246,7 +246,7 @@ impl ReleaseBuilder {
         content_type: &str,
         content_id: Option<i64>,
         status: u16,
-        last_modified: Option<DateTime<Utc>>,
+        last_modified: Option<Timestamp>,
     ) -> Result<Self, ReleaseError> {
         validate_route(path)?;
         validate_header_value("content type", content_type)?;
@@ -361,7 +361,7 @@ pub struct ResolvedAsset {
     pub status: u16,
     pub content_type: String,
     pub cache_control: String,
-    pub last_modified: Option<DateTime<Utc>>,
+    pub last_modified: Option<Timestamp>,
     pub content_id: Option<i64>,
     pub body: Vec<u8>,
     pub fallback: bool,

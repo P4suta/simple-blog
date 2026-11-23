@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use chrono::{Duration, TimeZone, Utc};
+use simple_blog::timestamp::Timestamp;
+
 use simple_blog::{
     application::{
         content::{ContentService, SaveIntent},
@@ -10,6 +11,7 @@ use simple_blog::{
     infrastructure::{markdown::ComrakMarkdownRenderer, sqlite::SqliteRepository},
 };
 use tempfile::TempDir;
+use time::SignedDuration as Duration;
 
 async fn harness() -> (TempDir, Arc<SqliteRepository>, ContentService) {
     let temp = tempfile::tempdir().expect("temp directory");
@@ -53,7 +55,7 @@ async fn migration_enables_safe_sqlite_pragmas() {
 #[tokio::test]
 async fn canonical_markdown_and_safe_html_are_saved_together() {
     let (_temp, repository, service) = harness().await;
-    let now = Utc.with_ymd_and_hms(2026, 8, 30, 12, 0, 0).unwrap();
+    let now = Timestamp::from_utc_components(2026, 8, 30, 12, 0, 0).unwrap();
 
     let created = service
         .create(
@@ -84,7 +86,7 @@ async fn malformed_cover_media_identity_is_rejected_before_storage() {
     let mut draft = post("invalid-cover", Publication::Draft);
     draft.cover_media_id = Some("../../config.toml".into());
     let error = service
-        .create(draft, SaveIntent::Explicit, Utc::now())
+        .create(draft, SaveIntent::Explicit, Timestamp::now())
         .await
         .unwrap_err();
     assert!(matches!(error, RepositoryError::Validation(_)));
@@ -93,7 +95,7 @@ async fn malformed_cover_media_identity_is_rejected_before_storage() {
 #[tokio::test]
 async fn scheduled_posts_are_selected_by_request_time() {
     let (_temp, repository, service) = harness().await;
-    let now = Utc.with_ymd_and_hms(2026, 8, 30, 12, 0, 0).unwrap();
+    let now = Timestamp::from_utc_components(2026, 8, 30, 12, 0, 0).unwrap();
     let publish_at = now + Duration::minutes(10);
     service
         .create(
@@ -123,7 +125,7 @@ async fn scheduled_posts_are_selected_by_request_time() {
 #[tokio::test]
 async fn stale_autosave_returns_conflict_without_overwriting() {
     let (_temp, repository, service) = harness().await;
-    let now = Utc::now();
+    let now = Timestamp::now();
     let created = service
         .create(
             post("locking", Publication::Draft),
@@ -166,7 +168,7 @@ async fn stale_autosave_returns_conflict_without_overwriting() {
 #[tokio::test]
 async fn explicit_saves_and_pruned_autosaves_form_a_revision_timeline() {
     let (_temp, repository, service) = harness().await;
-    let start = Utc::now();
+    let start = Timestamp::now();
     let mut content = service
         .create(
             post("history", Publication::Draft),
@@ -223,7 +225,7 @@ async fn explicit_saves_and_pruned_autosaves_form_a_revision_timeline() {
 #[tokio::test]
 async fn changing_slug_atomically_creates_a_redirect_to_the_current_slug() {
     let (_temp, repository, service) = harness().await;
-    let now = Utc::now();
+    let now = Timestamp::now();
     let created = service
         .create(
             post("old-address", Publication::Public { publish_at: now }),
@@ -255,7 +257,7 @@ async fn changing_slug_atomically_creates_a_redirect_to_the_current_slug() {
 #[tokio::test]
 async fn restoring_a_revision_is_an_explicit_optimistically_locked_save() {
     let (_temp, repository, service) = harness().await;
-    let now = Utc::now();
+    let now = Timestamp::now();
     let first = service
         .create(
             post("restorable", Publication::Draft),
@@ -311,7 +313,7 @@ async fn restoring_a_revision_is_an_explicit_optimistically_locked_save() {
 #[tokio::test]
 async fn reverting_to_an_own_historical_slug_keeps_only_the_other_slug_as_a_redirect() {
     let (_temp, repository, service) = harness().await;
-    let now = Utc::now();
+    let now = Timestamp::now();
     let first = service
         .create(
             post("first-address", Publication::Public { publish_at: now }),
@@ -358,7 +360,7 @@ async fn reverting_to_an_own_historical_slug_keeps_only_the_other_slug_as_a_redi
 #[tokio::test]
 async fn active_and_historical_slugs_are_globally_unique() {
     let (_temp, _repository, service) = harness().await;
-    let now = Utc::now();
+    let now = Timestamp::now();
     // Public, so the rename below leaves a historical address behind.
     let first = service
         .create(
@@ -399,7 +401,7 @@ async fn active_and_historical_slugs_are_globally_unique() {
 #[tokio::test]
 async fn listing_many_pieces_keeps_every_tag_in_position_order() {
     let (_temp, repository, service) = harness().await;
-    let now = Utc.with_ymd_and_hms(2026, 9, 3, 9, 0, 0).unwrap();
+    let now = Timestamp::from_utc_components(2026, 9, 3, 9, 0, 0).unwrap();
     for index in 0..30 {
         service
             .create(
@@ -457,7 +459,7 @@ async fn trashed_content_leaves_every_public_query_but_keeps_its_slug() {
     use simple_blog::domain::search::parse_query;
 
     let (_temp, repository, service) = harness().await;
-    let now = Utc.with_ymd_and_hms(2026, 9, 3, 10, 0, 0).unwrap();
+    let now = Timestamp::from_utc_components(2026, 9, 3, 10, 0, 0).unwrap();
     let created = service
         .create(
             post("first-post", Publication::Public { publish_at: now }),
@@ -558,7 +560,7 @@ async fn trashed_content_leaves_every_public_query_but_keeps_its_slug() {
 #[tokio::test]
 async fn trash_requires_the_current_version_and_refuses_edits_until_restored() {
     let (_temp, repository, service) = harness().await;
-    let now = Utc.with_ymd_and_hms(2026, 9, 3, 10, 0, 0).unwrap();
+    let now = Timestamp::from_utc_components(2026, 9, 3, 10, 0, 0).unwrap();
     let created = service
         .create(
             post("guarded", Publication::Draft),
@@ -626,7 +628,7 @@ async fn trash_requires_the_current_version_and_refuses_edits_until_restored() {
 #[tokio::test]
 async fn permanent_delete_only_applies_to_trashed_content_and_cascades() {
     let (_temp, repository, service) = harness().await;
-    let now = Utc.with_ymd_and_hms(2026, 9, 3, 10, 0, 0).unwrap();
+    let now = Timestamp::from_utc_components(2026, 9, 3, 10, 0, 0).unwrap();
     let created = service
         .create(
             post("old-name", Publication::Public { publish_at: now }),
@@ -722,7 +724,7 @@ async fn permanent_delete_only_applies_to_trashed_content_and_cascades() {
 #[tokio::test]
 async fn renaming_a_draft_leaves_no_redirect_behind() {
     let (_temp, repository, service) = harness().await;
-    let now = Utc::now();
+    let now = Timestamp::now();
     let created = service
         .create(
             post("first-thoughts", Publication::Draft),
@@ -800,8 +802,8 @@ async fn renaming_a_draft_leaves_no_redirect_behind() {
 #[tokio::test]
 async fn renaming_a_scheduled_piece_leaves_no_redirect_behind() {
     let (_temp, repository, service) = harness().await;
-    let now = Utc::now();
-    let later = now + chrono::Duration::hours(1);
+    let now = Timestamp::now();
+    let later = now + time::SignedDuration::hours(1);
     let created = service
         .create(
             post("tomorrow", Publication::Public { publish_at: later }),

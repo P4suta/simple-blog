@@ -4,8 +4,8 @@ use axum::{
     body::Body,
     http::{Method, Request, StatusCode, header},
 };
-use chrono::{Duration, Utc};
 use http_body_util::BodyExt;
+use simple_blog::timestamp::Timestamp;
 use simple_blog::{
     application::{
         content::{ContentService, SaveIntent},
@@ -16,6 +16,7 @@ use simple_blog::{
     infrastructure::{markdown::ComrakMarkdownRenderer, sqlite::SqliteRepository},
     web::{AppState, router},
 };
+use time::SignedDuration as Duration;
 use tower::ServiceExt;
 
 struct Harness {
@@ -71,7 +72,7 @@ impl Harness {
                     publication,
                 },
                 SaveIntent::Explicit,
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .unwrap()
@@ -110,7 +111,7 @@ impl Harness {
 #[tokio::test]
 async fn likes_toggle_up_and_down_and_never_go_negative() {
     let harness = Harness::new().await;
-    let publish_at = Utc::now() - Duration::seconds(1);
+    let publish_at = Timestamp::now() - Duration::seconds(1);
     let content = harness
         .seed("liked-post", Publication::Public { publish_at })
         .await;
@@ -118,7 +119,7 @@ async fn likes_toggle_up_and_down_and_never_go_negative() {
     let count = || async {
         harness
             .repository
-            .like_count(content.id, Utc::now())
+            .like_count(content.id, Timestamp::now())
             .await
             .unwrap()
     };
@@ -157,7 +158,7 @@ async fn invisible_content_cannot_be_probed_through_likes() {
         .seed(
             "future-post",
             Publication::Public {
-                publish_at: Utc::now() + Duration::hours(1),
+                publish_at: Timestamp::now() + Duration::hours(1),
             },
         )
         .await;
@@ -182,7 +183,7 @@ async fn form_encoded_posts_are_rejected_as_a_csrf_guard() {
         .seed(
             "guarded-post",
             Publication::Public {
-                publish_at: Utc::now() - Duration::seconds(1),
+                publish_at: Timestamp::now() - Duration::seconds(1),
             },
         )
         .await;
@@ -206,7 +207,7 @@ async fn article_pages_carry_the_like_button_and_home_stays_script_free() {
         .seed(
             "essay",
             Publication::Public {
-                publish_at: Utc::now() - Duration::seconds(1),
+                publish_at: Timestamp::now() - Duration::seconds(1),
             },
         )
         .await;

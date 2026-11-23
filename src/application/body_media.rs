@@ -214,7 +214,7 @@ fn attributes(tag: &str) -> Vec<(&str, &str)> {
 
 #[cfg(test)]
 mod tests {
-    use chrono::Utc;
+    use crate::timestamp::Timestamp;
 
     use super::*;
     use crate::domain::media::{MediaId, MediaVariant};
@@ -246,7 +246,7 @@ mod tests {
                     filename: format!("{id}-960w.webp"),
                 },
             ],
-            created_at: Utc::now(),
+            created_at: Timestamp::now(),
             id,
         }
     }

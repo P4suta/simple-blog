@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use chrono::Utc;
+use simple_blog::timestamp::Timestamp;
 use simple_blog::{
     application::{
         content::{ContentService, SaveIntent},
@@ -84,11 +84,11 @@ async fn seeded(temp: &tempfile::TempDir) -> (Config, Arc<SqliteRepository>) {
                 seo_title: Some("Portable SEO".into()),
                 seo_description: None,
                 publication: Publication::Public {
-                    publish_at: Utc::now(),
+                    publish_at: Timestamp::now(),
                 },
             },
             SaveIntent::Explicit,
-            Utc::now(),
+            Timestamp::now(),
         )
         .await
         .unwrap();
@@ -99,9 +99,10 @@ async fn seeded(temp: &tempfile::TempDir) -> (Config, Arc<SqliteRepository>) {
 async fn restore_cleans_disposable_staging_when_activation_fails_before_an_intent() {
     let source = tempfile::tempdir().unwrap();
     let (source_config, repository) = seeded(&source).await;
-    let archive = BackupService::create(&source_config, repository.as_ref(), None, Utc::now())
-        .await
-        .unwrap();
+    let archive =
+        BackupService::create(&source_config, repository.as_ref(), None, Timestamp::now())
+            .await
+            .unwrap();
     let target = tempfile::tempdir().unwrap();
     let destination = target.path().join("destination");
     let hash = blake3::hash(b"destination").to_hex();
@@ -138,13 +139,14 @@ async fn backup_and_restore_round_trip_database_config_and_media() {
     .unwrap();
     let media = LocalMediaService::new(source_config.media_dir(), repository.clone(), 1024 * 1024);
     let asset = media
-        .store("pixel.gif", gif(), "pixel", "", Utc::now())
+        .store("pixel.gif", gif(), "pixel", "", Timestamp::now())
         .await
         .unwrap();
 
-    let archive = BackupService::create(&source_config, repository.as_ref(), None, Utc::now())
-        .await
-        .unwrap();
+    let archive =
+        BackupService::create(&source_config, repository.as_ref(), None, Timestamp::now())
+            .await
+            .unwrap();
     assert!(archive.is_file());
     assert!(
         archive
@@ -163,7 +165,7 @@ async fn backup_and_restore_round_trip_database_config_and_media() {
             .unwrap(),
     );
     let post = restored
-        .find_public_by_slug(&Slug::parse("portable-post").unwrap(), Utc::now())
+        .find_public_by_slug(&Slug::parse("portable-post").unwrap(), Timestamp::now())
         .await
         .unwrap();
     assert_eq!(post.unwrap().body_markdown, "# Canonical Markdown\n\nBody.");
@@ -184,7 +186,7 @@ async fn export_writes_front_matter_markdown_and_plain_media_files() {
     let (config, repository) = seeded(&source).await;
     let output = source.path().join("portable-export");
 
-    Exporter::export(&config, repository.as_ref(), &output, Utc::now())
+    Exporter::export(&config, repository.as_ref(), &output, Timestamp::now())
         .await
         .unwrap();
     let markdown = std::fs::read_to_string(output.join("posts/portable-post.md")).unwrap();
@@ -207,7 +209,7 @@ async fn doctor_reports_missing_media_without_mutating_state() {
     assert!(!config.data_dir.join(".simple-blog-doctor-probe").exists());
 
     sqlx::query("INSERT INTO media (id, original_name, mime_type, extension, width, height, byte_size, created_at) VALUES (?, 'missing.png', 'image/png', 'png', 1, 1, 1, ?)")
-        .bind("a".repeat(64)).bind(Utc::now()).execute(repository.pool()).await.unwrap();
+        .bind("a".repeat(64)).bind(Timestamp::now()).execute(repository.pool()).await.unwrap();
     let report = Doctor::inspect(&config, repository.as_ref()).await.unwrap();
     assert!(!report.is_healthy());
     assert!(
@@ -248,7 +250,7 @@ async fn doctor_distinguishes_corrupt_orphaned_and_interrupted_media_files() {
     std::fs::create_dir_all(config.backup_dir()).unwrap();
     let media = LocalMediaService::new(config.media_dir(), repository.clone(), 1024 * 1024);
     let asset = media
-        .store("pixel.gif", gif(), "pixel", "", Utc::now())
+        .store("pixel.gif", gif(), "pixel", "", Timestamp::now())
         .await
         .unwrap();
     std::fs::write(
@@ -382,7 +384,7 @@ async fn pending_migrations_create_a_schema_independent_safety_backup_first() {
         .unwrap();
     legacy.close().await.unwrap();
 
-    let opened = MigrationCoordinator::open(&config, Utc::now())
+    let opened = MigrationCoordinator::open(&config, Timestamp::now())
         .await
         .unwrap();
     let backup = opened.safety_backup.clone().expect("pre-migration backup");
@@ -394,7 +396,7 @@ async fn pending_migrations_create_a_schema_independent_safety_backup_first() {
     assert!(migrated >= 2);
     opened.repository.close().await;
 
-    let current = MigrationCoordinator::open(&config, Utc::now())
+    let current = MigrationCoordinator::open(&config, Timestamp::now())
         .await
         .unwrap();
     assert!(current.safety_backup.is_none());
@@ -461,7 +463,7 @@ async fn failed_migration_leaves_a_restorable_safety_backup_and_no_snapshot() {
         .unwrap();
     legacy.close().await.unwrap();
 
-    let error = MigrationCoordinator::open(&config, Utc::now())
+    let error = MigrationCoordinator::open(&config, Timestamp::now())
         .await
         .unwrap_err();
     let entries: Vec<_> = std::fs::read_dir(config.backup_dir())
@@ -515,7 +517,7 @@ async fn export_then_import_round_trips_every_field() {
     let (config, repository) = seeded(&source).await;
     let media = LocalMediaService::new(config.media_dir(), repository.clone(), 1024 * 1024);
     let asset = media
-        .store("pixel.gif", gif(), "pixel", "", Utc::now())
+        .store("pixel.gif", gif(), "pixel", "", Timestamp::now())
         .await
         .unwrap();
     let content = ContentService::new(
@@ -537,12 +539,12 @@ async fn export_then_import_round_trips_every_field() {
                 publication: Publication::Draft,
             },
             SaveIntent::Explicit,
-            Utc::now(),
+            Timestamp::now(),
         )
         .await
         .unwrap();
     let output = source.path().join("portable-export");
-    Exporter::export(&config, repository.as_ref(), &output, Utc::now())
+    Exporter::export(&config, repository.as_ref(), &output, Timestamp::now())
         .await
         .unwrap();
 
@@ -554,7 +556,7 @@ async fn export_then_import_round_trips_every_field() {
             .await
             .unwrap(),
     );
-    let report = Importer::import(&target_config, &target, &output, false, Utc::now())
+    let report = Importer::import(&target_config, &target, &output, false, Timestamp::now())
         .await
         .unwrap();
     assert_eq!(
@@ -586,7 +588,7 @@ async fn export_then_import_round_trips_every_field() {
     assert_eq!(post.body_markdown, "# Canonical Markdown\n\nBody.\n");
 
     // A second import skips what exists unless told to replace it.
-    let again = Importer::import(&target_config, &target, &output, false, Utc::now())
+    let again = Importer::import(&target_config, &target, &output, false, Timestamp::now())
         .await
         .unwrap();
     assert!(again.imported.is_empty());
@@ -597,12 +599,12 @@ async fn export_then_import_round_trips_every_field() {
         "---\ntitle: \"Portable post, revised\"\nslug: portable-post\nkind: post\nstatus: public\n---\nNew body.\n",
     )
     .unwrap();
-    let forced = Importer::import(&target_config, &target, &output, true, Utc::now())
+    let forced = Importer::import(&target_config, &target, &output, true, Timestamp::now())
         .await
         .unwrap();
     assert!(forced.imported.contains(&"portable-post".to_owned()));
     let revised = target
-        .find_public_by_slug(&Slug::parse("portable-post").unwrap(), Utc::now())
+        .find_public_by_slug(&Slug::parse("portable-post").unwrap(), Timestamp::now())
         .await
         .unwrap()
         .unwrap();
@@ -634,7 +636,7 @@ async fn plain_markdown_files_become_drafts_titled_from_the_first_heading() {
             .unwrap(),
     );
 
-    let report = Importer::import(&config, &repository, &folder, false, Utc::now())
+    let report = Importer::import(&config, &repository, &folder, false, Timestamp::now())
         .await
         .unwrap();
     assert_eq!(
@@ -656,7 +658,7 @@ async fn plain_markdown_files_become_drafts_titled_from_the_first_heading() {
         &repository,
         &folder.join("nowhere"),
         false,
-        Utc::now(),
+        Timestamp::now(),
     )
     .await;
     assert!(matches!(missing, Err(OperationError::InvalidData(_))));
@@ -670,15 +672,13 @@ fn config_for(data_dir: &std::path::Path) -> Config {
 async fn backup_rotation_keeps_the_newest_n() {
     let temp = tempfile::tempdir().unwrap();
     let (config, repository) = seeded(&temp).await;
-    let base = chrono::DateTime::parse_from_rfc3339("2026-09-03T01:00:00Z")
-        .unwrap()
-        .with_timezone(&Utc);
+    let base = Timestamp::from_rfc3339("2026-09-03T01:00:00Z").unwrap();
     for hour in 0..3 {
         BackupService::create(
             &config,
             repository.as_ref(),
             None,
-            base + chrono::Duration::hours(hour),
+            base + time::SignedDuration::hours(hour),
         )
         .await
         .unwrap();

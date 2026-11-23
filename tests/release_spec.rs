@@ -4,11 +4,11 @@ use std::{
 };
 
 use async_trait::async_trait;
-use chrono::{TimeZone, Utc};
 use simple_blog::release::{
     ActiveRelease, FilesystemReleaseStore, PreparedRelease, ReleaseBuilder, ReleaseError,
     ReleaseId, ReleasePublisher, ReleaseReader, ReleaseStore,
 };
+use simple_blog::timestamp::Timestamp;
 
 #[test]
 fn release_identity_is_deterministic_and_independent_of_insertion_order() {
@@ -311,7 +311,7 @@ fn manifest_json_is_a_stable_public_contract() {
 
 #[test]
 fn asset_response_metadata_is_portable_and_validated() {
-    let modified = Utc.with_ymd_and_hms(2026, 9, 2, 12, 34, 56).unwrap();
+    let modified = Timestamp::from_utc_components(2026, 9, 2, 12, 34, 56).unwrap();
     let release = ReleaseBuilder::clean(1, "https://writing.example")
         .unwrap()
         .asset_with_metadata(

@@ -1,7 +1,7 @@
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
+use crate::timestamp::Timestamp;
 use anyhow::{Context, Result, anyhow, bail};
-use chrono::Utc;
 use clap::{Parser, Subcommand};
 use tokio::net::TcpListener;
 use url::Url;
@@ -325,7 +325,7 @@ async fn init(overrides: Overrides) -> Result<()> {
         return Ok(());
     }
     let token = AuthService::new(repository, Arc::new(SystemEntropy))
-        .issue_setup_token(SetupPurpose::Initial, Utc::now())
+        .issue_setup_token(SetupPurpose::Initial, Timestamp::now())
         .await
         .context("could not issue setup token")?;
     println!(
@@ -399,7 +399,7 @@ async fn serve(overrides: Overrides) -> Result<()> {
         // A fresh installation started with `serve` alone must still be
         // claimable: print the same one-time setup link `init` would.
         let token = AuthService::new(repository.clone(), Arc::new(SystemEntropy))
-            .issue_setup_token(SetupPurpose::Initial, Utc::now())
+            .issue_setup_token(SetupPurpose::Initial, Timestamp::now())
             .await
             .context("could not issue setup token")?;
         println!(
@@ -462,7 +462,7 @@ async fn backup(overrides: Overrides, output: Option<PathBuf>) -> Result<()> {
     let repository = open_database(&config)
         .await
         .context("could not open SQLite")?;
-    let archive = BackupService::create(&config, &repository, output, Utc::now())
+    let archive = BackupService::create(&config, &repository, output, Timestamp::now())
         .await
         .context("could not create backup")?;
     println!("{}", archive.display());
@@ -477,7 +477,7 @@ async fn import(overrides: Overrides, directory: PathBuf, force: bool) -> Result
             .await
             .context("could not open SQLite")?,
     );
-    let report = Importer::import(&config, &repository, &directory, force, Utc::now())
+    let report = Importer::import(&config, &repository, &directory, force, Timestamp::now())
         .await
         .with_context(|| format!("could not import {}", directory.display()))?;
     println!(
@@ -515,10 +515,10 @@ async fn export(overrides: Overrides, output: Option<PathBuf>) -> Result<()> {
     let output = output.unwrap_or_else(|| {
         PathBuf::from(format!(
             "simple-blog-export-{}",
-            Utc::now().format("%Y%m%d-%H%M%S")
+            Timestamp::now().compact_second()
         ))
     });
-    let output = Exporter::export(&config, &repository, &output, Utc::now())
+    let output = Exporter::export(&config, &repository, &output, Timestamp::now())
         .await
         .context("could not export content")?;
     println!("{}", output.display());
@@ -534,10 +534,10 @@ async fn migrate_export(overrides: Overrides, output: Option<PathBuf>) -> Result
     let output = output.unwrap_or_else(|| {
         PathBuf::from(format!(
             "simple-blog-{}.simple-blog",
-            Utc::now().format("%Y%m%d-%H%M%S")
+            Timestamp::now().compact_second()
         ))
     });
-    let report = PortableMigrationService::export(&config, &repository, &output, Utc::now())
+    let report = PortableMigrationService::export(&config, &repository, &output, Timestamp::now())
         .await
         .with_context(|| format!("could not create portable archive {}", output.display()))?;
     println!(
@@ -629,7 +629,7 @@ async fn owner_recover(overrides: Overrides) -> Result<()> {
         bail!("cannot recover an installation that has no owner passkey yet")
     }
     let token = AuthService::new(repository, Arc::new(SystemEntropy))
-        .issue_setup_token(SetupPurpose::Recovery, Utc::now())
+        .issue_setup_token(SetupPurpose::Recovery, Timestamp::now())
         .await
         .context("could not issue recovery token")?;
     println!("Open this link within 15 minutes to register a replacement owner passkey:");
@@ -646,7 +646,7 @@ fn data_dir(overrides: &Overrides) -> PathBuf {
 }
 
 async fn open_database(config: &Config) -> Result<SqliteRepository> {
-    MigrationCoordinator::open(config, Utc::now())
+    MigrationCoordinator::open(config, Timestamp::now())
         .await
         .map(|database| database.repository)
         .context("database preparation failed")

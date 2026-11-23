@@ -5,8 +5,9 @@ use std::{
     io::{Cursor, Write},
 };
 
-use chrono::{DateTime, TimeZone, Utc};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
+use simple_blog::timestamp::Timestamp;
 use simple_blog::{
     domain::{
         content::{Content, ContentId, ContentKind, Publication, Slug},
@@ -19,7 +20,7 @@ use simple_blog::{
 };
 
 fn package() -> PortablePackage {
-    let at = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
+    let at = Timestamp::from_utc_components(2026, 9, 2, 12, 0, 0).unwrap();
     let content = Content {
         id: ContentId::from_i64(7),
         kind: ContentKind::Post,
@@ -83,10 +84,12 @@ fn portable_archive_round_trips_all_logical_data_and_is_byte_deterministic() {
     let second_report = PortableArchive::write(&package, &second).unwrap();
 
     assert_eq!(first_report.archive_id, second_report.archive_id);
+    let bytes = std::fs::read(&first).unwrap();
     assert_eq!(
-        std::fs::read(&first).unwrap(),
-        std::fs::read(&second).unwrap()
+        hex::encode(Sha256::digest(&bytes)),
+        "304e75957f9280e59c4a44557a913cec53bebe47bd80745560dc57917b3f041f"
     );
+    assert_eq!(bytes, std::fs::read(&second).unwrap());
     assert_eq!(PortableArchive::read(&first).unwrap(), package);
     assert_eq!(first_report.entry_count, 1);
 }
@@ -138,7 +141,7 @@ fn archive_manifest_schema_and_site_identity_must_match_exactly() {
     let temp = tempfile::tempdir().unwrap();
     let mismatched = temp.path().join("mismatched.simple-blog");
     let site = package().site;
-    let other_time = Utc.with_ymd_and_hms(2026, 9, 2, 13, 0, 0).unwrap();
+    let other_time = Timestamp::from_utc_components(2026, 9, 2, 13, 0, 0).unwrap();
     write_identity_archive(&mismatched, &site, other_time, ManifestMutation::None);
     assert!(matches!(
         PortableArchive::read(&mismatched).unwrap_err(),
@@ -310,7 +313,7 @@ struct TestArchiveIdentity {
     archive_format_version: u16,
     site_format_version: u16,
     producer_version: String,
-    exported_at: DateTime<Utc>,
+    exported_at: Timestamp,
     entries: BTreeMap<String, TestArchiveEntry>,
 }
 
@@ -324,7 +327,7 @@ struct TestArchiveManifest {
 fn write_identity_archive(
     path: &std::path::Path,
     site: &PortableSiteV1,
-    identity_time: DateTime<Utc>,
+    identity_time: Timestamp,
     mutation: ManifestMutation,
 ) {
     let site_bytes = serde_json::to_vec(site).unwrap();
@@ -394,7 +397,7 @@ fn append_test_entry(
 #[test]
 fn trashed_scheduled_content_does_not_participate_in_the_publication_clock() {
     let mut trashed = package();
-    let later = trashed.site.exported_at + chrono::Duration::hours(2);
+    let later = trashed.site.exported_at + time::SignedDuration::hours(2);
     trashed.site.contents[0].current.publication = Publication::Public { publish_at: later };
     trashed.site.contents[0].current.deleted_at = Some(trashed.site.exported_at);
     trashed.site.publication.next_publish_at = None;
@@ -413,7 +416,7 @@ fn trashed_scheduled_content_does_not_participate_in_the_publication_clock() {
 
     let mut impossible = package();
     impossible.site.contents[0].current.deleted_at =
-        Some(impossible.site.exported_at - chrono::Duration::days(400));
+        Some(impossible.site.exported_at - time::SignedDuration::days(400));
     assert!(
         impossible.validate().is_err(),
         "trashed before it was created is not a valid history"

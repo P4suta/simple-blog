@@ -166,8 +166,8 @@ mod tests {
             seo_description: None,
             publication: crate::domain::content::Publication::Draft,
             version: 1,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
+            created_at: crate::timestamp::Timestamp::now(),
+            updated_at: crate::timestamp::Timestamp::now(),
             deleted_at: None,
         };
         let settings = SiteSettings {

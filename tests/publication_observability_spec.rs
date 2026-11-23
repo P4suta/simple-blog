@@ -3,7 +3,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use chrono::{TimeZone, Utc};
+use simple_blog::timestamp::Timestamp;
 use simple_blog::{
     application::{
         content::{ContentService, SaveIntent},
@@ -60,7 +60,7 @@ async fn publication_trace_has_a_build_id_revision_release_and_phase_events() {
         "https://writing.example",
     )
     .unwrap();
-    let now = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
+    let now = Timestamp::from_utc_components(2026, 9, 2, 12, 0, 0).unwrap();
     content
         .create(
             ContentDraft {

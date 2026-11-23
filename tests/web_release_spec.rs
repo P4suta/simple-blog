@@ -4,8 +4,8 @@ use axum::{
     body::Body,
     http::{Request, StatusCode, header},
 };
-use chrono::{DateTime, TimeZone, Utc};
 use http_body_util::BodyExt;
+use simple_blog::timestamp::Timestamp;
 use simple_blog::{
     application::{
         content::{ContentService, SaveIntent},
@@ -20,10 +20,10 @@ use simple_blog::{
 use tower::ServiceExt;
 
 #[derive(Clone)]
-struct FixedClock(DateTime<Utc>);
+struct FixedClock(Timestamp);
 
 impl Clock for FixedClock {
-    fn now(&self) -> DateTime<Utc> {
+    fn now(&self) -> Timestamp {
         self.0
     }
 }
@@ -34,13 +34,13 @@ struct Harness {
     repository: Arc<SqliteRepository>,
     content: ContentService,
     state: AppState,
-    now: DateTime<Utc>,
+    now: Timestamp,
 }
 
 impl Harness {
     async fn new() -> Self {
         let temp = tempfile::tempdir().unwrap();
-        let now = Utc.with_ymd_and_hms(2026, 9, 2, 12, 34, 56).unwrap();
+        let now = Timestamp::from_utc_components(2026, 9, 2, 12, 34, 56).unwrap();
         let config = Config::resolve(ConfigSources {
             cli: Overrides {
                 data_dir: Some(temp.path().to_owned()),

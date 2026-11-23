@@ -1,7 +1,7 @@
 use std::{collections::HashSet, path::Path, str::FromStr, time::Duration};
 
+use crate::timestamp::Timestamp;
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use sqlx::{
     AssertSqlSafe, FromRow, Row, Sqlite, SqlitePool, Transaction,
     migrate::Migrator,
@@ -50,7 +50,7 @@ impl AuthRepository for SqliteRepository {
         &self,
         token_hash: SecretHash,
         purpose: SetupPurpose,
-        expires_at: DateTime<Utc>,
+        expires_at: Timestamp,
     ) -> Result<(), AuthError> {
         sqlx::query("INSERT INTO setup_tokens (token_hash, purpose, expires_at) VALUES (?, ?, ?)")
             .bind(token_hash.as_bytes().as_slice())
@@ -66,7 +66,7 @@ impl AuthRepository for SqliteRepository {
         &self,
         token_hash: SecretHash,
         purpose: SetupPurpose,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<bool, AuthError> {
         let result = sqlx::query(
             "UPDATE setup_tokens SET consumed_at = ?
@@ -103,7 +103,7 @@ impl AuthRepository for SqliteRepository {
     async fn find_session(
         &self,
         token_hash: SecretHash,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Option<SessionRecord>, AuthError> {
         let row = sqlx::query(
             "UPDATE sessions SET last_seen_at = ?
@@ -132,8 +132,8 @@ impl AuthRepository for SqliteRepository {
     async fn extend_session(
         &self,
         token_hash: SecretHash,
-        expires_at: DateTime<Utc>,
-        now: DateTime<Utc>,
+        expires_at: Timestamp,
+        now: Timestamp,
     ) -> Result<bool, AuthError> {
         let result = sqlx::query(
             "UPDATE sessions SET expires_at = ?, last_seen_at = ?
@@ -153,7 +153,7 @@ impl AuthRepository for SqliteRepository {
         &self,
         old_token_hash: SecretHash,
         replacement: &SessionRecord,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<bool, AuthError> {
         let mut transaction = self.pool.begin().await.map_err(auth_storage)?;
         let result = sqlx::query("DELETE FROM sessions WHERE token_hash = ? AND expires_at > ?")
@@ -196,7 +196,7 @@ impl AuthRepository for SqliteRepository {
     async fn replace_recovery_codes(
         &self,
         code_hashes: &[SecretHash],
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<(), AuthError> {
         let mut transaction = self.pool.begin().await.map_err(auth_storage)?;
         sqlx::query("DELETE FROM recovery_codes")
@@ -218,7 +218,7 @@ impl AuthRepository for SqliteRepository {
     async fn consume_recovery_code(
         &self,
         code_hash: SecretHash,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<bool, AuthError> {
         let result = sqlx::query(
             "UPDATE recovery_codes SET consumed_at = ?
@@ -236,7 +236,7 @@ impl AuthRepository for SqliteRepository {
         &self,
         code_hash: SecretHash,
         session: &SessionRecord,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<bool, AuthError> {
         let mut transaction = self.pool.begin().await.map_err(auth_storage)?;
         let consumed = sqlx::query(
@@ -292,7 +292,7 @@ impl PasskeyRepository for SqliteRepository {
     async fn setup_token_purpose(
         &self,
         token_hash: SecretHash,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Option<SetupPurpose>, AuthError> {
         let purpose: Option<String> = sqlx::query_scalar(
             "SELECT purpose FROM setup_tokens
@@ -408,7 +408,7 @@ impl PasskeyRepository for SqliteRepository {
         credential_id: &[u8],
         passkey_json: &str,
         session: &SessionRecord,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<bool, AuthError> {
         let mut transaction = self.pool.begin().await.map_err(auth_storage)?;
         let updated = sqlx::query(
@@ -429,11 +429,7 @@ impl PasskeyRepository for SqliteRepository {
         Ok(true)
     }
 
-    async fn add_passkey(
-        &self,
-        passkey: &StoredPasskey,
-        now: DateTime<Utc>,
-    ) -> Result<(), AuthError> {
+    async fn add_passkey(&self, passkey: &StoredPasskey, now: Timestamp) -> Result<(), AuthError> {
         sqlx::query(
             "INSERT INTO passkeys (credential_id, name, passkey_json, created_at)
              VALUES (?, ?, ?, ?)",
@@ -478,14 +474,14 @@ struct ContentRow {
     body_markdown: String,
     body_html: String,
     status: String,
-    publish_at: Option<DateTime<Utc>>,
+    publish_at: Option<Timestamp>,
     cover_media_id: Option<String>,
     seo_title: Option<String>,
     seo_description: Option<String>,
     version: i64,
-    created_at: DateTime<Utc>,
-    updated_at: DateTime<Utc>,
-    deleted_at: Option<DateTime<Utc>>,
+    created_at: Timestamp,
+    updated_at: Timestamp,
+    deleted_at: Option<Timestamp>,
 }
 
 impl SqliteRepository {
@@ -653,7 +649,7 @@ impl ContentRepository for SqliteRepository {
         &self,
         prepared: PreparedContent,
         intent: SaveIntent,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Content, RepositoryError> {
         let mut transaction = self.pool.begin().await.map_err(storage)?;
         ensure_slug_available(&mut transaction, &prepared.draft.slug, None).await?;
@@ -701,7 +697,7 @@ impl ContentRepository for SqliteRepository {
         expected_version: i64,
         prepared: PreparedContent,
         intent: SaveIntent,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Content, RepositoryError> {
         let mut transaction = self.pool.begin().await.map_err(storage)?;
         let UpdateTarget {
@@ -804,7 +800,7 @@ impl ContentRepository for SqliteRepository {
     async fn find_public_by_slug(
         &self,
         slug: &Slug,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Option<Content>, RepositoryError> {
         let row = sqlx::query_as::<_, ContentRow>(
             "SELECT * FROM contents
@@ -896,7 +892,7 @@ impl ContentRepository for SqliteRepository {
 
     async fn list_public_posts(
         &self,
-        now: DateTime<Utc>,
+        now: Timestamp,
         limit: u32,
         offset: u32,
     ) -> Result<Vec<Content>, RepositoryError> {
@@ -918,7 +914,7 @@ impl ContentRepository for SqliteRepository {
     async fn list_public_by_tag(
         &self,
         tag: &Slug,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Vec<Content>, RepositoryError> {
         let rows = sqlx::query_as::<_, ContentRow>(
             "SELECT contents.* FROM contents
@@ -936,7 +932,7 @@ impl ContentRepository for SqliteRepository {
         self.hydrate_many(rows).await
     }
 
-    async fn list_all_public(&self, now: DateTime<Utc>) -> Result<Vec<Content>, RepositoryError> {
+    async fn list_all_public(&self, now: Timestamp) -> Result<Vec<Content>, RepositoryError> {
         let rows = sqlx::query_as::<_, ContentRow>(
             "SELECT * FROM contents
              WHERE status = 'public' AND publish_at <= ? AND deleted_at IS NULL
@@ -962,8 +958,8 @@ impl ContentRepository for SqliteRepository {
     async fn neighbor_posts(
         &self,
         id: ContentId,
-        publish_at: DateTime<Utc>,
-        now: DateTime<Utc>,
+        publish_at: Timestamp,
+        now: Timestamp,
     ) -> Result<(Option<ContentLink>, Option<ContentLink>), RepositoryError> {
         // Ties on publish_at are broken by id so the ordering is total and
         // the chain never skips or repeats an entry.
@@ -998,7 +994,7 @@ impl ContentRepository for SqliteRepository {
         &self,
         id: ContentId,
         expected_version: i64,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Content, RepositoryError> {
         let mut transaction = self.pool.begin().await.map_err(storage)?;
         let current = load_content_in(&mut transaction, id)
@@ -1044,7 +1040,7 @@ impl ContentRepository for SqliteRepository {
     async fn restore_from_trash(
         &self,
         id: ContentId,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Content, RepositoryError> {
         let mut transaction = self.pool.begin().await.map_err(storage)?;
         let current = load_content_in(&mut transaction, id)
@@ -1118,7 +1114,7 @@ impl ContentRepository for SqliteRepository {
 /// What an update needs to know about the row it is about to replace.
 struct UpdateTarget {
     old_slug: String,
-    created_at: DateTime<Utc>,
+    created_at: Timestamp,
     was_visible: bool,
 }
 
@@ -1129,7 +1125,7 @@ async fn load_update_target(
     transaction: &mut Transaction<'_, Sqlite>,
     id: ContentId,
     expected_version: i64,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Result<UpdateTarget, RepositoryError> {
     let current = sqlx::query(
         "SELECT slug, version, created_at, status, publish_at, deleted_at
@@ -1140,7 +1136,7 @@ async fn load_update_target(
     .await
     .map_err(storage)?
     .ok_or(RepositoryError::NotFound)?;
-    let deleted_at: Option<DateTime<Utc>> = current.try_get("deleted_at").map_err(storage)?;
+    let deleted_at: Option<Timestamp> = current.try_get("deleted_at").map_err(storage)?;
     if deleted_at.is_some() {
         return Err(RepositoryError::Validation(
             "content is in the trash; restore it before editing".into(),
@@ -1154,8 +1150,7 @@ async fn load_update_target(
         });
     }
     let current_status: String = current.try_get("status").map_err(storage)?;
-    let current_publish_at: Option<DateTime<Utc>> =
-        current.try_get("publish_at").map_err(storage)?;
+    let current_publish_at: Option<Timestamp> = current.try_get("publish_at").map_err(storage)?;
     Ok(UpdateTarget {
         old_slug: current.try_get("slug").map_err(storage)?,
         created_at: current.try_get("created_at").map_err(storage)?,
@@ -1259,7 +1254,7 @@ impl SearchRepository for SqliteRepository {
     async fn search(
         &self,
         terms: &SearchTerms,
-        now: DateTime<Utc>,
+        now: Timestamp,
         limit: u32,
     ) -> Result<Vec<SearchHit>, RepositoryError> {
         if terms.is_empty() {
@@ -1364,8 +1359,8 @@ impl SqliteRepository {
         &self,
         sql: &'static str,
         id: ContentId,
-        publish_at: DateTime<Utc>,
-        now: DateTime<Utc>,
+        publish_at: Timestamp,
+        now: Timestamp,
     ) -> Result<Option<ContentLink>, RepositoryError> {
         let row = sqlx::query(sql)
             .bind(now)
@@ -1390,7 +1385,7 @@ impl SqliteRepository {
     async fn content_is_visible(
         &self,
         id: ContentId,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<bool, RepositoryError> {
         let visible: i64 = sqlx::query_scalar(
             "SELECT EXISTS (
@@ -1409,7 +1404,7 @@ impl SqliteRepository {
 
 #[async_trait]
 impl LikeRepository for SqliteRepository {
-    async fn add_like(&self, id: ContentId, now: DateTime<Utc>) -> Result<u64, RepositoryError> {
+    async fn add_like(&self, id: ContentId, now: Timestamp) -> Result<u64, RepositoryError> {
         // The inner SELECT gates the upsert on public visibility, so an
         // invisible id inserts nothing and RETURNING stays empty.
         let count: Option<i64> = sqlx::query_scalar(
@@ -1429,7 +1424,7 @@ impl LikeRepository for SqliteRepository {
         })
     }
 
-    async fn remove_like(&self, id: ContentId, now: DateTime<Utc>) -> Result<u64, RepositoryError> {
+    async fn remove_like(&self, id: ContentId, now: Timestamp) -> Result<u64, RepositoryError> {
         if !self.content_is_visible(id, now).await? {
             return Err(RepositoryError::NotFound);
         }
@@ -1445,7 +1440,7 @@ impl LikeRepository for SqliteRepository {
         Ok(count.map_or(0, unsigned_count))
     }
 
-    async fn like_count(&self, id: ContentId, now: DateTime<Utc>) -> Result<u64, RepositoryError> {
+    async fn like_count(&self, id: ContentId, now: Timestamp) -> Result<u64, RepositoryError> {
         if !self.content_is_visible(id, now).await? {
             return Err(RepositoryError::NotFound);
         }
@@ -1502,7 +1497,7 @@ impl SiteRepository for SqliteRepository {
         &self,
         old_slug: &Slug,
         content_id: ContentId,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<(), RepositoryError> {
         let mut transaction = self.pool.begin().await.map_err(storage)?;
         let exists: Option<i64> = sqlx::query_scalar("SELECT id FROM contents WHERE id = ?")
@@ -1529,7 +1524,7 @@ impl SiteRepository for SqliteRepository {
     async fn remove_redirect(
         &self,
         old_slug: &Slug,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<bool, RepositoryError> {
         let mut transaction = self.pool.begin().await.map_err(storage)?;
         let result = sqlx::query("DELETE FROM redirects WHERE old_slug = ?")
@@ -1579,7 +1574,7 @@ impl SiteRepository for SqliteRepository {
         &self,
         settings: &SiteSettings,
         navigation: &[NavigationItem],
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<(), RepositoryError> {
         let mut transaction = self.pool.begin().await.map_err(storage)?;
         sqlx::query(
@@ -1639,9 +1634,9 @@ impl PublicSnapshotRepository for SqliteRepository {
     }
 
     #[tracing::instrument(name = "publication.clock.advance", skip_all, fields(now = %now))]
-    async fn advance_publication_clock(&self, now: DateTime<Utc>) -> Result<bool, RepositoryError> {
+    async fn advance_publication_clock(&self, now: Timestamp) -> Result<bool, RepositoryError> {
         let mut transaction = self.pool.begin().await.map_err(storage)?;
-        let next: Option<DateTime<Utc>> =
+        let next: Option<Timestamp> =
             sqlx::query_scalar("SELECT next_publish_at FROM publication_state WHERE singleton = 1")
                 .fetch_one(&mut *transaction)
                 .await
@@ -1664,7 +1659,7 @@ impl PublicSnapshotRepository for SqliteRepository {
     )]
     async fn public_snapshot(
         &self,
-        effective_at: DateTime<Utc>,
+        effective_at: Timestamp,
     ) -> Result<SiteSnapshotV1, RepositoryError> {
         let mut transaction = self.pool.begin().await.map_err(storage)?;
 
@@ -1714,7 +1709,7 @@ impl PortableRepository for SqliteRepository {
     async fn portable_site(
         &self,
         canonical_origin: &str,
-        exported_at: DateTime<Utc>,
+        exported_at: Timestamp,
     ) -> Result<PortableSiteV1, RepositoryError> {
         let mut transaction = self.pool.begin().await.map_err(storage)?;
         let settings = snapshot_settings(&mut transaction).await?;
@@ -2273,7 +2268,7 @@ impl PreviewLinkRepository for SqliteRepository {
     async fn find_preview_link(
         &self,
         token_hash: SecretHash,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Option<ContentId>, AuthError> {
         let content_id: Option<i64> = sqlx::query_scalar(
             "SELECT content_id FROM preview_links WHERE token_hash = ? AND expires_at > ?",
@@ -2424,7 +2419,7 @@ impl MediaRepository for SqliteRepository {
         &self,
         id: &MediaId,
         alt_text: &str,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<bool, MediaRepositoryError> {
         let mut transaction = self.pool.begin().await.map_err(media_storage)?;
         let result = sqlx::query("UPDATE media SET alt_text = ? WHERE id = ?")
@@ -2630,7 +2625,7 @@ async fn snapshot_navigation(
 
 async fn snapshot_contents(
     transaction: &mut Transaction<'_, Sqlite>,
-    effective_at: DateTime<Utc>,
+    effective_at: Timestamp,
 ) -> Result<Vec<Content>, RepositoryError> {
     let rows = sqlx::query_as::<_, ContentRow>(
         "SELECT * FROM contents
@@ -2678,7 +2673,7 @@ async fn snapshot_tags(
 
 async fn snapshot_redirects(
     transaction: &mut Transaction<'_, Sqlite>,
-    effective_at: DateTime<Utc>,
+    effective_at: Timestamp,
 ) -> Result<Vec<PublicRedirect>, RepositoryError> {
     let rows = sqlx::query(
         "SELECT redirects.old_slug, contents.slug AS target_slug
@@ -2780,10 +2775,10 @@ fn locale_from_database(locale: &str) -> Result<Locale, RepositoryError> {
 
 async fn refresh_publication_state(
     transaction: &mut Transaction<'_, Sqlite>,
-    now: DateTime<Utc>,
+    now: Timestamp,
     increment: bool,
 ) -> Result<(), RepositoryError> {
-    let next_publish_at: Option<DateTime<Utc>> = sqlx::query_scalar(
+    let next_publish_at: Option<Timestamp> = sqlx::query_scalar(
         "SELECT MIN(publish_at) FROM contents
          WHERE status = 'public' AND publish_at > ? AND deleted_at IS NULL",
     )
@@ -2867,7 +2862,7 @@ async fn insert_revision(
     transaction: &mut Transaction<'_, Sqlite>,
     content: &Content,
     intent: SaveIntent,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Result<(), RepositoryError> {
     let snapshot = serde_json::to_string(content).map_err(storage)?;
     sqlx::query(
@@ -2908,8 +2903,8 @@ fn content_from_prepared(
     id: ContentId,
     prepared: PreparedContent,
     version: i64,
-    created_at: DateTime<Utc>,
-    updated_at: DateTime<Utc>,
+    created_at: Timestamp,
+    updated_at: Timestamp,
 ) -> Content {
     Content {
         id,
@@ -2931,7 +2926,7 @@ fn content_from_prepared(
     }
 }
 
-const fn publication_columns(publication: &Publication) -> (&'static str, Option<DateTime<Utc>>) {
+const fn publication_columns(publication: &Publication) -> (&'static str, Option<Timestamp>) {
     match publication {
         Publication::Draft => ("draft", None),
         Publication::Public { publish_at } => ("public", Some(*publish_at)),
@@ -3046,6 +3041,69 @@ fn media_from_row(
 
 fn media_storage(error: impl std::fmt::Display) -> MediaRepositoryError {
     MediaRepositoryError::Storage(error.to_string())
+}
+
+impl sqlx::Type<Sqlite> for Timestamp {
+    fn type_info() -> sqlx::sqlite::SqliteTypeInfo {
+        <time::OffsetDateTime as sqlx::Type<Sqlite>>::type_info()
+    }
+
+    fn compatible(ty: &sqlx::sqlite::SqliteTypeInfo) -> bool {
+        <time::OffsetDateTime as sqlx::Type<Sqlite>>::compatible(ty)
+            || <f64 as sqlx::Type<Sqlite>>::compatible(ty)
+    }
+}
+
+impl sqlx::Encode<'_, Sqlite> for Timestamp {
+    fn encode_by_ref(
+        &self,
+        buffer: &mut sqlx::sqlite::SqliteArgumentsBuffer,
+    ) -> Result<sqlx::encode::IsNull, sqlx::error::BoxDynError> {
+        sqlx::Encode::<Sqlite>::encode(self.sqlite_text(), buffer)
+    }
+}
+
+impl<'r> sqlx::Decode<'r, Sqlite> for Timestamp {
+    fn decode(value: sqlx::sqlite::SqliteValueRef<'r>) -> Result<Self, sqlx::error::BoxDynError> {
+        use sqlx::{Decode, TypeInfo, ValueRef};
+
+        let stamp = match value.type_info().name() {
+            "TEXT" => sqlite_timestamp_text(<&str as Decode<Sqlite>>::decode(value)?),
+            "INTEGER" => Self::from_unix_parts(<i64 as Decode<Sqlite>>::decode(value)?, 0),
+            "REAL" => sqlite_julian_timestamp(<f64 as Decode<Sqlite>>::decode(value)?),
+            _ => None,
+        };
+        stamp.ok_or_else(|| "invalid SQLite timestamp".into())
+    }
+}
+
+fn sqlite_timestamp_text(text: &str) -> Option<Timestamp> {
+    if let Ok(value) = Timestamp::from_rfc3339(text) {
+        return Some(value);
+    }
+    let (date, rest) = text.split_once(['T', ' '])?;
+    let start = rest.find(['+', '-', 'Z']).unwrap_or(rest.len());
+    let (clock, offset) = rest.split_at(start);
+    let offset = if offset.is_empty() { "Z" } else { offset };
+    let seconds = if clock.matches(':').count() == 1 {
+        ":00"
+    } else {
+        ""
+    };
+    format!("{date}T{clock}{seconds}{offset}").parse().ok()
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "SQLite Julian dates use a floating-point day count and the legacy decoder truncates each finite component"
+)]
+fn sqlite_julian_timestamp(days: f64) -> Option<Timestamp> {
+    let seconds = (days - 2_440_587.5) * 86_400.0;
+    if !seconds.is_finite() {
+        return None;
+    }
+    Timestamp::from_unix_parts(seconds.trunc() as i64, (seconds.fract().abs() * 1e9) as u32)
 }
 
 #[cfg(test)]

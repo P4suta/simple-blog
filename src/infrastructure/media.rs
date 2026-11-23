@@ -6,7 +6,7 @@ use std::{
     sync::Arc,
 };
 
-use chrono::{DateTime, Utc};
+use crate::timestamp::Timestamp;
 use exif::{In, Reader as ExifReader, Tag};
 use image::{
     AnimationDecoder, DynamicImage, GenericImageView, ImageFormat, RgbaImage,
@@ -129,7 +129,7 @@ impl LocalMediaService {
         &self,
         id: &MediaId,
         alt_text: &str,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<bool, MediaError> {
         let alt_text = clean_text(alt_text, 500, "alt text")?;
         self.repository
@@ -144,7 +144,7 @@ impl LocalMediaService {
         bytes: Vec<u8>,
         alt_text: &str,
         caption: &str,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<MediaAsset, MediaError> {
         if bytes.is_empty() {
             return Err(MediaError::Empty);
@@ -210,7 +210,7 @@ fn process(
     bytes: Vec<u8>,
     alt_text: String,
     caption: String,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Result<ProcessedUpload, MediaError> {
     let kind = infer::get(&bytes).ok_or(MediaError::UnsupportedType)?;
     let source = match kind.mime_type() {

@@ -1,7 +1,7 @@
-use chrono::{Duration, TimeZone, Utc};
 use proptest::prelude::*;
 use proptest::test_runner::FileFailurePersistence;
 use scraper::{Html, Selector};
+use simple_blog::timestamp::Timestamp;
 use simple_blog::{
     application::{
         auth::{AuthRateLimiter, RateLimitDecision},
@@ -10,6 +10,7 @@ use simple_blog::{
     domain::content::{Publication, Slug},
     infrastructure::markdown::ComrakMarkdownRenderer,
 };
+use time::SignedDuration as Duration;
 
 proptest! {
     #![proptest_config(ProptestConfig::with_failure_persistence(
@@ -41,7 +42,7 @@ proptest! {
         publish_offset in -100_000_i64..100_000,
         later_offset in 0_i64..100_000,
     ) {
-        let base = Utc.timestamp_opt(1_800_000_000, 0).unwrap();
+        let base = Timestamp::from_unix_parts(1_800_000_000, 0).unwrap();
         let publish_at = base + Duration::seconds(publish_offset);
         let publication = Publication::Public { publish_at };
         let observed = publish_at + Duration::seconds(later_offset);
@@ -56,7 +57,7 @@ proptest! {
         maximum in 1_usize..32,
         window_seconds in 1_i64..600,
     ) {
-        let now = Utc.timestamp_opt(1_800_000_000, 0).unwrap();
+        let now = Timestamp::from_unix_parts(1_800_000_000, 0).unwrap();
         let window = Duration::seconds(window_seconds);
         let limiter = AuthRateLimiter::new(maximum, window);
         for _ in 0..maximum {
