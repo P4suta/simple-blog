@@ -2,8 +2,8 @@
 
 use std::collections::HashSet;
 
+use crate::timestamp::Timestamp;
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use thiserror::Error;
 
 use crate::application::site_compiler::SiteSnapshotV1;
@@ -20,7 +20,7 @@ use crate::portable::PortableSiteV1;
 use uuid::Uuid;
 
 pub trait Clock: Send + Sync {
-    fn now(&self) -> DateTime<Utc>;
+    fn now(&self) -> Timestamp;
 }
 
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
@@ -69,7 +69,7 @@ pub trait ContentRepository: Send + Sync {
         &self,
         content: PreparedContent,
         intent: SaveIntent,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Content, RepositoryError>;
 
     async fn update(
@@ -78,7 +78,7 @@ pub trait ContentRepository: Send + Sync {
         expected_version: i64,
         content: PreparedContent,
         intent: SaveIntent,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Content, RepositoryError>;
 
     async fn find_by_id(&self, id: ContentId) -> Result<Option<Content>, RepositoryError>;
@@ -86,7 +86,7 @@ pub trait ContentRepository: Send + Sync {
     async fn find_public_by_slug(
         &self,
         slug: &Slug,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Option<Content>, RepositoryError>;
 
     async fn resolve_redirect(&self, old_slug: &Slug) -> Result<Option<Slug>, RepositoryError>;
@@ -104,7 +104,7 @@ pub trait ContentRepository: Send + Sync {
 
     async fn list_public_posts(
         &self,
-        now: DateTime<Utc>,
+        now: Timestamp,
         limit: u32,
         offset: u32,
     ) -> Result<Vec<Content>, RepositoryError>;
@@ -112,10 +112,10 @@ pub trait ContentRepository: Send + Sync {
     async fn list_public_by_tag(
         &self,
         tag: &Slug,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Vec<Content>, RepositoryError>;
 
-    async fn list_all_public(&self, now: DateTime<Utc>) -> Result<Vec<Content>, RepositoryError>;
+    async fn list_all_public(&self, now: Timestamp) -> Result<Vec<Content>, RepositoryError>;
 
     /// Every piece, trashed ones included: the trash is still durable state
     /// (media it references must survive garbage collection, and the
@@ -128,8 +128,8 @@ pub trait ContentRepository: Send + Sync {
     async fn neighbor_posts(
         &self,
         id: ContentId,
-        publish_at: DateTime<Utc>,
-        now: DateTime<Utc>,
+        publish_at: Timestamp,
+        now: Timestamp,
     ) -> Result<(Option<ContentLink>, Option<ContentLink>), RepositoryError>;
 
     /// Moves content to the trash: it leaves every public query and the
@@ -140,7 +140,7 @@ pub trait ContentRepository: Send + Sync {
         &self,
         id: ContentId,
         expected_version: i64,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Content, RepositoryError>;
 
     /// Returns trashed content to exactly the publication state it had
@@ -148,7 +148,7 @@ pub trait ContentRepository: Send + Sync {
     async fn restore_from_trash(
         &self,
         id: ContentId,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Content, RepositoryError>;
 
     /// Hard-deletes content that is already in the trash; revisions, tags,
@@ -190,7 +190,7 @@ pub struct SearchHit {
     pub title: String,
     pub body: String,
     pub kind: ContentKind,
-    pub publish_at: DateTime<Utc>,
+    pub publish_at: Timestamp,
 }
 
 /// Full-text search over publicly visible content.
@@ -199,7 +199,7 @@ pub trait SearchRepository: Send + Sync {
     async fn search(
         &self,
         terms: &SearchTerms,
-        now: DateTime<Utc>,
+        now: Timestamp,
         limit: u32,
     ) -> Result<Vec<SearchHit>, RepositoryError>;
 }
@@ -227,14 +227,14 @@ pub trait EngagementRepository: Send + Sync {
 #[async_trait]
 pub trait LikeRepository: Send + Sync {
     /// Increments and returns the new count; `NotFound` if not publicly visible.
-    async fn add_like(&self, id: ContentId, now: DateTime<Utc>) -> Result<u64, RepositoryError>;
+    async fn add_like(&self, id: ContentId, now: Timestamp) -> Result<u64, RepositoryError>;
 
     /// Decrements (never below zero) and returns the new count; `NotFound` if
     /// not publicly visible.
-    async fn remove_like(&self, id: ContentId, now: DateTime<Utc>) -> Result<u64, RepositoryError>;
+    async fn remove_like(&self, id: ContentId, now: Timestamp) -> Result<u64, RepositoryError>;
 
     /// Returns the current count; `NotFound` if not publicly visible.
-    async fn like_count(&self, id: ContentId, now: DateTime<Utc>) -> Result<u64, RepositoryError>;
+    async fn like_count(&self, id: ContentId, now: Timestamp) -> Result<u64, RepositoryError>;
 }
 
 #[async_trait]
@@ -245,7 +245,7 @@ pub trait SiteRepository: Send + Sync {
         &self,
         settings: &SiteSettings,
         navigation: &[NavigationItem],
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<(), RepositoryError>;
 
     /// Every historical address and the piece it leads to, oldest address first.
@@ -258,14 +258,14 @@ pub trait SiteRepository: Send + Sync {
         &self,
         old_slug: &Slug,
         content_id: ContentId,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<(), RepositoryError>;
 
     /// Forgets an old address; `false` when it was not known.
     async fn remove_redirect(
         &self,
         old_slug: &Slug,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<bool, RepositoryError>;
 }
 
@@ -276,13 +276,13 @@ pub struct RedirectEntry {
     pub content_id: ContentId,
     pub slug: Slug,
     pub title: String,
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PublicationState {
     pub revision: u64,
-    pub next_publish_at: Option<DateTime<Utc>>,
+    pub next_publish_at: Option<Timestamp>,
 }
 
 /// One consistent source snapshot and its durable publication clock.
@@ -292,13 +292,13 @@ pub trait PublicSnapshotRepository: Send + Sync {
 
     /// Advances exactly once when one or more scheduled entries have become
     /// visible, and recomputes the next durable boundary in the same transaction.
-    async fn advance_publication_clock(&self, now: DateTime<Utc>) -> Result<bool, RepositoryError>;
+    async fn advance_publication_clock(&self, now: Timestamp) -> Result<bool, RepositoryError>;
 
     /// Reads settings, navigation, visible content, redirects, media and the
     /// matching public revision from one database snapshot.
     async fn public_snapshot(
         &self,
-        effective_at: DateTime<Utc>,
+        effective_at: Timestamp,
     ) -> Result<SiteSnapshotV1, RepositoryError>;
 }
 
@@ -313,7 +313,7 @@ pub trait PortableRepository: Send + Sync {
     async fn portable_site(
         &self,
         canonical_origin: &str,
-        exported_at: DateTime<Utc>,
+        exported_at: Timestamp,
     ) -> Result<PortableSiteV1, RepositoryError>;
 
     /// Replaces all portable tables in one transaction.
@@ -344,7 +344,7 @@ pub trait MediaRepository: Send + Sync {
         &self,
         id: &MediaId,
         alt_text: &str,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<bool, MediaRepositoryError>;
 
     /// The MIME type of one publicly servable file name — an original
@@ -371,14 +371,14 @@ pub trait AuthRepository: Send + Sync {
         &self,
         token_hash: SecretHash,
         purpose: SetupPurpose,
-        expires_at: DateTime<Utc>,
+        expires_at: Timestamp,
     ) -> Result<(), AuthError>;
 
     async fn consume_setup_token(
         &self,
         token_hash: SecretHash,
         purpose: SetupPurpose,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<bool, AuthError>;
 
     async fn store_session(&self, session: &SessionRecord) -> Result<(), AuthError>;
@@ -386,14 +386,14 @@ pub trait AuthRepository: Send + Sync {
     async fn find_session(
         &self,
         token_hash: SecretHash,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Option<SessionRecord>, AuthError>;
 
     async fn rotate_session(
         &self,
         old_token_hash: SecretHash,
         replacement: &SessionRecord,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<bool, AuthError>;
 
     /// Ends one session immediately; `false` when no such session existed.
@@ -404,27 +404,27 @@ pub trait AuthRepository: Send + Sync {
     async fn extend_session(
         &self,
         token_hash: SecretHash,
-        expires_at: DateTime<Utc>,
-        now: DateTime<Utc>,
+        expires_at: Timestamp,
+        now: Timestamp,
     ) -> Result<bool, AuthError>;
 
     async fn replace_recovery_codes(
         &self,
         code_hashes: &[SecretHash],
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<(), AuthError>;
 
     async fn consume_recovery_code(
         &self,
         code_hash: SecretHash,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<bool, AuthError>;
 
     async fn exchange_recovery_code(
         &self,
         code_hash: SecretHash,
         session: &SessionRecord,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<bool, AuthError>;
 }
 
@@ -437,7 +437,7 @@ pub trait PreviewLinkRepository: Send + Sync {
     async fn find_preview_link(
         &self,
         token_hash: SecretHash,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Option<ContentId>, AuthError>;
 
     /// Ends every link of one piece; answers how many existed.
@@ -451,7 +451,7 @@ pub struct SetupRegistration<'a> {
     pub passkey: &'a StoredPasskey,
     pub session: &'a SessionRecord,
     pub recovery_code_hashes: &'a [SecretHash],
-    pub now: DateTime<Utc>,
+    pub now: Timestamp,
 }
 
 #[async_trait]
@@ -463,7 +463,7 @@ pub trait PasskeyRepository: Send + Sync {
     async fn setup_token_purpose(
         &self,
         token_hash: SecretHash,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Option<SetupPurpose>, AuthError>;
 
     /// Commits every durable effect of initial/recovery registration together.
@@ -477,14 +477,10 @@ pub trait PasskeyRepository: Send + Sync {
         credential_id: &[u8],
         passkey_json: &str,
         session: &SessionRecord,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<bool, AuthError>;
 
-    async fn add_passkey(
-        &self,
-        passkey: &StoredPasskey,
-        now: DateTime<Utc>,
-    ) -> Result<(), AuthError>;
+    async fn add_passkey(&self, passkey: &StoredPasskey, now: Timestamp) -> Result<(), AuthError>;
 
     async fn remove_passkey(&self, credential_id: &[u8]) -> Result<bool, AuthError>;
 }

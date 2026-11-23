@@ -1,13 +1,14 @@
 use std::sync::Arc;
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use chrono::{Duration, Utc};
+use simple_blog::timestamp::Timestamp;
 use simple_blog::{
     application::auth::{AuthRateLimiter, AuthService, PasskeyAccountService, RateLimitDecision},
     application::ports::{AuthError, EntropyError, EntropySource, PasskeyRepository},
     domain::auth::{SetupPurpose, StoredPasskey},
     infrastructure::{entropy::SystemEntropy, sqlite::SqliteRepository, webauthn::PasskeyCeremony},
 };
+use time::SignedDuration as Duration;
 use url::Url;
 use uuid::Uuid;
 
@@ -45,7 +46,7 @@ async fn entropy_failure_is_explicit_and_never_persists_a_partial_capability() {
     let auth = AuthService::new(repository.clone(), Arc::new(UnavailableEntropy));
 
     let error = auth
-        .issue_setup_token(SetupPurpose::Initial, Utc::now())
+        .issue_setup_token(SetupPurpose::Initial, Timestamp::now())
         .await
         .err();
 
@@ -67,7 +68,7 @@ async fn a_known_passkey_commits_its_updated_state_and_a_usable_new_session() {
     );
     let auth = AuthService::new(repository.clone(), system_entropy());
     let accounts = PasskeyAccountService::new(repository.clone(), system_entropy());
-    let now = Utc::now();
+    let now = Timestamp::now();
     let setup = auth
         .issue_setup_token(SetupPurpose::Initial, now)
         .await
@@ -121,7 +122,7 @@ async fn initial_registration_commits_owner_passkey_session_and_recovery_codes_a
     );
     let auth = AuthService::new(repository.clone(), system_entropy());
     let accounts = PasskeyAccountService::new(repository.clone(), system_entropy());
-    let now = Utc::now();
+    let now = Timestamp::now();
     let setup = auth
         .issue_setup_token(SetupPurpose::Initial, now)
         .await
@@ -182,7 +183,7 @@ async fn passkeys_are_removable_except_for_the_last_owner_credential() {
     );
     let auth = AuthService::new(repository.clone(), system_entropy());
     let accounts = PasskeyAccountService::new(repository.clone(), system_entropy());
-    let now = Utc::now();
+    let now = Timestamp::now();
     let setup = auth
         .issue_setup_token(SetupPurpose::Initial, now)
         .await
@@ -230,7 +231,7 @@ async fn owner_recovery_replaces_credentials_and_invalidates_old_sessions() {
     );
     let auth = AuthService::new(repository.clone(), system_entropy());
     let accounts = PasskeyAccountService::new(repository.clone(), system_entropy());
-    let now = Utc::now();
+    let now = Timestamp::now();
     let user_handle = Uuid::new_v4();
     let setup = auth
         .issue_setup_token(SetupPurpose::Initial, now)
@@ -304,7 +305,7 @@ async fn owner_recovery_replaces_credentials_and_invalidates_old_sessions() {
 #[tokio::test]
 async fn setup_capability_is_256_bit_expiring_and_one_time() {
     let (_temp, auth) = auth_harness().await;
-    let now = Utc::now();
+    let now = Timestamp::now();
     let token = auth
         .issue_setup_token(SetupPurpose::Initial, now)
         .await
@@ -343,7 +344,7 @@ async fn setup_capability_is_256_bit_expiring_and_one_time() {
 #[tokio::test]
 async fn sessions_are_opaque_rotatable_and_bound_to_csrf() {
     let (_temp, auth) = auth_harness().await;
-    let now = Utc::now();
+    let now = Timestamp::now();
     let first = auth.create_session(now).await.unwrap();
 
     let identity = auth
@@ -377,7 +378,7 @@ async fn sessions_are_opaque_rotatable_and_bound_to_csrf() {
 #[tokio::test]
 async fn expired_sessions_are_rejected() {
     let (_temp, auth) = auth_harness().await;
-    let now = Utc::now();
+    let now = Timestamp::now();
     let tokens = auth.create_session(now).await.unwrap();
 
     assert!(
@@ -391,7 +392,7 @@ async fn expired_sessions_are_rejected() {
 #[tokio::test]
 async fn recovery_codes_are_shown_once_and_each_can_only_be_consumed_once() {
     let (_temp, auth) = auth_harness().await;
-    let now = Utc::now();
+    let now = Timestamp::now();
     let codes = auth.replace_recovery_codes(now).await.unwrap();
     assert_eq!(codes.len(), 10);
     assert_eq!(
@@ -419,7 +420,7 @@ async fn recovery_codes_are_shown_once_and_each_can_only_be_consumed_once() {
 #[tokio::test]
 async fn recovery_code_exchange_consumes_the_code_and_creates_a_session_atomically() {
     let (_temp, auth) = auth_harness().await;
-    let now = Utc::now();
+    let now = Timestamp::now();
     let codes = auth.replace_recovery_codes(now).await.unwrap();
     let session = auth
         .recover_session(codes[0].expose(), now)
@@ -443,7 +444,7 @@ async fn recovery_code_exchange_consumes_the_code_and_creates_a_session_atomical
 #[tokio::test]
 async fn sensitive_actions_can_require_recent_reauthentication() {
     let (_temp, auth) = auth_harness().await;
-    let now = Utc::now();
+    let now = Timestamp::now();
     let session = auth.create_session(now).await.unwrap();
     let identity = auth
         .authenticate(session.session.expose(), now)
@@ -483,7 +484,7 @@ fn registration_challenge_state_is_server_side_and_single_use() {
     )
     .unwrap();
     let start = ceremony
-        .start_registration(Uuid::new_v4(), &[], Utc::now())
+        .start_registration(Uuid::new_v4(), &[], Timestamp::now())
         .unwrap();
     let public_json = serde_json::to_value(&start.public).unwrap();
     assert!(public_json.get("publicKey").is_some());
@@ -495,7 +496,7 @@ fn registration_challenge_state_is_server_side_and_single_use() {
 #[test]
 fn authentication_rate_limit_is_bounded_and_time_injectable() {
     let limiter = AuthRateLimiter::new(2, Duration::minutes(1));
-    let now = Utc::now();
+    let now = Timestamp::now();
     assert_eq!(
         limiter.check("203.0.113.4", now),
         RateLimitDecision::Allowed
@@ -520,7 +521,7 @@ fn authentication_rate_limit_is_bounded_and_time_injectable() {
 #[tokio::test]
 async fn revoking_a_session_makes_it_unauthenticatable() {
     let (_temp, auth) = auth_harness().await;
-    let now = Utc::now();
+    let now = Timestamp::now();
     let session = auth.create_session(now).await.unwrap();
     assert!(
         auth.authenticate(session.session.expose(), now)

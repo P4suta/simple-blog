@@ -4,8 +4,8 @@ use axum::{
     body::Body,
     http::{Request, StatusCode, header},
 };
-use chrono::{DateTime, Duration, TimeZone, Utc};
 use http_body_util::BodyExt;
+use simple_blog::timestamp::Timestamp;
 use simple_blog::{
     application::{
         content::{ContentService, SaveIntent},
@@ -17,6 +17,7 @@ use simple_blog::{
     release::{FilesystemReleaseStore, ReleaseReader, ReleaseStore},
     web::{AppState, router},
 };
+use time::SignedDuration as Duration;
 use tower::ServiceExt;
 
 struct Harness {
@@ -101,20 +102,20 @@ impl Harness {
 }
 
 #[derive(Clone)]
-struct TestClock(Arc<Mutex<DateTime<Utc>>>);
+struct TestClock(Arc<Mutex<Timestamp>>);
 
 impl TestClock {
-    fn new(now: DateTime<Utc>) -> Self {
+    fn new(now: Timestamp) -> Self {
         Self(Arc::new(Mutex::new(now)))
     }
 
-    fn set(&self, now: DateTime<Utc>) {
+    fn set(&self, now: Timestamp) {
         *self.0.lock().unwrap() = now;
     }
 }
 
 impl Clock for TestClock {
-    fn now(&self) -> DateTime<Utc> {
+    fn now(&self) -> Timestamp {
         *self.0.lock().unwrap()
     }
 }
@@ -150,7 +151,7 @@ async fn body_text(response: axum::response::Response) -> String {
 #[tokio::test]
 async fn home_is_server_rendered_and_never_leaks_drafts_or_javascript() {
     let harness = Harness::new().await;
-    let now = Utc::now() - Duration::seconds(1);
+    let now = Timestamp::now() - Duration::seconds(1);
     harness
         .service
         .create(
@@ -189,7 +190,7 @@ async fn home_is_server_rendered_and_never_leaks_drafts_or_javascript() {
 
 #[tokio::test]
 async fn scheduled_visibility_uses_an_injected_clock_at_the_exact_boundary() {
-    let before = Utc.with_ymd_and_hms(2026, 8, 30, 12, 0, 0).unwrap();
+    let before = Timestamp::from_utc_components(2026, 8, 30, 12, 0, 0).unwrap();
     let publish_at = before + Duration::minutes(1);
     let clock = TestClock::new(before);
     let harness = Harness::new_with_clock(Arc::new(clock.clone())).await;
@@ -221,7 +222,7 @@ async fn scheduled_visibility_uses_an_injected_clock_at_the_exact_boundary() {
 #[tokio::test]
 async fn permalink_is_canonical_and_supports_conditional_get() {
     let harness = Harness::new().await;
-    let now = Utc::now();
+    let now = Timestamp::now();
     harness
         .service
         .create(
@@ -262,7 +263,7 @@ async fn permalink_is_canonical_and_supports_conditional_get() {
 #[tokio::test]
 async fn old_slugs_redirect_once_to_the_current_permalink() {
     let harness = Harness::new().await;
-    let now = Utc::now();
+    let now = Timestamp::now();
     let created = harness
         .service
         .create(
@@ -294,7 +295,7 @@ async fn old_slugs_redirect_once_to_the_current_permalink() {
 #[tokio::test]
 async fn archive_tag_feed_and_sitemap_share_the_publication_policy() {
     let harness = Harness::new().await;
-    let now = Utc::now();
+    let now = Timestamp::now();
     harness
         .service
         .create(
@@ -375,7 +376,7 @@ async fn host_header_is_validated_but_health_remains_probeable() {
 #[tokio::test]
 async fn every_response_has_a_server_generated_correlation_id_and_safe_failures() {
     let harness = Harness::new().await;
-    let now = Utc::now() - Duration::seconds(1);
+    let now = Timestamp::now() - Duration::seconds(1);
     harness
         .service
         .create(
@@ -418,7 +419,7 @@ async fn every_response_has_a_server_generated_correlation_id_and_safe_failures(
 #[tokio::test]
 async fn adjacent_posts_link_and_invalidate_cached_pages() {
     let harness = Harness::new().await;
-    let now = Utc::now() - Duration::minutes(10);
+    let now = Timestamp::now() - Duration::minutes(10);
     for (index, slug) in ["first-post", "second-post", "third-post"]
         .iter()
         .enumerate()
@@ -488,7 +489,7 @@ async fn adjacent_posts_link_and_invalidate_cached_pages() {
 #[tokio::test]
 async fn page_views_are_counted_server_side_but_never_shown() {
     let harness = Harness::new().await;
-    let now = Utc::now() - Duration::seconds(1);
+    let now = Timestamp::now() - Duration::seconds(1);
     harness
         .service
         .create(
@@ -506,7 +507,7 @@ async fn page_views_are_counted_server_side_but_never_shown() {
     let content = ContentRepository::find_public_by_slug(
         repository,
         &Slug::parse("counted").unwrap(),
-        Utc::now(),
+        Timestamp::now(),
     )
     .await
     .unwrap()
@@ -539,7 +540,7 @@ async fn page_views_are_counted_server_side_but_never_shown() {
 #[tokio::test]
 async fn feed_carries_full_content_for_readers() {
     let harness = Harness::new().await;
-    let now = Utc::now() - Duration::seconds(1);
+    let now = Timestamp::now() - Duration::seconds(1);
     harness
         .service
         .create(
@@ -584,7 +585,7 @@ async fn reader_preferences_are_offered_on_every_public_page() {
 #[tokio::test]
 async fn home_pages_and_tag_index_resolve_through_the_release() {
     let harness = Harness::new().await;
-    let now = Utc::now();
+    let now = Timestamp::now();
     for index in 1..=21 {
         harness
             .service

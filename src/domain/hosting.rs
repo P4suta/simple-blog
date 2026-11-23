@@ -2,7 +2,7 @@
 
 use std::{fmt, net::IpAddr};
 
-use chrono::{DateTime, Utc};
+use crate::timestamp::Timestamp;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
@@ -97,7 +97,7 @@ pub enum ProvisioningStatus {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DomainObservation {
-    pub checked_at: DateTime<Utc>,
+    pub checked_at: Timestamp,
     pub hostname: ProvisioningStatus,
     pub certificate: ProvisioningStatus,
     pub dns_routed: bool,
@@ -135,10 +135,10 @@ pub struct DomainRegistration {
     pub domain: DomainName,
     pub provider_hostname_id: String,
     pub state: DomainRegistrationState,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
     pub last_observation: Option<DomainObservation>,
-    pub owner_registered_at: Option<DateTime<Utc>>,
+    pub owner_registered_at: Option<Timestamp>,
     pub provider_error_code: Option<String>,
 }
 
@@ -148,7 +148,7 @@ impl DomainRegistration {
         id: Uuid,
         domain: DomainName,
         provider_hostname_id: String,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Self {
         Self {
             id,
@@ -201,7 +201,7 @@ impl DomainRegistration {
 
     pub fn complete_owner_setup(
         &mut self,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<DomainTransition, DomainRegistrationError> {
         if self.owner_registered_at.is_some() && self.state == DomainRegistrationState::Active {
             return Ok(DomainTransition::unchanged(self.state));
@@ -260,11 +260,11 @@ impl DomainTransition {
 pub enum DomainRegistrationError {
     #[error("provider observation at {received} predates the accepted observation at {previous}")]
     StaleObservation {
-        previous: DateTime<Utc>,
-        received: DateTime<Utc>,
+        previous: Timestamp,
+        received: Timestamp,
     },
     #[error("provider returned conflicting observations at {0}")]
-    ConflictingObservation(DateTime<Utc>),
+    ConflictingObservation(Timestamp),
     #[error("owner setup is unavailable until domain, certificate, and DNS are ready")]
     NotReady,
 }

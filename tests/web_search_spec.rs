@@ -7,8 +7,8 @@ use axum::{
     body::Body,
     http::{Request, StatusCode, header},
 };
-use chrono::{Duration, Utc};
 use http_body_util::BodyExt;
+use simple_blog::timestamp::Timestamp;
 use simple_blog::{
     application::{
         content::{ContentService, SaveIntent},
@@ -23,6 +23,7 @@ use simple_blog::{
     infrastructure::{markdown::ComrakMarkdownRenderer, sqlite::SqliteRepository},
     web::{AppState, router},
 };
+use time::SignedDuration as Duration;
 use tower::ServiceExt;
 
 struct Harness {
@@ -78,7 +79,7 @@ impl Harness {
                     publication,
                 },
                 SaveIntent::Explicit,
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .unwrap();
@@ -135,7 +136,7 @@ impl Harness {
 
 fn public_now() -> Publication {
     Publication::Public {
-        publish_at: Utc::now() - Duration::seconds(1),
+        publish_at: Timestamp::now() - Duration::seconds(1),
     }
 }
 
@@ -231,7 +232,7 @@ async fn drafts_and_scheduled_posts_never_surface() {
             "scheduled",
             "未来の東京の話。",
             Publication::Public {
-                publish_at: Utc::now() + Duration::hours(1),
+                publish_at: Timestamp::now() + Duration::hours(1),
             },
         )
         .await;
@@ -248,7 +249,7 @@ async fn title_matches_rank_above_body_matches() {
             "body-hit",
             "検索エンジンを自作した長い記録。",
             Publication::Public {
-                publish_at: Utc::now() - Duration::seconds(1),
+                publish_at: Timestamp::now() - Duration::seconds(1),
             },
         )
         .await;
@@ -258,7 +259,7 @@ async fn title_matches_rank_above_body_matches() {
             "title-hit",
             "まとめ。",
             Publication::Public {
-                publish_at: Utc::now() - Duration::hours(1),
+                publish_at: Timestamp::now() - Duration::hours(1),
             },
         )
         .await;
@@ -279,7 +280,7 @@ async fn edits_reindex_and_search_follows_the_current_text() {
         .await;
     let content = harness
         .repository
-        .find_public_by_slug(&Slug::parse("evolving").unwrap(), Utc::now())
+        .find_public_by_slug(&Slug::parse("evolving").unwrap(), Timestamp::now())
         .await
         .unwrap()
         .unwrap();
@@ -293,7 +294,7 @@ async fn edits_reindex_and_search_follows_the_current_text() {
                 ..content.to_draft()
             },
             SaveIntent::Explicit,
-            Utc::now(),
+            Timestamp::now(),
         )
         .await
         .unwrap();
@@ -346,7 +347,7 @@ async fn sqlite_search_clamps_untrusted_repository_limits() {
 
     let hits = harness
         .repository
-        .search(&parse_query("needle"), Utc::now(), u32::MAX)
+        .search(&parse_query("needle"), Timestamp::now(), u32::MAX)
         .await
         .unwrap();
 

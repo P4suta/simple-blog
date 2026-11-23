@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use chrono::{TimeZone, Utc};
+use simple_blog::timestamp::Timestamp;
 use simple_blog::{
     application::ports::{MarkdownRenderer, PortableRepository},
     domain::{
@@ -20,8 +20,8 @@ use sqlx::Executor;
 use uuid::Uuid;
 
 fn site() -> PortableSiteV1 {
-    let created_at = Utc.with_ymd_and_hms(2024, 3, 4, 5, 6, 7).unwrap();
-    let updated_at = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
+    let created_at = Timestamp::from_utc_components(2024, 3, 4, 5, 6, 7).unwrap();
+    let updated_at = Timestamp::from_utc_components(2026, 9, 2, 12, 0, 0).unwrap();
     let id = ContentId::from_i64(41);
     PortableSiteV1 {
         format_version: 1,
@@ -72,8 +72,8 @@ fn site() -> PortableSiteV1 {
 
 fn portable_contents(
     id: ContentId,
-    created_at: chrono::DateTime<Utc>,
-    updated_at: chrono::DateTime<Utc>,
+    created_at: simple_blog::timestamp::Timestamp,
+    updated_at: simple_blog::timestamp::Timestamp,
 ) -> Vec<PortableContent> {
     let historical = Content {
         id,
@@ -131,7 +131,7 @@ fn portable_contents(
         seo_title: None,
         seo_description: None,
         publication: Publication::Public {
-            publish_at: updated_at + chrono::Duration::hours(1),
+            publish_at: updated_at + time::SignedDuration::hours(1),
         },
         version: 1,
         created_at,
@@ -157,8 +157,8 @@ fn portable_contents(
 }
 
 fn portable_owner(
-    created_at: chrono::DateTime<Utc>,
-    updated_at: chrono::DateTime<Utc>,
+    created_at: simple_blog::timestamp::Timestamp,
+    updated_at: simple_blog::timestamp::Timestamp,
 ) -> PortableOwner {
     PortableOwner {
         user_handle: Uuid::from_u128(0x1234),

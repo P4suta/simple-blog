@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use chrono::{DateTime, SecondsFormat, Utc};
+use crate::timestamp::Timestamp;
 use uuid::Uuid;
 
 use crate::{
@@ -21,7 +21,7 @@ impl Exporter {
         config: &Config,
         repository: &SqliteRepository,
         output: &Path,
-        _now: DateTime<Utc>,
+        _now: Timestamp,
     ) -> Result<PathBuf, OperationError> {
         if output.exists() {
             return Err(OperationError::ExportExists(output.display().to_string()));
@@ -98,10 +98,7 @@ fn markdown_export(content: &Content) -> Result<String, OperationError> {
         Publication::Draft => ("draft", String::new()),
         Publication::Public { publish_at } => (
             "public",
-            format!(
-                "publish_at: {}\n",
-                json(&publish_at.to_rfc3339_opts(SecondsFormat::Secs, true))?
-            ),
+            format!("publish_at: {}\n", json(&publish_at.rfc3339_seconds())?),
         ),
     };
     let mut front_matter = format!(

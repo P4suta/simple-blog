@@ -1,4 +1,4 @@
-use chrono::{Duration, TimeZone, Utc};
+use simple_blog::timestamp::Timestamp;
 use simple_blog::{
     application::auth::hash_secret,
     application::ports::MarkdownRenderer,
@@ -8,6 +8,7 @@ use simple_blog::{
     },
     infrastructure::markdown::ComrakMarkdownRenderer,
 };
+use time::SignedDuration as Duration;
 
 #[test]
 fn slug_accepts_a_stable_url_segment() {
@@ -39,7 +40,7 @@ fn slug_rejects_reserved_or_unsafe_segments() {
 
 #[test]
 fn scheduled_publication_becomes_visible_without_a_job() {
-    let now = Utc.with_ymd_and_hms(2026, 8, 30, 12, 0, 0).unwrap();
+    let now = Timestamp::from_utc_components(2026, 8, 30, 12, 0, 0).unwrap();
     let publication = Publication::Public {
         publish_at: now + Duration::minutes(5),
     };
@@ -85,7 +86,7 @@ fn markdown_is_gfm_like_and_raw_html_is_never_trusted() {
 
 #[test]
 fn timestamped_slugs_are_valid_and_collision_resistant() {
-    let now = Utc.with_ymd_and_hms(2026, 8, 31, 21, 45, 7).unwrap();
+    let now = Timestamp::from_utc_components(2026, 8, 31, 21, 45, 7).unwrap();
 
     let minute = Slug::timestamped(now);
     let second = Slug::timestamped_precise(now);
@@ -236,7 +237,7 @@ fn ruby_notation_stays_literal_in_code_and_without_a_base() {
 }
 #[test]
 fn is_scheduled_at_is_true_only_for_future_public_entries() {
-    let now = Utc.with_ymd_and_hms(2026, 9, 3, 12, 0, 0).unwrap();
+    let now = Timestamp::from_utc_components(2026, 9, 3, 12, 0, 0).unwrap();
     let scheduled = Publication::Public {
         publish_at: now + Duration::minutes(1),
     };
@@ -279,7 +280,7 @@ fn revision_snapshots_predating_the_trash_column_deserialize_and_live_content_om
     );
 
     let trashed = Content {
-        deleted_at: Some(Utc.with_ymd_and_hms(2026, 9, 3, 0, 0, 0).unwrap()),
+        deleted_at: Some(Timestamp::from_utc_components(2026, 9, 3, 0, 0, 0).unwrap()),
         ..content
     };
     let json = serde_json::to_value(&trashed).unwrap();
@@ -382,7 +383,7 @@ fn line_diff_marks_only_what_a_restore_would_change() {
 
 #[test]
 fn slugs_come_from_titles_when_they_can_and_from_the_clock_otherwise() {
-    let now = Utc.with_ymd_and_hms(2026, 9, 3, 8, 12, 0).unwrap();
+    let now = Timestamp::from_utc_components(2026, 9, 3, 8, 12, 0).unwrap();
     assert_eq!(
         Slug::from_title("  Hello, World!  ", now).as_str(),
         "hello-world"

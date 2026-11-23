@@ -1,5 +1,6 @@
 use std::time::SystemTime;
 
+use crate::timestamp::Timestamp;
 use axum::{
     Json,
     body::Body,
@@ -7,7 +8,6 @@ use axum::{
     http::{HeaderMap, HeaderValue, Method, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
 use crate::{
@@ -100,7 +100,7 @@ fn asset_response(
     Ok(response)
 }
 
-fn request_is_fresh(headers: &HeaderMap, etag: &str, last_modified: Option<DateTime<Utc>>) -> bool {
+fn request_is_fresh(headers: &HeaderMap, etag: &str, last_modified: Option<Timestamp>) -> bool {
     if let Some(value) = headers
         .get(header::IF_NONE_MATCH)
         .and_then(|value| value.to_str().ok())
@@ -117,7 +117,7 @@ fn request_is_fresh(headers: &HeaderMap, etag: &str, last_modified: Option<DateT
         .get(header::IF_MODIFIED_SINCE)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| httpdate::parse_http_date(value).ok())
-        .is_some_and(|since| last_modified.timestamp() <= DateTime::<Utc>::from(since).timestamp())
+        .is_some_and(|since| last_modified.unix_seconds() <= Timestamp::from(since).unix_seconds())
 }
 
 fn apply_release_headers(

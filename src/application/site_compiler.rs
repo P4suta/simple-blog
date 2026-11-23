@@ -2,13 +2,13 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use chrono::{
-    DateTime, Datelike, Duration, SecondsFormat, Utc,
-    format::{Item, StrftimeItems},
-};
-use chrono_tz::Tz;
+use crate::timestamp::{SiteTimeZone, Timestamp, date_text};
 use serde::Serialize;
 use thiserror::Error;
+use time::{
+    OffsetDateTime, SignedDuration as Duration,
+    format_description::{OwnedFormatItem, parse_strftime_owned},
+};
 
 use crate::{
     application::{
@@ -54,10 +54,10 @@ const JSON_FEED_VERSION: &str = "https://jsonfeed.org/version/1.1";
 /// settings and the catalogs, so a broken pattern fails the build instead of
 /// panicking inside a template.
 struct SiteDates {
-    zone: Tz,
-    long: Vec<Item<'static>>,
-    short: Vec<Item<'static>>,
-    year: Vec<Item<'static>>,
+    zone: SiteTimeZone,
+    long: OwnedFormatItem,
+    short: OwnedFormatItem,
+    year: OwnedFormatItem,
 }
 
 impl SiteDates {
@@ -67,8 +67,7 @@ impl SiteDates {
     ) -> Result<Self, SiteCompilerError> {
         let locale = settings.locale;
         let pattern = |key: &'static str| {
-            StrftimeItems::new(&translations.text(locale, key))
-                .parse_to_owned()
+            parse_strftime_owned(&translations.text(locale, key))
                 .map_err(|_| SiteCompilerError::DatePattern(key))
         };
         Ok(Self {
@@ -79,40 +78,42 @@ impl SiteDates {
         })
     }
 
-    fn local(&self, at: DateTime<Utc>) -> DateTime<Tz> {
-        at.with_timezone(&self.zone)
+    fn local(&self, at: Timestamp) -> OffsetDateTime {
+        at.civil(self.zone.offset(at))
     }
 
-    fn render(&self, items: &[Item<'static>], at: DateTime<Utc>) -> String {
-        self.local(at).format_with_items(items.iter()).to_string()
+    fn render(&self, items: &OwnedFormatItem, at: Timestamp) -> String {
+        self.local(at)
+            .format(items)
+            .expect("validated catalog date formats have a date and offset")
     }
 
     /// The full date on a page: "September 3, 2026", 2026年9月3日.
-    fn long(&self, at: DateTime<Utc>) -> String {
+    fn long(&self, at: Timestamp) -> String {
         self.render(&self.long, at)
     }
 
     /// The date inside a year group: "Sep 3", 9月3日.
-    fn short(&self, at: DateTime<Utc>) -> String {
+    fn short(&self, at: Timestamp) -> String {
         self.render(&self.short, at)
     }
 
-    fn year_label(&self, at: DateTime<Utc>) -> String {
+    fn year_label(&self, at: Timestamp) -> String {
         self.render(&self.year, at)
     }
 
-    fn year(&self, at: DateTime<Utc>) -> i32 {
+    fn year(&self, at: Timestamp) -> i32 {
         self.local(at).year()
     }
 
     /// `YYYY-MM-DD` in the site zone, for sitemaps.
-    fn day(&self, at: DateTime<Utc>) -> String {
-        self.local(at).format("%Y-%m-%d").to_string()
+    fn day(&self, at: Timestamp) -> String {
+        date_text(self.local(at))
     }
 
     /// RFC 3339 with the site's offset; `Z` when that offset is zero.
-    fn iso(&self, at: DateTime<Utc>) -> String {
-        self.local(at).to_rfc3339_opts(SecondsFormat::Secs, true)
+    fn iso(&self, at: Timestamp) -> String {
+        at.seconds_at(self.zone.offset(at))
     }
 }
 
@@ -152,7 +153,7 @@ pub struct PublicRedirect {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SiteSnapshotV1 {
     pub public_revision: u64,
-    pub effective_at: DateTime<Utc>,
+    pub effective_at: Timestamp,
     pub settings: SiteSettings,
     pub navigation: Vec<NavigationItem>,
     pub contents: Vec<Content>,
@@ -863,7 +864,7 @@ impl SiteCompiler {
             None,
         )?;
 
-        let day = |at: DateTime<Utc>| dates.day(at);
+        let day = |at: Timestamp| dates.day(at);
         let latest = public.iter().map(|content| content.updated_at).max();
         let mut entries = Vec::new();
         for number in 2..=posts.len().div_ceil(HOME_PAGE_SIZE) {
@@ -1171,8 +1172,8 @@ fn site_origin(page_url: &str) -> &str {
         .map_or(page_url, |at| &page_url[..scheme_end + at])
 }
 
-fn iso(at: DateTime<Utc>) -> String {
-    at.to_rfc3339_opts(SecondsFormat::Secs, true)
+fn iso(at: Timestamp) -> String {
+    at.rfc3339_seconds()
 }
 
 /// Serializes structured data so it can sit inside a `<script>` data block:
@@ -1297,7 +1298,7 @@ struct ContentCard {
 
 /// The instant a card is dated by: publication, or creation for the rare
 /// visible piece without one.
-fn card_instant(content: &Content) -> DateTime<Utc> {
+fn card_instant(content: &Content) -> Timestamp {
     content
         .publication
         .publish_at()
@@ -1326,7 +1327,7 @@ struct DateView {
 }
 
 impl DateView {
-    fn new(dates: &SiteDates, at: DateTime<Utc>) -> Self {
+    fn new(dates: &SiteDates, at: Timestamp) -> Self {
         Self {
             iso: dates.iso(at),
             date: dates.long(at),

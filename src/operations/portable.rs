@@ -6,7 +6,7 @@ use std::{
     sync::Arc,
 };
 
-use chrono::{DateTime, Utc};
+use crate::timestamp::Timestamp;
 use uuid::Uuid;
 
 use crate::{
@@ -43,7 +43,7 @@ impl PortableMigrationService {
         config: &Config,
         repository: &SqliteRepository,
         output: &Path,
-        exported_at: DateTime<Utc>,
+        exported_at: Timestamp,
     ) -> Result<PortableArchiveReport, OperationError> {
         repository
             .advance_publication_clock(exported_at)

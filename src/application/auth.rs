@@ -3,10 +3,11 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use crate::timestamp::Timestamp;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use chrono::{DateTime, Duration, Utc};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
+use time::SignedDuration as Duration;
 use uuid::Uuid;
 
 use crate::{
@@ -30,7 +31,7 @@ const RECOVERY_CODE_COUNT: usize = 10;
 pub struct AuthRateLimiter {
     maximum: usize,
     window: Duration,
-    attempts: Arc<Mutex<HashMap<String, VecDeque<DateTime<Utc>>>>>,
+    attempts: Arc<Mutex<HashMap<String, VecDeque<Timestamp>>>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -44,7 +45,7 @@ impl AuthRateLimiter {
     pub fn new(maximum: usize, window: Duration) -> Self {
         assert!(maximum > 0, "rate limit maximum must be positive");
         assert!(
-            window > Duration::zero(),
+            window > Duration::ZERO,
             "rate limit window must be positive"
         );
         Self {
@@ -60,7 +61,7 @@ impl AuthRateLimiter {
     }
 
     #[must_use]
-    pub fn check(&self, key: &str, now: DateTime<Utc>) -> RateLimitDecision {
+    pub fn check(&self, key: &str, now: Timestamp) -> RateLimitDecision {
         let cutoff = now - self.window;
         let mut state = self.attempts.lock().unwrap_or_else(|poisoned| {
             tracing::error!(event = "auth.rate_limiter.poison_recovered");
@@ -75,7 +76,7 @@ impl AuthRateLimiter {
             let retry_after = attempts
                 .front()
                 .map_or(1, |oldest| {
-                    let milliseconds = (*oldest + self.window - now).num_milliseconds();
+                    let milliseconds = (*oldest + self.window - now).whole_milliseconds();
                     milliseconds.saturating_add(999) / 1_000
                 })
                 .max(1);
@@ -133,7 +134,7 @@ impl PasskeyAccountService {
         purpose: SetupPurpose,
         user_handle: Uuid,
         passkey: StoredPasskey,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Option<CompletedSetup>, AuthError> {
         let (session, session_record) = new_session(self.entropy.as_ref(), now)?;
         let recovery_codes = (0..RECOVERY_CODE_COUNT)
@@ -164,7 +165,7 @@ impl PasskeyAccountService {
     pub async fn setup_context(
         &self,
         setup_token: &str,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Option<RegistrationContext>, AuthError> {
         let Some(purpose) = self
             .repository
@@ -217,7 +218,7 @@ impl PasskeyAccountService {
         &self,
         credential_id: &[u8],
         passkey_json: &str,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Option<SessionSecrets>, AuthError> {
         let (session, record) = new_session(self.entropy.as_ref(), now)?;
         let committed = self
@@ -230,7 +231,7 @@ impl PasskeyAccountService {
     pub async fn add_passkey(
         &self,
         passkey: &StoredPasskey,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<(), AuthError> {
         self.repository.add_passkey(passkey, now).await
     }
@@ -251,7 +252,7 @@ impl AuthService {
     pub async fn issue_setup_token(
         &self,
         purpose: SetupPurpose,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<SecretToken, AuthError> {
         let token = random_token(self.entropy.as_ref(), 32)?;
         self.repository
@@ -268,14 +269,14 @@ impl AuthService {
         &self,
         token: &str,
         purpose: SetupPurpose,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<bool, AuthError> {
         self.repository
             .consume_setup_token(hash_secret(token), purpose, now)
             .await
     }
 
-    pub async fn create_session(&self, now: DateTime<Utc>) -> Result<SessionSecrets, AuthError> {
+    pub async fn create_session(&self, now: Timestamp) -> Result<SessionSecrets, AuthError> {
         let (secrets, record) = new_session(self.entropy.as_ref(), now)?;
         self.repository.store_session(&record).await?;
         Ok(secrets)
@@ -284,7 +285,7 @@ impl AuthService {
     pub async fn authenticate(
         &self,
         session_token: &str,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Option<SessionIdentity>, AuthError> {
         self.repository
             .find_session(hash_secret(session_token), now)
@@ -304,7 +305,7 @@ impl AuthService {
     /// rate-limited by the threshold so cookies are not rewritten on every
     /// request.
     #[must_use]
-    pub fn needs_renewal(identity: &SessionIdentity, now: DateTime<Utc>) -> bool {
+    pub fn needs_renewal(identity: &SessionIdentity, now: Timestamp) -> bool {
         identity.expires_at - now < Duration::days(SESSION_RENEWAL_THRESHOLD_DAYS)
     }
 
@@ -314,8 +315,8 @@ impl AuthService {
     pub async fn extend_session(
         &self,
         session_token: &str,
-        now: DateTime<Utc>,
-    ) -> Result<Option<DateTime<Utc>>, AuthError> {
+        now: Timestamp,
+    ) -> Result<Option<Timestamp>, AuthError> {
         let expires_at = now + Duration::days(SESSION_TTL_DAYS);
         let extended = self
             .repository
@@ -335,7 +336,7 @@ impl AuthService {
     pub async fn rotate_session(
         &self,
         current_token: &str,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Option<SessionSecrets>, AuthError> {
         let (secrets, replacement) = new_session(self.entropy.as_ref(), now)?;
         let rotated = self
@@ -347,7 +348,7 @@ impl AuthService {
 
     pub async fn replace_recovery_codes(
         &self,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Vec<SecretToken>, AuthError> {
         let codes = (0..RECOVERY_CODE_COUNT)
             .map(|_| random_token(self.entropy.as_ref(), 20))
@@ -363,7 +364,7 @@ impl AuthService {
     pub async fn consume_recovery_code(
         &self,
         code: &str,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<bool, AuthError> {
         self.repository
             .consume_recovery_code(hash_secret(code), now)
@@ -374,7 +375,7 @@ impl AuthService {
     pub async fn recover_session(
         &self,
         code: &str,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Option<SessionSecrets>, AuthError> {
         let (secrets, session) = new_session(self.entropy.as_ref(), now)?;
         let exchanged = self
@@ -387,7 +388,7 @@ impl AuthService {
 
 fn new_session(
     entropy: &dyn EntropySource,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Result<(SessionSecrets, SessionRecord), AuthError> {
     let session = random_token(entropy, 32)?;
     let csrf = random_token(entropy, 32)?;
@@ -421,9 +422,8 @@ pub fn hash_secret(value: &str) -> SecretHash {
 #[cfg(test)]
 mod session_renewal_tests {
     use super::*;
-    use chrono::TimeZone as _;
 
-    fn identity(expires_at: DateTime<Utc>) -> SessionIdentity {
+    fn identity(expires_at: Timestamp) -> SessionIdentity {
         SessionIdentity {
             token_hash: SecretHash::new([1; 32]),
             csrf_hash: SecretHash::new([2; 32]),
@@ -436,7 +436,7 @@ mod session_renewal_tests {
     /// threshold left is not renewed, one a second inside it is.
     #[test]
     fn a_session_is_renewed_only_once_it_is_inside_the_threshold() {
-        let now = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
+        let now = Timestamp::from_utc_components(2026, 9, 2, 12, 0, 0).unwrap();
         let threshold = Duration::days(SESSION_RENEWAL_THRESHOLD_DAYS);
 
         assert!(!AuthService::needs_renewal(&identity(now + threshold), now));

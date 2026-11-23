@@ -1,10 +1,10 @@
 use std::{io::Cursor, path::Path, sync::Arc};
 
 use async_trait::async_trait;
-use chrono::Utc;
 use image::{
     Delay, DynamicImage, Frame, ImageBuffer, ImageFormat, Rgb, RgbaImage, codecs::gif::GifEncoder,
 };
+use simple_blog::timestamp::Timestamp;
 use simple_blog::{
     application::ports::{MediaRepository, MediaRepositoryError},
     domain::media::{MediaAsset, MediaId},
@@ -45,7 +45,7 @@ impl MediaRepository for FailingMediaRepository {
         &self,
         _id: &MediaId,
         _alt_text: &str,
-        _now: chrono::DateTime<Utc>,
+        _now: simple_blog::timestamp::Timestamp,
     ) -> Result<bool, MediaRepositoryError> {
         Ok(false)
     }
@@ -130,7 +130,7 @@ async fn verified_image_is_content_addressed_and_gets_responsive_webp_variants()
             bytes.clone(),
             "A landscape",
             "Caption",
-            Utc::now(),
+            Timestamp::now(),
         )
         .await
         .unwrap();
@@ -165,7 +165,7 @@ async fn verified_image_is_content_addressed_and_gets_responsive_webp_variants()
 async fn jpeg_uploads_are_reencoded_as_lossy_webp() {
     let (temp, _repository, media) = harness(25 * 1024 * 1024).await;
     let asset = media
-        .store("photo.jpg", jpeg(600, 400), "photo", "", Utc::now())
+        .store("photo.jpg", jpeg(600, 400), "photo", "", Timestamp::now())
         .await
         .unwrap();
 
@@ -184,7 +184,7 @@ async fn webp_uploads_pass_through_without_reencoding() {
     let (temp, _repository, media) = harness(25 * 1024 * 1024).await;
     let bytes = webp(300, 200);
     let asset = media
-        .store("already.webp", bytes.clone(), "", "", Utc::now())
+        .store("already.webp", bytes.clone(), "", "", Timestamp::now())
         .await
         .unwrap();
 
@@ -200,7 +200,13 @@ async fn webp_uploads_pass_through_without_reencoding() {
 async fn animated_gifs_become_animated_webp() {
     let (temp, _repository, media) = harness(25 * 1024 * 1024).await;
     let asset = media
-        .store("loop.gif", animated_gif(64, 48, 3), "", "", Utc::now())
+        .store(
+            "loop.gif",
+            animated_gif(64, 48, 3),
+            "",
+            "",
+            Timestamp::now(),
+        )
         .await
         .unwrap();
 
@@ -220,11 +226,11 @@ async fn reencoding_is_deterministic_so_duplicates_share_identity() {
     let (_temp, repository, media) = harness(25 * 1024 * 1024).await;
     let bytes = jpeg(120, 90);
     let first = media
-        .store("a.jpg", bytes.clone(), "", "", Utc::now())
+        .store("a.jpg", bytes.clone(), "", "", Timestamp::now())
         .await
         .unwrap();
     let second = media
-        .store("b.jpg", bytes, "", "", Utc::now())
+        .store("b.jpg", bytes, "", "", Timestamp::now())
         .await
         .unwrap();
 
@@ -236,7 +242,7 @@ async fn reencoding_is_deterministic_so_duplicates_share_identity() {
 async fn images_wider_than_webp_allows_are_rejected() {
     let (_temp, repository, media) = harness(64 * 1024 * 1024).await;
     let error = media
-        .store("wide.png", png(17_000, 2), "", "", Utc::now())
+        .store("wide.png", png(17_000, 2), "", "", Timestamp::now())
         .await
         .unwrap_err();
 
@@ -253,7 +259,7 @@ async fn spoofed_truncated_and_oversized_uploads_leave_no_files_or_rows() {
         ("large.png", vec![0_u8; 129], "limit"),
     ] {
         let error = media
-            .store(name, bytes, "", "", Utc::now())
+            .store(name, bytes, "", "", Timestamp::now())
             .await
             .expect_err(name);
         match expected {
@@ -278,11 +284,11 @@ async fn duplicate_bytes_reuse_the_same_asset_identity() {
     let (_temp, repository, media) = harness(25 * 1024 * 1024).await;
     let bytes = png(32, 24);
     let first = media
-        .store("one.png", bytes.clone(), "first", "", Utc::now())
+        .store("one.png", bytes.clone(), "first", "", Timestamp::now())
         .await
         .unwrap();
     let second = media
-        .store("two.png", bytes, "second", "", Utc::now())
+        .store("two.png", bytes, "second", "", Timestamp::now())
         .await
         .unwrap();
 
@@ -302,7 +308,7 @@ async fn repository_failure_compensates_every_newly_installed_media_file() {
     );
 
     let error = media
-        .store("failure.png", png(1_200, 800), "", "", Utc::now())
+        .store("failure.png", png(1_200, 800), "", "", Timestamp::now())
         .await
         .unwrap_err();
 
@@ -327,7 +333,7 @@ async fn compensation_never_removes_content_addressed_files_that_already_existed
     );
 
     let error = media
-        .store("failure.webp", bytes.clone(), "", "", Utc::now())
+        .store("failure.webp", bytes.clone(), "", "", Timestamp::now())
         .await
         .unwrap_err();
 

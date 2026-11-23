@@ -143,7 +143,7 @@ fn site_timezone_must_be_a_known_iana_zone_and_is_normalized() {
     tokyo.timezone = " Asia/Tokyo ".into();
     let validated = tokyo.validated().unwrap();
     assert_eq!(validated.timezone, "Asia/Tokyo");
-    assert_eq!(validated.time_zone(), chrono_tz::Tz::Asia__Tokyo);
+    assert_eq!(validated.time_zone().name(), "Asia/Tokyo");
 
     for bad in ["Mars/Olympus", ""] {
         let mut invalid = settings();

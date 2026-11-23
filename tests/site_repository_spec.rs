@@ -1,6 +1,7 @@
 use std::{borrow::Cow, path::Path, sync::Arc};
 
-use chrono::{Duration, SecondsFormat, Utc};
+use simple_blog::timestamp::Timestamp;
+
 use simple_blog::{
     application::{
         ports::{ContentRepository, SiteRepository},
@@ -17,6 +18,7 @@ use sqlx::{
     migrate::Migrator,
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
 };
+use time::SignedDuration as Duration;
 
 async fn migration_fixture(path: &Path, target: i64) -> SqlitePool {
     let pool = SqlitePoolOptions::new()
@@ -206,7 +208,7 @@ async fn publication_state_migration_compares_sqlx_rfc3339_timestamps() {
     let temp = tempfile::tempdir().unwrap();
     let database = temp.path().join("publication-clock.sqlite3");
     let pool = migration_fixture(&database, 9).await;
-    let now = Utc::now();
+    let now = Timestamp::now();
     let past = now - Duration::hours(1);
     let future = now + Duration::hours(1);
     for (id, slug, publish_at) in [(1, "past", past), (2, "future", future)] {
@@ -234,7 +236,7 @@ async fn publication_state_migration_compares_sqlx_rfc3339_timestamps() {
             .await
             .unwrap();
 
-    assert_eq!(next, future.to_rfc3339_opts(SecondsFormat::AutoSi, false));
+    assert_eq!(next, future.sqlite_text());
 }
 
 #[tokio::test]
@@ -265,7 +267,7 @@ async fn site_configuration_is_validated_and_replaced_atomically() {
                     position: 10,
                 },
             ],
-            Utc::now(),
+            Timestamp::now(),
         )
         .await
         .unwrap();
@@ -281,7 +283,7 @@ async fn site_configuration_is_validated_and_replaced_atomically() {
     invalid.custom_css = "</style>".into();
     assert!(
         service
-            .update(invalid, Vec::new(), Utc::now())
+            .update(invalid, Vec::new(), Timestamp::now())
             .await
             .is_err()
     );
@@ -423,7 +425,7 @@ async fn locale_settings_migration_adds_columns_with_defaults_and_round_trips() 
     updated.author_name = "Ryo".into();
     updated.custom_css_backup = Some("body {}".into());
     repository
-        .save_configuration(&updated, &[], Utc::now())
+        .save_configuration(&updated, &[], Timestamp::now())
         .await
         .unwrap();
     let stored = repository.site_settings().await.unwrap();
@@ -441,7 +443,7 @@ async fn setup_adopts_the_browser_zone_only_while_the_site_is_still_utc() {
             .unwrap(),
     );
     let site = SiteService::new(repository.clone());
-    let now = Utc::now();
+    let now = Timestamp::now();
 
     assert!(!site.adopt_timezone_once("Nowhere/Land", now).await.unwrap());
     assert!(!site.adopt_timezone_once("Etc/UTC", now).await.unwrap());

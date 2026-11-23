@@ -1,6 +1,6 @@
 use std::fmt;
 
-use chrono::{DateTime, Utc};
+use crate::timestamp::Timestamp;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -84,7 +84,7 @@ pub struct MediaAsset {
     pub caption: String,
     pub animated: bool,
     pub variants: Vec<MediaVariant>,
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
 }
 
 #[cfg(test)]
