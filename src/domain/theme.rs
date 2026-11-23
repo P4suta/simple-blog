@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use chrono_tz::Tz;
+use crate::timestamp::SiteTimeZone;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
@@ -137,8 +137,8 @@ impl SiteSettings {
             MediaId::parse(id).map_err(|_| ThemeValidationError::MediaId)?;
         }
         // Stored in canonical form so archives compare byte for byte.
-        let zone =
-            Tz::from_str(self.timezone.trim()).map_err(|_| ThemeValidationError::Timezone)?;
+        let zone = SiteTimeZone::from_str(self.timezone.trim())
+            .map_err(|_| ThemeValidationError::Timezone)?;
         self.timezone = zone.name().to_owned();
         Ok(self)
     }
@@ -146,8 +146,8 @@ impl SiteSettings {
     /// The zone public dates are rendered in; an unparseable stored value
     /// falls back to UTC rather than failing a build.
     #[must_use]
-    pub fn time_zone(&self) -> Tz {
-        self.timezone.parse().unwrap_or(Tz::UTC)
+    pub fn time_zone(&self) -> SiteTimeZone {
+        self.timezone.parse().unwrap_or(SiteTimeZone::UTC)
     }
 
     /// The name readers see as the author: the configured one, or the site
@@ -178,9 +178,9 @@ pub fn timezone_choices() -> Vec<TimezoneGroup> {
     }];
     for region in TIMEZONE_REGIONS {
         let prefix = format!("{region}/");
-        let mut zones = chrono_tz::TZ_VARIANTS
+        let mut zones = tzdb::TZ_NAMES
             .iter()
-            .map(|zone| zone.name())
+            .copied()
             .filter(|name| name.starts_with(&prefix))
             .map(str::to_owned)
             .collect::<Vec<_>>();

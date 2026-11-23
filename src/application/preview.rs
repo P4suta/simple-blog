@@ -7,7 +7,9 @@
 
 use std::sync::Arc;
 
-use chrono::{DateTime, Duration, Utc};
+use crate::timestamp::Timestamp;
+
+use time::SignedDuration as Duration;
 
 use crate::{
     application::{
@@ -27,7 +29,7 @@ const TOKEN_LENGTH: usize = 43;
 
 pub struct IssuedPreviewLink {
     pub token: SecretToken,
-    pub expires_at: DateTime<Utc>,
+    pub expires_at: Timestamp,
 }
 
 #[derive(Clone)]
@@ -51,7 +53,7 @@ impl PreviewLinkService {
     pub async fn issue(
         &self,
         content_id: ContentId,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<IssuedPreviewLink, AuthError> {
         let token = random_token(self.entropy.as_ref(), TOKEN_BYTES)?;
         let expires_at = now + Duration::days(PREVIEW_LINK_TTL_DAYS);
@@ -71,7 +73,7 @@ impl PreviewLinkService {
     pub async fn resolve(
         &self,
         token: &str,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Option<ContentId>, AuthError> {
         if !well_formed(token) {
             return Ok(None);

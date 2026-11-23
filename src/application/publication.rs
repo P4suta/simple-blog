@@ -2,7 +2,7 @@
 
 use std::{sync::Arc, time::Instant};
 
-use chrono::{DateTime, Utc};
+use crate::timestamp::Timestamp;
 use serde::Serialize;
 use thiserror::Error;
 use tracing::Instrument;
@@ -83,7 +83,7 @@ pub struct PublicationService<R, S> {
 #[must_use]
 pub fn publication_delay(
     state: PublicationState,
-    now: DateTime<Utc>,
+    now: Timestamp,
     maximum_idle: std::time::Duration,
 ) -> std::time::Duration {
     let Some(next_publish_at) = state.next_publish_at else {
@@ -92,8 +92,7 @@ pub fn publication_delay(
     if next_publish_at <= now {
         return std::time::Duration::ZERO;
     }
-    (next_publish_at - now)
-        .to_std()
+    std::time::Duration::try_from(next_publish_at - now)
         .unwrap_or(maximum_idle)
         .min(maximum_idle)
 }
@@ -120,7 +119,7 @@ where
 
     pub async fn publish(
         &self,
-        effective_at: DateTime<Utc>,
+        effective_at: Timestamp,
     ) -> Result<PublicationOutcome, PublicationServiceError> {
         let build_id = uuid::Uuid::new_v4();
         let span = tracing::info_span!(
@@ -182,7 +181,7 @@ where
     async fn publish_inner(
         &self,
         build_id: uuid::Uuid,
-        effective_at: DateTime<Utc>,
+        effective_at: Timestamp,
     ) -> Result<PublicationOutcome, PublicationServiceError> {
         self.repository
             .advance_publication_clock(effective_at)

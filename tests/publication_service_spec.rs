@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use chrono::{Duration, TimeZone, Utc};
+use simple_blog::timestamp::Timestamp;
+
 use simple_blog::{
     application::{
         content::{ContentService, SaveIntent},
@@ -12,10 +13,11 @@ use simple_blog::{
     infrastructure::{markdown::ComrakMarkdownRenderer, sqlite::SqliteRepository},
     release::{FilesystemReleaseStore, ReleaseReader, ReleaseStore},
 };
+use time::SignedDuration as Duration;
 
 #[test]
 fn scheduler_delay_never_fires_early_and_caps_idle_health_checks() {
-    let now = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
+    let now = Timestamp::from_utc_components(2026, 9, 2, 12, 0, 0).unwrap();
     let cap = std::time::Duration::from_secs(60);
     assert_eq!(
         publication_delay(
@@ -94,7 +96,7 @@ async fn harness() -> (
     (temp, repository, content, store, publication)
 }
 
-fn draft(title: &str, publish_at: chrono::DateTime<Utc>) -> ContentDraft {
+fn draft(title: &str, publish_at: simple_blog::timestamp::Timestamp) -> ContentDraft {
     ContentDraft {
         kind: ContentKind::Post,
         title: title.into(),
@@ -112,7 +114,7 @@ fn draft(title: &str, publish_at: chrono::DateTime<Utc>) -> ContentDraft {
 #[tokio::test]
 async fn publication_service_builds_once_then_reports_a_verified_noop() {
     let (_temp, _repository, content, store, publication) = harness().await;
-    let now = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
+    let now = Timestamp::from_utc_components(2026, 9, 2, 12, 0, 0).unwrap();
     content
         .create(
             draft("Published", now - Duration::seconds(1)),
@@ -146,7 +148,7 @@ async fn publication_service_builds_once_then_reports_a_verified_noop() {
 #[tokio::test]
 async fn scheduled_publication_advances_the_clock_and_builds_at_the_exact_boundary() {
     let (_temp, _repository, content, store, publication) = harness().await;
-    let before = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
+    let before = Timestamp::from_utc_components(2026, 9, 2, 12, 0, 0).unwrap();
     let due = before + Duration::minutes(5);
     content
         .create(draft("Scheduled", due), SaveIntent::Explicit, before)
@@ -175,7 +177,7 @@ async fn scheduled_publication_advances_the_clock_and_builds_at_the_exact_bounda
 #[tokio::test]
 async fn a_public_edit_activates_a_new_complete_release() {
     let (_temp, _repository, content, store, publication) = harness().await;
-    let now = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
+    let now = Timestamp::from_utc_components(2026, 9, 2, 12, 0, 0).unwrap();
     let created = content
         .create(draft("Original", now), SaveIntent::Explicit, now)
         .await
@@ -228,7 +230,7 @@ async fn a_public_edit_activates_a_new_complete_release() {
 #[tokio::test]
 async fn a_noop_publish_checks_existing_objects_and_preserves_the_active_pointer_on_damage() {
     let (temp, _repository, _content, store, publication) = harness().await;
-    let now = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
+    let now = Timestamp::from_utc_components(2026, 9, 2, 12, 0, 0).unwrap();
     let published = publication.publish(now).await.unwrap();
     let manifest = store.manifest(&published.release_id).await.unwrap();
     let object = temp

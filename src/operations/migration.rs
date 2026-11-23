@@ -1,6 +1,6 @@
 use std::path::{Component, Path, PathBuf};
 
-use chrono::{DateTime, Utc};
+use crate::timestamp::Timestamp;
 use tracing::instrument;
 use uuid::Uuid;
 use walkdir::WalkDir;
@@ -21,10 +21,7 @@ pub struct MigrationCoordinator;
 
 impl MigrationCoordinator {
     #[instrument(name = "database.open", skip_all)]
-    pub async fn open(
-        config: &Config,
-        now: DateTime<Utc>,
-    ) -> Result<ManagedDatabase, OperationError> {
+    pub async fn open(config: &Config, now: Timestamp) -> Result<ManagedDatabase, OperationError> {
         let data_dir = config.data_dir.clone();
         let backup_dir = config.backup_dir();
         tokio::task::spawn_blocking(move || {
@@ -74,14 +71,11 @@ impl MigrationCoordinator {
     }
 }
 
-async fn create_safety_backup(
-    config: &Config,
-    now: DateTime<Utc>,
-) -> Result<PathBuf, OperationError> {
+async fn create_safety_backup(config: &Config, now: Timestamp) -> Result<PathBuf, OperationError> {
     let identifier = Uuid::new_v4();
     let output = config.backup_dir().join(format!(
         "simple-blog-pre-migration-{}-{identifier}.tar.zst",
-        now.format("%Y%m%d-%H%M%S")
+        now.compact_second()
     ));
     let snapshot = config
         .backup_dir()
@@ -122,7 +116,7 @@ fn archive_safety_files(
     config: &Config,
     snapshot: &Path,
     output: &Path,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Result<(), OperationError> {
     let mut files = vec![("database.sqlite3".to_owned(), snapshot.to_owned())];
     let config_path = config.data_dir.join("config.toml");

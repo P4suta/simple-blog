@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use chrono::{DateTime, Utc};
+use crate::timestamp::Timestamp;
 use sqlx::Executor;
 use tar::{Builder, Header};
 use uuid::Uuid;
@@ -64,7 +64,7 @@ impl BackupService {
         config: &Config,
         repository: &SqliteRepository,
         output: Option<PathBuf>,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<PathBuf, OperationError> {
         crate::observability::operation(
             "backup",
@@ -77,14 +77,13 @@ impl BackupService {
         config: &Config,
         repository: &SqliteRepository,
         output: Option<PathBuf>,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<PathBuf, OperationError> {
         std::fs::create_dir_all(config.backup_dir())?;
         let output = output.unwrap_or_else(|| {
-            config.backup_dir().join(format!(
-                "simple-blog-{}.tar.zst",
-                now.format("%Y%m%d-%H%M%S")
-            ))
+            config
+                .backup_dir()
+                .join(format!("simple-blog-{}.tar.zst", now.compact_second()))
         });
         if output.exists() {
             return Err(OperationError::DestinationExists);
@@ -116,7 +115,7 @@ impl BackupService {
         repository: &SqliteRepository,
         snapshot: &Path,
         output: &Path,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<(), OperationError> {
         let mut files = vec![("database.sqlite3".to_owned(), snapshot.to_owned())];
         let config_path = config.data_dir.join("config.toml");
@@ -146,7 +145,7 @@ impl BackupService {
 pub(super) fn archive_files(
     files: &[(String, PathBuf)],
     output: &Path,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Result<(), OperationError> {
     for (_, path) in files {
         if !path.is_file() {

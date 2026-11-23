@@ -13,7 +13,7 @@ use std::{
     sync::Arc,
 };
 
-use chrono::{DateTime, Utc};
+use crate::timestamp::Timestamp;
 
 use crate::{
     application::{
@@ -50,7 +50,7 @@ impl Importer {
         repository: &Arc<SqliteRepository>,
         source: &Path,
         force: bool,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<ImportReport, OperationError> {
         if !source.is_dir() {
             return Err(OperationError::InvalidData(format!(
@@ -104,7 +104,7 @@ impl Importer {
                 continue;
             }
             let bytes = std::fs::read(&path)?;
-            match media.store(&name, bytes, "", "", Utc::now()).await {
+            match media.store(&name, bytes, "", "", Timestamp::now()).await {
                 Ok(_) => report.media += 1,
                 Err(error) => report
                     .skipped
@@ -120,7 +120,7 @@ impl Importer {
         path: &Path,
         kind: ContentKind,
         force: bool,
-        now: DateTime<Utc>,
+        now: Timestamp,
         report: &mut ImportReport,
     ) -> Result<(), OperationError> {
         let label = path
@@ -214,7 +214,7 @@ fn parse_document(
     text: &str,
     path: &Path,
     kind: ContentKind,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Result<ContentDraft, String> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let (fields, body) = split_front_matter(text)?;
@@ -244,8 +244,7 @@ fn parse_document(
     };
     let publish_at = match field("publish_at") {
         Some(value) => Some(
-            DateTime::parse_from_rfc3339(value.trim())
-                .map(|at| at.with_timezone(&Utc))
+            Timestamp::from_rfc3339(value.trim())
                 .map_err(|_| format!("publish_at is not an RFC 3339 instant: {value:?}"))?,
         ),
         None => None,
@@ -325,7 +324,7 @@ mod tests {
 
     #[test]
     fn exported_front_matter_round_trips_and_plain_files_become_drafts() {
-        let now = Utc::now();
+        let now = Timestamp::now();
         let exported = "---\ntitle: \"Hello: World\"\nslug: hello-world\nkind: post\nstatus: public\npublish_at: \"2026-09-02T23:30:00Z\"\nsummary: \"A summary\"\ntags: [\"Rust\",\"Writing\"]\nseo_title: \"SEO\"\n---\n# Hello\n\nBody.\n";
         let draft = parse_document(
             exported,
@@ -341,7 +340,7 @@ mod tests {
         assert_eq!(draft.seo_title.as_deref(), Some("SEO"));
         assert_eq!(draft.body_markdown, "# Hello\n\nBody.\n");
         assert!(
-            matches!(draft.publication, Publication::Public { publish_at } if publish_at.to_rfc3339().starts_with("2026-09-02T23:30:00"))
+            matches!(draft.publication, Publication::Public { publish_at } if publish_at.sqlite_text().starts_with("2026-09-02T23:30:00"))
         );
 
         let plain = "# From a heading\n\nText.\n";

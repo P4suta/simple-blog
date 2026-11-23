@@ -30,6 +30,7 @@
 //! | `operations` | reachable | The operational services behind the subcommands. |
 //! | `portable` | supported | The `.simple-blog` archive schema, format version 1. |
 //! | `release` | supported | Immutable releases, and the store a host adapter implements. |
+//! | `timestamp` | supported | UTC instants and site time zones in public data. |
 //! | `web` | supported | The HTTP application: [`web::AppState`] and [`web::router`]. |
 //!
 //! Dependencies point inward: `web` and `infrastructure` adapt external
@@ -79,4 +80,5 @@ pub mod observability;
 pub mod operations;
 pub mod portable;
 pub mod release;
+pub mod timestamp;
 pub mod web;

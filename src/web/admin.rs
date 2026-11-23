@@ -1,5 +1,6 @@
 use std::str::FromStr;
 
+use crate::timestamp::Timestamp;
 use axum::{
     Form, Json,
     body::Body,
@@ -8,9 +9,9 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use chrono::{DateTime, Duration, NaiveDateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use time::SignedDuration as Duration;
 use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 use webauthn_rs::prelude::{PublicKeyCredential, RegisterPublicKeyCredential};
@@ -583,7 +584,7 @@ pub async fn dashboard(
 /// How many matching pieces each filter tab would show.
 fn filter_counts(
     matching: &[Content],
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> std::collections::BTreeMap<&'static str, usize> {
     [
         DashboardFilter::All,
@@ -607,9 +608,9 @@ fn filter_counts(
 fn dashboard_items(
     contents: impl Iterator<Item = Content>,
     totals: &std::collections::HashMap<ContentId, crate::application::ports::Engagement>,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Vec<DashboardItem> {
-    let stamp = |at: DateTime<Utc>| at.to_rfc3339_opts(SecondsFormat::Secs, true);
+    let stamp = |at: Timestamp| at.rfc3339_seconds();
     contents
         .map(|content| {
             let engagement = totals.get(&content.id).copied().unwrap_or_default();
@@ -768,7 +769,7 @@ pub async fn settings_page(
                         old_slug: entry.old_slug.to_string(),
                         slug: entry.slug.to_string(),
                         title: entry.title,
-                        created_at: entry.created_at.to_rfc3339_opts(SecondsFormat::Secs, true),
+                        created_at: entry.created_at.rfc3339_seconds(),
                     })
                     .collect(),
                 redirect_targets: state
@@ -931,9 +932,7 @@ pub async fn edit_content(
         .map(|revision| RevisionItem {
             id: revision.id,
             intent: revision.intent.as_str(),
-            created_at: revision
-                .created_at
-                .to_rfc3339_opts(SecondsFormat::Secs, true),
+            created_at: revision.created_at.rfc3339_seconds(),
         })
         .collect();
     let cover_url = state
@@ -1965,7 +1964,7 @@ pub async fn admin_js() -> Response {
 impl ContentForm {
     fn to_draft(
         &self,
-        now: DateTime<Utc>,
+        now: Timestamp,
         current: Option<&Content>,
     ) -> Result<(ContentDraft, SaveIntent), String> {
         let kind = ContentKind::from_str(&self.kind).map_err(str::to_owned)?;
@@ -2056,7 +2055,7 @@ fn optional_text(value: &str) -> Option<String> {
 }
 
 impl EditorContent {
-    fn empty(now: DateTime<Utc>) -> Self {
+    fn empty(now: Timestamp) -> Self {
         Self {
             kind: "post",
             title: String::new(),
@@ -2075,7 +2074,7 @@ impl EditorContent {
         }
     }
 
-    fn from_content(content: &Content, now: DateTime<Utc>) -> Self {
+    fn from_content(content: &Content, now: Timestamp) -> Self {
         let publish_at = content.publication.publish_at();
         Self {
             kind: content.kind.as_str(),
@@ -2091,17 +2090,13 @@ impl EditorContent {
                 .join(", "),
             status: content_status(content, now),
             publish_at: publish_at
-                .map(|at| at.to_rfc3339_opts(SecondsFormat::Secs, true))
+                .map(Timestamp::rfc3339_seconds)
                 .unwrap_or_default(),
-            publish_at_input: publish_at
-                .map(|at| at.format("%Y-%m-%dT%H:%M").to_string())
-                .unwrap_or_default(),
+            publish_at_input: publish_at.map(Timestamp::editor_minute).unwrap_or_default(),
             seo_title: content.seo_title.clone().unwrap_or_default(),
             seo_description: content.seo_description.clone().unwrap_or_default(),
             cover_media_id: content.cover_media_id.clone().unwrap_or_default(),
-            updated_at: content
-                .updated_at
-                .to_rfc3339_opts(SecondsFormat::Secs, true),
+            updated_at: content.updated_at.rfc3339_seconds(),
             slug_auto: slug_follows_title(content, now),
         }
     }
@@ -2170,7 +2165,7 @@ fn with_session_refresh(
     Ok(response)
 }
 
-fn recently_reauthenticated(identity: &AdminIdentity, now: DateTime<Utc>) -> bool {
+fn recently_reauthenticated(identity: &AdminIdentity, now: Timestamp) -> bool {
     identity
         .session
         .was_reauthenticated_within(now, Duration::minutes(5))
@@ -2195,14 +2190,14 @@ fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 
 /// Whether the address still follows the title: a draft whose slug is the
 /// one its title (or the clock) would produce. Published addresses are fixed.
-fn slug_follows_title(content: &Content, now: DateTime<Utc>) -> bool {
+fn slug_follows_title(content: &Content, now: Timestamp) -> bool {
     content.publication.publish_at().is_none()
         && (content.slug.is_timestamped() || content.slug == Slug::from_title(&content.title, now))
 }
 
 /// The addresses to try after a collision: numbered variants of a title
 /// slug, or the second-resolution stamp for a timestamped one.
-fn slug_alternatives(slug: &Slug, now: DateTime<Utc>) -> Vec<Slug> {
+fn slug_alternatives(slug: &Slug, now: Timestamp) -> Vec<Slug> {
     if slug.is_timestamped() {
         vec![Slug::timestamped_precise(now)]
     } else {
@@ -2217,7 +2212,7 @@ fn slug_alternatives(slug: &Slug, now: DateTime<Utc>) -> Vec<Slug> {
 async fn with_slug_alternatives<F, Fut>(
     automatic: bool,
     draft: ContentDraft,
-    now: DateTime<Utc>,
+    now: Timestamp,
     save: F,
 ) -> Result<Content, RepositoryError>
 where
@@ -2243,7 +2238,7 @@ where
 
 /// The writer-facing state of one piece: `trashed`, `draft`, `scheduled`
 /// (public with a future instant), or `public`.
-fn content_status(content: &Content, now: DateTime<Utc>) -> &'static str {
+fn content_status(content: &Content, now: Timestamp) -> &'static str {
     if content.is_trashed() {
         "trashed"
     } else if content.publication.is_scheduled_at(now) {
@@ -2256,7 +2251,7 @@ fn content_status(content: &Content, now: DateTime<Utc>) -> &'static str {
     }
 }
 
-fn save_response(content: &Content, now: DateTime<Utc>, site: SiteState) -> serde_json::Value {
+fn save_response(content: &Content, now: Timestamp, site: SiteState) -> serde_json::Value {
     json!({
         "id": content.id.as_i64(),
         "version": content.version,
@@ -2267,33 +2262,31 @@ fn save_response(content: &Content, now: DateTime<Utc>, site: SiteState) -> serd
         "publish_at": content
             .publication
             .publish_at()
-            .map(|at| at.to_rfc3339_opts(SecondsFormat::Secs, true)),
+            .map(Timestamp::rfc3339_seconds),
     })
 }
 
 /// Accepts the RFC 3339 instant the browser script sends, or the naive
 /// `datetime-local` value a JavaScript-free form submits, which the editor
 /// labels as UTC. Empty means "no explicit instant".
-fn parse_publish_at(value: &str) -> Result<Option<DateTime<Utc>>, String> {
+fn parse_publish_at(value: &str) -> Result<Option<Timestamp>, String> {
     let value = value.trim();
     if value.is_empty() {
         return Ok(None);
     }
-    if let Ok(parsed) = DateTime::parse_from_rfc3339(value) {
-        return Ok(Some(parsed.with_timezone(&Utc)));
+    if let Ok(parsed) = Timestamp::from_rfc3339(value) {
+        return Ok(Some(parsed));
     }
-    for format in ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M"] {
-        if let Ok(naive) = NaiveDateTime::parse_from_str(value, format) {
-            return Ok(Some(naive.and_utc()));
-        }
+    if let Some(stamp) = Timestamp::editor_utc(value) {
+        return Ok(Some(stamp));
     }
     Err("publish date must be an ISO 8601 date-time".into())
 }
 
 /// The `datetime-local` control has minute resolution, so a value that merely
 /// round-tripped through it must not re-date a piece or bump a revision.
-const fn same_minute(left: DateTime<Utc>, right: DateTime<Utc>) -> bool {
-    left.timestamp().div_euclid(60) == right.timestamp().div_euclid(60)
+const fn same_minute(left: Timestamp, right: Timestamp) -> bool {
+    left.unix_seconds().div_euclid(60) == right.unix_seconds().div_euclid(60)
 }
 
 /// An absent status means "keep what the content already is": saves that are
@@ -2302,9 +2295,9 @@ const fn same_minute(left: DateTime<Utc>, right: DateTime<Utc>) -> bool {
 /// schedules; publishing without one keeps an existing instant or uses now.
 fn publication_for(
     status: &str,
-    requested: Option<DateTime<Utc>>,
+    requested: Option<Timestamp>,
     current: Option<&Content>,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Result<Publication, String> {
     let current = current.map(|content| &content.publication);
     match status {
@@ -2796,7 +2789,7 @@ pub async fn issue_preview_link(
         .await
         .map_err(WebError::auth)?;
     let path = format!("/admin/share/{}/", link.token.expose());
-    let expires_at = link.expires_at.to_rfc3339_opts(SecondsFormat::Secs, true);
+    let expires_at = link.expires_at.rfc3339_seconds();
     if wants_json(&headers) {
         return Ok(Json(json!({ "url": path, "expires_at": expires_at })).into_response());
     }
@@ -3215,7 +3208,7 @@ fn media_item(
         width: asset.width,
         height: asset.height,
         size_label: size_label(asset.byte_size),
-        created_at: asset.created_at.to_rfc3339_opts(SecondsFormat::Secs, true),
+        created_at: asset.created_at.rfc3339_seconds(),
         usage_key,
         usage_label,
         deletable: !usage.is_current(),
@@ -3251,7 +3244,6 @@ fn timezone_choices_including(stored: &str) -> Vec<TimezoneGroup> {
 
 #[cfg(test)]
 mod tests {
-    use chrono::TimeZone;
 
     use super::*;
 
@@ -3270,14 +3262,14 @@ mod tests {
             seo_description: None,
             publication: Publication::Draft,
             version: 1,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
+            created_at: Timestamp::now(),
+            updated_at: Timestamp::now(),
             deleted_at: None,
         }
     }
 
     fn content_with(publication: Publication, deleted: bool) -> Content {
-        let at = Utc.with_ymd_and_hms(2026, 9, 3, 12, 0, 0).unwrap();
+        let at = Timestamp::from_utc_components(2026, 9, 3, 12, 0, 0).unwrap();
         Content {
             id: ContentId::from_i64(1),
             kind: ContentKind::Post,
@@ -3300,7 +3292,7 @@ mod tests {
 
     #[test]
     fn parse_publish_at_accepts_rfc3339_and_naive_utc_and_rejects_garbage() {
-        let expected = Utc.with_ymd_and_hms(2026, 9, 3, 12, 1, 0).unwrap();
+        let expected = Timestamp::from_utc_components(2026, 9, 3, 12, 1, 0).unwrap();
         assert_eq!(parse_publish_at(""), Ok(None));
         assert_eq!(parse_publish_at("   "), Ok(None));
         assert_eq!(parse_publish_at("2026-09-03T12:01:00Z"), Ok(Some(expected)));
@@ -3316,10 +3308,10 @@ mod tests {
 
     #[test]
     fn publication_for_follows_the_status_and_date_table() {
-        let now = Utc.with_ymd_and_hms(2026, 9, 3, 12, 0, 37).unwrap();
-        let minute = Utc.with_ymd_and_hms(2026, 9, 3, 12, 0, 0).unwrap();
-        let earlier = Utc.with_ymd_and_hms(2026, 9, 1, 8, 0, 0).unwrap();
-        let later = Utc.with_ymd_and_hms(2026, 9, 9, 8, 0, 0).unwrap();
+        let now = Timestamp::from_utc_components(2026, 9, 3, 12, 0, 37).unwrap();
+        let minute = Timestamp::from_utc_components(2026, 9, 3, 12, 0, 0).unwrap();
+        let earlier = Timestamp::from_utc_components(2026, 9, 1, 8, 0, 0).unwrap();
+        let later = Timestamp::from_utc_components(2026, 9, 9, 8, 0, 0).unwrap();
         let public = content_with(Publication::Public { publish_at: now }, false);
         let draft = content_with(Publication::Draft, false);
 
@@ -3370,7 +3362,7 @@ mod tests {
 
     #[test]
     fn content_status_distinguishes_trash_schedule_and_visibility() {
-        let now = Utc.with_ymd_and_hms(2026, 9, 3, 12, 0, 0).unwrap();
+        let now = Timestamp::from_utc_components(2026, 9, 3, 12, 0, 0).unwrap();
         let later = now + Duration::hours(1);
         assert_eq!(
             content_status(&content_with(Publication::Draft, false), now),

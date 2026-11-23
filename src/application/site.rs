@@ -3,8 +3,8 @@ use std::sync::Arc;
 /// The stylesheet a fresh installation starts with; Settings can put it back.
 pub const DEFAULT_THEME_CSS: &str = include_str!("../../static/default-theme.css");
 
-use chrono::{DateTime, Utc};
-use chrono_tz::Tz;
+use crate::timestamp::SiteTimeZone;
+use crate::timestamp::Timestamp;
 
 use crate::{
     application::ports::{RepositoryError, SiteRepository},
@@ -26,7 +26,7 @@ impl SiteService {
         &self,
         settings: SiteSettings,
         navigation: Vec<NavigationItem>,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<(), RepositoryError> {
         let settings = settings
             .validated()
@@ -45,12 +45,12 @@ impl SiteService {
     pub async fn adopt_timezone_once(
         &self,
         candidate: &str,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<bool, RepositoryError> {
-        let Ok(zone) = candidate.trim().parse::<Tz>() else {
+        let Ok(zone) = candidate.trim().parse::<SiteTimeZone>() else {
             return Ok(false);
         };
-        if zone == Tz::UTC || zone.name().starts_with("Etc/") {
+        if zone == SiteTimeZone::UTC || zone.name().starts_with("Etc/") {
             return Ok(false);
         }
         let settings = self.repository.site_settings().await?;

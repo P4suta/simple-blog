@@ -1,6 +1,7 @@
 # Architecture Decision Records
 
-Accepted decisions are immutable. A changed decision gets a new ADR that supersedes the old one.
+Accepted decisions are immutable.
+A changed decision gets a new ADR that supersedes the old one.
 
 Each ADR uses: `Status`, `Context`, `Decision`, and `Consequences`.
 
@@ -24,3 +25,4 @@ Each ADR uses: `Status`, `Context`, `Decision`, and `Consequences`.
 | [0016](0016-capability-preview-links.md) | Preview links are short-lived bearer capabilities | Accepted |
 | [0017](0017-verifiable-diagnostics-and-critical-review.md) | Verifiable diagnostics and repeated critical review | Accepted |
 | [0018](0018-declared-public-surface.md) | A declared public surface | Accepted |
+| [Stored and rendered timestamps](preserve-stored-and-rendered-timestamps.md) | Preserve SQLite, archive and feed timestamps | Accepted |

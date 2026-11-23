@@ -5,7 +5,7 @@ use axum::{
     extract::ConnectInfo,
     http::{Request, StatusCode, header},
 };
-use chrono::Utc;
+use simple_blog::timestamp::Timestamp;
 use simple_blog::{
     application::auth::AuthService,
     config::{Config, ConfigSources, Overrides},
@@ -47,7 +47,7 @@ async fn auth_endpoints_are_limited_by_peer_and_untrusted_forwarding_is_ignored(
             .unwrap(),
     );
     let token = AuthService::new(repository.clone(), Arc::new(SystemEntropy))
-        .issue_setup_token(SetupPurpose::Initial, Utc::now())
+        .issue_setup_token(SetupPurpose::Initial, Timestamp::now())
         .await
         .unwrap();
     let state = AppState::new(config, repository).unwrap();
@@ -102,7 +102,7 @@ async fn forwarded_client_ip_is_used_only_for_an_explicitly_trusted_proxy() {
             .unwrap(),
     );
     let token = AuthService::new(repository.clone(), Arc::new(SystemEntropy))
-        .issue_setup_token(SetupPurpose::Initial, Utc::now())
+        .issue_setup_token(SetupPurpose::Initial, Timestamp::now())
         .await
         .unwrap();
     let state = AppState::new(config, repository).unwrap();
@@ -143,7 +143,7 @@ async fn https_origin_sets_hsts_and_secure_strict_auth_cookies() {
     );
     let auth = AuthService::new(repository.clone(), Arc::new(SystemEntropy));
     let code = auth
-        .replace_recovery_codes(Utc::now())
+        .replace_recovery_codes(Timestamp::now())
         .await
         .unwrap()
         .remove(0);

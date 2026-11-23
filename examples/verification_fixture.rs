@@ -12,7 +12,7 @@ use std::{
 use tracing_subscriber::{Layer, layer::SubscriberExt};
 
 use anyhow::{Context, Result, bail};
-use chrono::{DateTime, TimeZone, Utc};
+use simple_blog::timestamp::Timestamp;
 use simple_blog::{
     application::{
         auth::{AuthService, PasskeyAccountService},
@@ -82,7 +82,7 @@ fn config(data: &Path, origin: &str) -> Result<Config> {
 async fn prepare(
     data: &Path,
     origin: &str,
-    at: DateTime<Utc>,
+    at: Timestamp,
 ) -> Result<(Config, Arc<SqliteRepository>)> {
     let config = config(data, origin)?;
     for path in [
@@ -107,11 +107,11 @@ async fn seed(data: &Path, origin: &str, owned: bool) -> Result<()> {
     if data.join("simple-blog.sqlite3").exists() {
         bail!("seed requires an empty disposable installation");
     }
-    let (config, repository) = prepare(data, origin, Utc::now()).await?;
+    let (config, repository) = prepare(data, origin, Timestamp::now()).await?;
     let entropy = Arc::new(SystemEntropy);
     let auth = AuthService::new(repository.clone(), entropy.clone());
     let token = auth
-        .issue_setup_token(SetupPurpose::Initial, Utc::now())
+        .issue_setup_token(SetupPurpose::Initial, Timestamp::now())
         .await?;
     let credentials = if owned {
         let completed = PasskeyAccountService::new(repository.clone(), entropy)
@@ -124,7 +124,7 @@ async fn seed(data: &Path, origin: &str, owned: bool) -> Result<()> {
                     name: "Disposable fixture".into(),
                     passkey_json: "{}".into(),
                 },
-                Utc::now(),
+                Timestamp::now(),
             )
             .await?
             .context("fixture owner registration")?;
@@ -137,7 +137,11 @@ async fn seed(data: &Path, origin: &str, owned: bool) -> Result<()> {
         Arc::new(ComrakMarkdownRenderer::default()),
     );
     contents
-        .create(draft(0, Utc::now()), SaveIntent::Explicit, Utc::now())
+        .create(
+            draft(0, Timestamp::now()),
+            SaveIntent::Explicit,
+            Timestamp::now(),
+        )
         .await?;
     AppState::new(config, repository.clone())?
         .publish_now()
@@ -148,7 +152,7 @@ async fn seed(data: &Path, origin: &str, owned: bool) -> Result<()> {
     Ok(())
 }
 
-fn draft(index: u32, at: DateTime<Utc>) -> ContentDraft {
+fn draft(index: u32, at: Timestamp) -> ContentDraft {
     ContentDraft {
         kind: ContentKind::Post,
         title: format!("Synthetic article {index}"),
@@ -169,7 +173,7 @@ async fn benchmark() -> Result<()> {
         tracing_subscriber::registry().with(QueryCounter(queries.clone())),
     )?;
     let temp = tempfile::tempdir()?;
-    let at = Utc.with_ymd_and_hms(2026, 9, 5, 0, 0, 0).unwrap();
+    let at = Timestamp::from_utc_components(2026, 9, 5, 0, 0, 0).unwrap();
     let (config, repository) =
         prepare(&temp.path().join("source"), "http://localhost:8080", at).await?;
     let contents = ContentService::new(
@@ -217,9 +221,9 @@ async fn benchmark() -> Result<()> {
     Ok(())
 }
 
-struct FixedClock(DateTime<Utc>);
+struct FixedClock(Timestamp);
 impl Clock for FixedClock {
-    fn now(&self) -> DateTime<Utc> {
+    fn now(&self) -> Timestamp {
         self.0
     }
 }

@@ -1,7 +1,9 @@
 use std::fmt;
 
-use chrono::{DateTime, Duration, Utc};
+use crate::timestamp::Timestamp;
+
 use serde::{Deserialize, Serialize};
+use time::SignedDuration as Duration;
 use uuid::Uuid;
 
 use crate::domain::content::ContentId;
@@ -81,8 +83,8 @@ impl SetupPurpose {
 pub struct PreviewLinkRecord {
     pub token_hash: SecretHash,
     pub content_id: ContentId,
-    pub created_at: DateTime<Utc>,
-    pub expires_at: DateTime<Utc>,
+    pub created_at: Timestamp,
+    pub expires_at: Timestamp,
 }
 
 #[derive(Clone)]
@@ -95,18 +97,18 @@ pub struct SessionSecrets {
 pub struct SessionRecord {
     pub token_hash: SecretHash,
     pub csrf_hash: SecretHash,
-    pub created_at: DateTime<Utc>,
-    pub expires_at: DateTime<Utc>,
-    pub last_seen_at: DateTime<Utc>,
-    pub reauthenticated_at: DateTime<Utc>,
+    pub created_at: Timestamp,
+    pub expires_at: Timestamp,
+    pub last_seen_at: Timestamp,
+    pub reauthenticated_at: Timestamp,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionIdentity {
     pub token_hash: SecretHash,
     pub csrf_hash: SecretHash,
-    pub expires_at: DateTime<Utc>,
-    pub reauthenticated_at: DateTime<Utc>,
+    pub expires_at: Timestamp,
+    pub reauthenticated_at: Timestamp,
 }
 
 impl From<SessionRecord> for SessionIdentity {
@@ -122,7 +124,7 @@ impl From<SessionRecord> for SessionIdentity {
 
 impl SessionIdentity {
     #[must_use]
-    pub fn was_reauthenticated_within(&self, now: DateTime<Utc>, maximum_age: Duration) -> bool {
+    pub fn was_reauthenticated_within(&self, now: Timestamp, maximum_age: Duration) -> bool {
         now >= self.reauthenticated_at && now - self.reauthenticated_at <= maximum_age
     }
 }

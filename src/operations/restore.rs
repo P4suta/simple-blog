@@ -272,7 +272,7 @@ impl Drop for DirectoryGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
+    use crate::timestamp::Timestamp;
 
     #[test]
     fn archive_entry_names_use_forward_slashes_on_every_platform() {
@@ -321,7 +321,7 @@ mod tests {
         let manifest = BackupManifest {
             format_version: 1,
             application_version: "test".into(),
-            created_at: Utc::now(),
+            created_at: Timestamp::now(),
             entries,
         };
         std::fs::write(
@@ -529,7 +529,7 @@ mod archive_extraction_tests {
         let manifest = BackupManifest {
             format_version: 1,
             application_version: "0.1.0".into(),
-            created_at: chrono::Utc::now(),
+            created_at: crate::timestamp::Timestamp::now(),
             entries: std::collections::BTreeMap::from([(
                 "database.sqlite3".to_owned(),
                 checksum_file(&database).unwrap(),
@@ -586,9 +586,14 @@ mod staging_retention_tests {
         let repository = SqliteRepository::connect(&config.database_path())
             .await
             .unwrap();
-        let archive = BackupService::create(&config, &repository, None, chrono::Utc::now())
-            .await
-            .unwrap();
+        let archive = BackupService::create(
+            &config,
+            &repository,
+            None,
+            crate::timestamp::Timestamp::now(),
+        )
+        .await
+        .unwrap();
         repository.close().await;
         archive
     }

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use chrono::{Duration, TimeZone, Utc};
+use simple_blog::timestamp::Timestamp;
+
 use simple_blog::{
     application::{
         content::{ContentService, SaveIntent},
@@ -12,6 +13,7 @@ use simple_blog::{
     },
     infrastructure::{markdown::ComrakMarkdownRenderer, sqlite::SqliteRepository},
 };
+use time::SignedDuration as Duration;
 
 async fn harness() -> (tempfile::TempDir, Arc<SqliteRepository>, ContentService) {
     let temp = tempfile::tempdir().unwrap();
@@ -45,7 +47,7 @@ fn draft(title: &str, publication: Publication) -> ContentDraft {
 #[tokio::test]
 async fn publication_revision_tracks_only_changes_that_can_affect_public_output() {
     let (_temp, repository, service) = harness().await;
-    let now = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
+    let now = Timestamp::from_utc_components(2026, 9, 2, 12, 0, 0).unwrap();
     assert_eq!(repository.publication_state().await.unwrap().revision, 0);
 
     let private = service
@@ -118,7 +120,7 @@ async fn publication_revision_tracks_only_changes_that_can_affect_public_output(
 #[tokio::test]
 async fn a_failed_content_transaction_cannot_advance_publication_revision() {
     let (_temp, repository, service) = harness().await;
-    let now = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
+    let now = Timestamp::from_utc_components(2026, 9, 2, 12, 0, 0).unwrap();
     let post = service
         .create(
             draft("Public", Publication::Public { publish_at: now }),
@@ -146,7 +148,7 @@ async fn a_failed_content_transaction_cannot_advance_publication_revision() {
 #[tokio::test]
 async fn public_snapshot_is_complete_ordered_and_carries_the_same_revision() {
     let (_temp, repository, service) = harness().await;
-    let now = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
+    let now = Timestamp::from_utc_components(2026, 9, 2, 12, 0, 0).unwrap();
     let first = service
         .create(
             draft(
@@ -215,7 +217,7 @@ async fn public_snapshot_is_complete_ordered_and_carries_the_same_revision() {
 #[tokio::test]
 async fn site_configuration_advances_the_public_revision_in_its_transaction() {
     let (_temp, repository, _service) = harness().await;
-    let now = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
+    let now = Timestamp::from_utc_components(2026, 9, 2, 12, 0, 0).unwrap();
     let mut settings: SiteSettings = repository.site_settings().await.unwrap();
     settings.site_title = "Changed title".into();
 
@@ -244,7 +246,7 @@ async fn trash_and_restore_move_the_publication_clock_only_when_visibility_chang
     use simple_blog::application::ports::ContentRepository;
 
     let (_temp, repository, service) = harness().await;
-    let now = Utc.with_ymd_and_hms(2026, 9, 3, 12, 0, 0).unwrap();
+    let now = Timestamp::from_utc_components(2026, 9, 3, 12, 0, 0).unwrap();
 
     let visible = service
         .create(

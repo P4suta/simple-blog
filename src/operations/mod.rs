@@ -14,7 +14,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use chrono::{DateTime, Utc};
+use crate::timestamp::Timestamp;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -64,7 +64,7 @@ pub enum OperationError {
 struct BackupManifest {
     format_version: u32,
     application_version: String,
-    created_at: DateTime<Utc>,
+    created_at: Timestamp,
     entries: BTreeMap<String, String>,
 }
 

@@ -11,7 +11,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use chrono::{DateTime, Utc};
+use crate::timestamp::Timestamp;
 use serde::{
     Deserialize, Deserializer, Serialize,
     de::{Error as _, MapAccess, SeqAccess, Visitor},
@@ -46,7 +46,7 @@ const ENTRY_READ_CAPACITY: u64 = 64 * 1024;
 #[serde(deny_unknown_fields)]
 pub struct PortableSiteV1 {
     pub format_version: u16,
-    pub exported_at: DateTime<Utc>,
+    pub exported_at: Timestamp,
     pub canonical_origin: String,
     pub settings: SiteSettings,
     pub navigation: Vec<NavigationItem>,
@@ -70,7 +70,7 @@ pub struct PortableContent {
 pub struct PortableRedirect {
     pub old_slug: Slug,
     pub content_id: ContentId,
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -84,7 +84,7 @@ pub struct PortableEngagement {
 #[serde(deny_unknown_fields)]
 pub struct PortableOwner {
     pub user_handle: Uuid,
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
     pub passkeys: Vec<PortablePasskey>,
     pub recovery_codes: Vec<PortableRecoveryCode>,
 }
@@ -96,8 +96,8 @@ pub struct PortablePasskey {
     pub credential_id: String,
     pub name: String,
     pub passkey_json: String,
-    pub created_at: DateTime<Utc>,
-    pub last_used_at: Option<DateTime<Utc>>,
+    pub created_at: Timestamp,
+    pub last_used_at: Option<Timestamp>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -105,15 +105,15 @@ pub struct PortablePasskey {
 pub struct PortableRecoveryCode {
     /// Lowercase hexadecimal SHA-256 hash; the bearer code is never exported.
     pub code_hash: String,
-    pub consumed_at: Option<DateTime<Utc>>,
-    pub created_at: DateTime<Utc>,
+    pub consumed_at: Option<Timestamp>,
+    pub created_at: Timestamp,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PortablePublicationState {
     pub public_revision: u64,
-    pub next_publish_at: Option<DateTime<Utc>>,
+    pub next_publish_at: Option<Timestamp>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -979,7 +979,7 @@ struct PortableArchiveIdentity {
     archive_format_version: u16,
     site_format_version: u16,
     producer_version: String,
-    exported_at: DateTime<Utc>,
+    exported_at: Timestamp,
     entries: BTreeMap<String, PortableArchiveEntry>,
 }
 
@@ -994,14 +994,14 @@ fn append_archive_bytes<W: Write>(
     archive: &mut Builder<W>,
     path: &str,
     bytes: &[u8],
-    timestamp: DateTime<Utc>,
+    timestamp: Timestamp,
 ) -> Result<(), PortableArchiveError> {
     let mut header = Header::new_gnu();
     header.set_entry_type(EntryType::Regular);
     header.set_mode(0o600);
     header.set_uid(0);
     header.set_gid(0);
-    header.set_mtime(u64::try_from(timestamp.timestamp()).unwrap_or_default());
+    header.set_mtime(u64::try_from(timestamp.unix_seconds()).unwrap_or_default());
     header.set_size(
         u64::try_from(bytes.len())
             .map_err(|error| PortableArchiveError::SafetyLimit(error.to_string()))?,
@@ -1154,15 +1154,14 @@ mod portable_contract_tests {
 #[cfg(test)]
 mod portable_validator_tests {
     use super::*;
-    use chrono::TimeZone as _;
 
     use crate::domain::{
         content::{ContentKind, Publication, Tag},
         media::MediaVariant,
     };
 
-    fn at() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap()
+    fn at() -> Timestamp {
+        Timestamp::from_utc_components(2026, 9, 2, 12, 0, 0).unwrap()
     }
 
     fn hex(fill: char, length: usize) -> String {
@@ -1352,13 +1351,13 @@ mod portable_validator_tests {
             (
                 "created after updated",
                 Box::new(|c: &mut Content| {
-                    c.created_at = c.updated_at + chrono::Duration::seconds(1);
+                    c.created_at = c.updated_at + time::SignedDuration::seconds(1);
                 }),
             ),
             (
                 "deleted before created",
                 Box::new(|c: &mut Content| {
-                    c.deleted_at = Some(c.created_at - chrono::Duration::seconds(1));
+                    c.deleted_at = Some(c.created_at - time::SignedDuration::seconds(1));
                 }),
             ),
         ];
@@ -1588,14 +1587,14 @@ mod portable_validator_tests {
             (
                 "passkey predates the owner",
                 Box::new(|o: &mut PortableOwner| {
-                    o.passkeys[0].created_at = o.created_at - chrono::Duration::seconds(1);
+                    o.passkeys[0].created_at = o.created_at - time::SignedDuration::seconds(1);
                 }),
             ),
             (
                 "passkey used before it existed",
                 Box::new(|o: &mut PortableOwner| {
                     o.passkeys[0].last_used_at =
-                        Some(o.passkeys[0].created_at - chrono::Duration::seconds(1));
+                        Some(o.passkeys[0].created_at - time::SignedDuration::seconds(1));
                 }),
             ),
             (
@@ -1625,14 +1624,15 @@ mod portable_validator_tests {
             (
                 "recovery code predates the owner",
                 Box::new(|o: &mut PortableOwner| {
-                    o.recovery_codes[0].created_at = o.created_at - chrono::Duration::seconds(1);
+                    o.recovery_codes[0].created_at =
+                        o.created_at - time::SignedDuration::seconds(1);
                 }),
             ),
             (
                 "recovery code consumed before it existed",
                 Box::new(|o: &mut PortableOwner| {
                     o.recovery_codes[0].consumed_at =
-                        Some(o.recovery_codes[0].created_at - chrono::Duration::seconds(1));
+                        Some(o.recovery_codes[0].created_at - time::SignedDuration::seconds(1));
                 }),
             ),
         ];
@@ -1643,14 +1643,13 @@ mod portable_validator_tests {
 #[cfg(test)]
 mod portable_graph_tests {
     use super::*;
-    use chrono::TimeZone as _;
 
     use crate::domain::content::{ContentKind, Publication, SaveIntent, Tag};
 
     type Cases = Vec<(&'static str, Box<dyn Fn(&mut Vec<PortableContent>)>)>;
 
-    fn at() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap()
+    fn at() -> Timestamp {
+        Timestamp::from_utc_components(2026, 9, 2, 12, 0, 0).unwrap()
     }
 
     fn content(id: i64, slug: &str) -> Content {
@@ -1850,22 +1849,21 @@ mod portable_graph_tests {
 #[cfg(test)]
 mod publication_clock_tests {
     use super::*;
-    use chrono::TimeZone as _;
 
     use crate::domain::{
         content::{ContentKind, Publication},
         theme::Locale,
     };
 
-    fn at() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap()
+    fn at() -> Timestamp {
+        Timestamp::from_utc_components(2026, 9, 2, 12, 0, 0).unwrap()
     }
 
-    fn later(days: i64) -> DateTime<Utc> {
-        at() + chrono::Duration::days(days)
+    fn later(days: i64) -> Timestamp {
+        at() + time::SignedDuration::days(days)
     }
 
-    fn scheduled(id: i64, slug: &str, publish_at: DateTime<Utc>) -> PortableContent {
+    fn scheduled(id: i64, slug: &str, publish_at: Timestamp) -> PortableContent {
         PortableContent {
             current: Content {
                 id: ContentId::from_i64(id),
@@ -1889,7 +1887,7 @@ mod publication_clock_tests {
         }
     }
 
-    fn site(contents: Vec<PortableContent>, next: Option<DateTime<Utc>>) -> PortableSiteV1 {
+    fn site(contents: Vec<PortableContent>, next: Option<Timestamp>) -> PortableSiteV1 {
         PortableSiteV1 {
             format_version: PORTABLE_SITE_FORMAT_VERSION,
             exported_at: at(),
@@ -1973,15 +1971,14 @@ mod publication_clock_tests {
 #[cfg(test)]
 mod archive_entry_tests {
     use super::*;
-    use chrono::TimeZone as _;
 
     use crate::domain::{
         content::{ContentKind, Publication},
         theme::Locale,
     };
 
-    fn at() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap()
+    fn at() -> Timestamp {
+        Timestamp::from_utc_components(2026, 9, 2, 12, 0, 0).unwrap()
     }
 
     fn hex(fill: char) -> String {
@@ -2165,12 +2162,11 @@ mod archive_entry_tests {
 #[cfg(test)]
 mod archive_reader_tests {
     use super::*;
-    use chrono::TimeZone as _;
 
     use crate::domain::theme::Locale;
 
-    fn at() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap()
+    fn at() -> Timestamp {
+        Timestamp::from_utc_components(2026, 9, 2, 12, 0, 0).unwrap()
     }
 
     fn site() -> PortableSiteV1 {
@@ -2443,10 +2439,9 @@ mod partial_cleanup_tests {
 #[cfg(test)]
 mod manifest_entry_tests {
     use super::*;
-    use chrono::TimeZone as _;
 
-    fn at() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap()
+    fn at() -> Timestamp {
+        Timestamp::from_utc_components(2026, 9, 2, 12, 0, 0).unwrap()
     }
 
     fn manifest(checksum: String, byte_size: u64) -> PortableArchiveManifest {
